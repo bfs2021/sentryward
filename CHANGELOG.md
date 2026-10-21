@@ -110,6 +110,9 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- Rerunning a review on a repository whose reviews are turned off is refused
+  with a 409, like a new manual review, instead of queueing and publishing a run.
+
 - Copy markdown now shows a spinner and prevents repeated requests while copying a review.
 
 - Secrets stored under a previous `ENCRYPTION_KEY` no longer cause raw crypto

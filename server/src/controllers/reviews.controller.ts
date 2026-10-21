@@ -292,9 +292,7 @@ export async function rerunReview(req: Request, res: Response) {
   if (!existing) {
     throw new HttpError(404, "Review not found");
   }
-  const job = await queueLatest(existing.repository, existing.number);
-  const review = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id }, select: listFields });
-  res.status(202).json({ review });
+  await queueManual(res, existing.repository, existing.number);
 }
 
 export async function cancelReview(req: Request, res: Response) {
