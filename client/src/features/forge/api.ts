@@ -14,6 +14,9 @@ export interface Connection {
   createdBy: { name: string; email: string } | null
   // Enabled repositories added from this connection.
   repositoryCount: number
+  // Token and OAuth connections: when the forge last refused the stored
+  // credentials. Automatic reviews are paused until the account reconnects.
+  credentialsRejectedAt: string | null
 }
 
 export type ConnectionStatus = "active" | "revoked" | "unreachable"
@@ -125,17 +128,33 @@ function connectionStatusQuery(id: string) {
 }
 
 // One live credential check per connection, so a slow forge only delays its
-// own row. Undefined while a check is still running.
+// own row. Undefined while a check is still running, unless the server already
+// knows the credentials were refused.
 export function useConnectionStatuses(connections: Connection[]): Record<string, ConnectionStatus | undefined> {
   return useQueries({
     queries: connections.map((connection) => connectionStatusQuery(connection.id)),
     combine: (results) =>
       Object.fromEntries(
-        results.map((result, index) => [
-          connections[index]!.id,
-          result.isError ? "unreachable" : result.data?.status,
-        ]),
+        results.map((result, index) => {
+          const connection = connections[index]!
+          const known = connection.credentialsRejectedAt ? "revoked" : undefined
+          return [connection.id, result.isError ? "unreachable" : (result.data?.status ?? known)]
+        }),
       ),
+  })
+}
+
+// Connections whose repositories get no automatic reviews because the forge
+// refused the credentials. A live check that passes wins over the stored flag,
+// since the server clears the flag on that same check.
+export function pausedConnections(
+  connections: Connection[],
+  statuses: Record<string, ConnectionStatus | undefined>,
+): Connection[] {
+  return connections.filter((connection) => {
+    if (connection.kind === "github_app" || connection.repositoryCount === 0) return false
+    const status = statuses[connection.id]
+    return status === "revoked" || (Boolean(connection.credentialsRejectedAt) && status !== "active")
   })
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link, useSearchParams } from "react-router"
-import { FolderGit2, Loader2, MoreHorizontal, Plus, SlidersHorizontal, Trash2 } from "lucide-react"
+import { CircleAlert, FolderGit2, Loader2, MoreHorizontal, Plus, SlidersHorizontal, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { SortableHead } from "@/components/SortableHead"
 import {
@@ -16,6 +16,7 @@ import { TablePagination } from "@/components/TablePagination"
 import { ALL, matchesQuery, selectedLabel } from "@/lib/filters"
 import { paginate, usePagination } from "@/hooks/use-pagination"
 import { useSort } from "@/hooks/use-sort"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -44,6 +45,7 @@ import { ConnectionStatusBadge } from "@/features/forge/ConnectionStatusBadge"
 import { FORGE_KIND_OPTIONS, forgeKey, kindLabel } from "@/features/forge/forgeKind"
 import { PROVIDERS } from "@/features/forge/providers"
 import {
+  pausedConnections,
   statusRank,
   STATUS_OPTIONS,
   useConnectionStatuses,
@@ -338,6 +340,7 @@ function RepoList({
         </FilterPopover>
         <SearchInput label="Search repositories" value={query} onChange={filterBy(setQuery)} />
       </FilterToolbar>
+      <PausedAlert connections={pausedConnections(connections, statuses)} />
       <Card>
         <CardHeader>
           <CardTitle>Repositories</CardTitle>
@@ -347,6 +350,32 @@ function RepoList({
         </CardContent>
       </Card>
     </>
+  )
+}
+
+// Reconnecting the same account replaces the credentials on its connection,
+// so unlike removing it, nothing is lost.
+function PausedAlert({ connections }: { connections: Connection[] }) {
+  if (!connections.length) return null
+  return (
+    <Alert variant="destructive">
+      <CircleAlert />
+      <AlertTitle>Automatic reviews are paused</AlertTitle>
+      <AlertDescription>
+        <p>
+          The forge rejected the stored credentials for{" "}
+          {connections.map((connection, index) => (
+            <span key={connection.id}>
+              {index > 0 && ", "}
+              <span className="font-medium">
+                {connection.accountLogin} ({connection.host})
+              </span>
+            </span>
+          ))}
+          . Connect the same account again to resume; its repositories and review history are kept.
+        </p>
+      </AlertDescription>
+    </Alert>
   )
 }
 

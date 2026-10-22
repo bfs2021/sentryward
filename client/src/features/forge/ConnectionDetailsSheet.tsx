@@ -78,7 +78,7 @@ function StatusRow({ connectionId, appInstall }: { connectionId: string; appInst
             <AlertDescription>
               {appInstall
                 ? "The app is no longer installed or is suspended. Install it again to reattach these repositories and their review history."
-                : "The forge rejected the stored credentials. Remove this connection and add it again."}
+                : "The forge rejected the stored credentials, so automatic reviews are paused. Connect the same account again to resume; its repositories and review history are kept."}
             </AlertDescription>
           </Alert>
         </dd>

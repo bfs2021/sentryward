@@ -15,6 +15,7 @@ const gitlabConnection = {
   createdAt: "2026-03-14T12:00:00.000Z",
   createdBy: { name: "Dev", email: "dev@example.com" },
   repositoryCount: 3,
+  credentialsRejectedAt: null,
 }
 
 async function openAddConnection() {
@@ -714,6 +715,51 @@ describe("Repositories page", () => {
     const row = (name: string) => screen.getByRole("link", { name }).closest("tr")!
     await waitFor(() => expect(within(row("team/web")).getByText("Active")).toBeInTheDocument())
     expect(within(row("old/api")).getByText("Inactive")).toBeInTheDocument()
+  })
+
+  it("says automatic reviews are paused for a connection whose credentials were refused", async () => {
+    mockApi({
+      "GET /api/connections": {
+        connections: [
+          gitlabConnection,
+          { ...gitlabConnection, id: "c2", accountLogin: "old", credentialsRejectedAt: "2026-10-20T12:00:00.000Z" },
+        ],
+        availableApps: [],
+      },
+      "GET /api/connections/c1/status": { status: "active" },
+      // Still being checked: the stored flag stands in for the answer.
+      "GET /api/connections/c2/status": () => new Promise<Response>(() => undefined),
+      "GET /api/repos": {
+        repos: [
+          addedRepo("r1", "team/web"),
+          addedRepo("r2", "old/api", { connectionId: "c2", account: { login: "old", provider: "gitlab", host: "gitlab.com" } }),
+        ],
+      },
+    })
+    renderWithProviders(<App />, { route: "/repositories" })
+
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("Automatic reviews are paused")
+    expect(alert).toHaveTextContent("old (gitlab.com)")
+    expect(alert).not.toHaveTextContent("dev (gitlab.com)")
+    const row = screen.getByRole("link", { name: "old/api" }).closest("tr")!
+    expect(within(row).getByText("Inactive")).toBeInTheDocument()
+  })
+
+  it("drops the paused notice once a live check accepts the credentials", async () => {
+    mockApi({
+      "GET /api/connections": {
+        connections: [{ ...gitlabConnection, credentialsRejectedAt: "2026-10-20T12:00:00.000Z" }],
+        availableApps: [],
+      },
+      "GET /api/connections/c1/status": { status: "active" },
+      "GET /api/repos": { repos: [addedRepo("r1", "team/web")] },
+    })
+    renderWithProviders(<App />, { route: "/repositories" })
+
+    const row = () => screen.getByRole("link", { name: "team/web" }).closest("tr")!
+    await waitFor(() => expect(within(row()).getByText("Active")).toBeInTheDocument())
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 
   it("sorts the table by the clicked column", async () => {

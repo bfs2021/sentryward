@@ -120,6 +120,12 @@ export async function repoWebhook(req: Request, res: Response) {
   if (!repo || !secret || !definition.repoWebhook.verify(header, raw, secret)) {
     throw new HttpError(401, "Invalid webhook credentials");
   }
+  // The hook secret is stored per repository and outlives the token, so the
+  // forge keeps delivering after it refused the credentials. Anything queued
+  // now would fail; reconnecting the account clears the flag.
+  if (repo.connection.credentialsRejectedAt) {
+    return res.status(202).json({ outcome: "reconnect_required" });
+  }
 
   const outcome = await definition.repoWebhook.handle(repo, header, raw);
   res.status(outcome.status ?? 202).json(outcome.body);

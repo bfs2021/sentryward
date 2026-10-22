@@ -119,6 +119,8 @@ function deps(
     compare?: string[] | null | Error;
     // What getToolAnnotations answers; each call is recorded in toolReads.
     tools?: { annotations: ToolAnnotation[]; warnings: string[] } | Error;
+    // What getChange throws instead of answering.
+    changeError?: Error;
   } = {},
 ) {
   const reads: string[] = [];
@@ -127,6 +129,7 @@ function deps(
   const forge = {
     getChange: async (_p: string, _n: number, cache?: ForgeCache) => {
       reads.push(cache ? "change:cached" : "change");
+      if (options.changeError) throw options.changeError;
       const change = makeChangeSet(options.files);
       return {
         ...change,
@@ -784,6 +787,86 @@ describe("runJob when the repository is turned off", () => {
     expect(published.summaries.at(-1)).toContain("Reviews were turned off for this repository");
     // The run no longer speaks for the change, so findings are not synced.
     expect(await prisma.finding.count()).toBe(0);
+  });
+});
+
+describe("runJob when the forge refuses the connection's credentials", () => {
+  const answers = { code_review: { findings: [] } };
+  let connectionId: string;
+
+  beforeEach(async () => {
+    const repo = await prisma.repository.findUniqueOrThrow({ where: { id: repositoryId } });
+    connectionId = repo.connectionId;
+    await prisma.forgeConnection.update({
+      where: { id: connectionId },
+      data: { kind: "token", installationId: null, encryptedToken: "x" },
+    });
+  });
+
+  const rejectedAt = async () =>
+    (await prisma.forgeConnection.findUniqueOrThrow({ where: { id: connectionId } })).credentialsRejectedAt;
+
+  it("fails the job with a reconnect reason and flags the connection", async () => {
+    const job = await claimedJob();
+    const { runDeps, model } = deps({}, answers, undefined, { changeError: new ForgeError(401, "401 Unauthorized") });
+    const checked: string[] = [];
+    runDeps.credentialsRefused = async (connection) => {
+      checked.push(connection.id);
+      return true;
+    };
+
+    await expect(runJob(job, runDeps)).rejects.toThrow(/rejected this connection's credentials/);
+
+    expect(checked).toEqual([connectionId]);
+    expect(await rejectedAt()).toBeInstanceOf(Date);
+    expect(model.requests).toHaveLength(0);
+  });
+
+  it("does not flag the connection when only this change is refused", async () => {
+    const job = await claimedJob();
+    const { runDeps } = deps({}, answers, undefined, { changeError: new ForgeError(404, "404 Not Found") });
+    runDeps.credentialsRefused = async () => false;
+
+    await expect(runJob(job, runDeps)).rejects.toThrow("404 Not Found");
+    expect(await rejectedAt()).toBeNull();
+  });
+
+  it("does not check the credentials for an error that is not a refusal", async () => {
+    const job = await claimedJob();
+    const { runDeps } = deps({}, answers, undefined, { changeError: new ForgeError(502, "502 Bad Gateway") });
+    runDeps.credentialsRefused = async () => {
+      throw new Error("should not be called");
+    };
+
+    await expect(runJob(job, runDeps)).rejects.toThrow("502 Bad Gateway");
+    expect(await rejectedAt()).toBeNull();
+  });
+
+  it("skips a webhook job queued before the flag, without reading the change", async () => {
+    await enqueue({ repositoryId, number: 42, headSha: "oldhead", trigger: "webhook" });
+    const job = (await claimNext())!;
+    await prisma.forgeConnection.update({ where: { id: connectionId }, data: { credentialsRejectedAt: new Date() } });
+    const { runDeps, reads, model } = deps({}, answers);
+
+    await runJob(job, runDeps);
+
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({
+      status: "skipped",
+      error: "The forge rejected this connection's credentials; connect the account again to resume reviews",
+    });
+    expect(reads).toEqual([]);
+    expect(model.requests).toHaveLength(0);
+  });
+
+  it("still runs a manual review, and clears the flag once the forge answers", async () => {
+    await prisma.forgeConnection.update({ where: { id: connectionId }, data: { credentialsRejectedAt: new Date() } });
+    const job = await claimedJob();
+    const { runDeps } = deps({}, answers);
+
+    await runJob(job, runDeps);
+
+    expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } })).status).toBe("completed");
+    expect(await rejectedAt()).toBeNull();
   });
 });
 
