@@ -29,6 +29,7 @@ describe("access", () => {
     ["get", "/api/admin/users"],
     ["get", "/api/admin/invites"],
     ["post", "/api/admin/invites"],
+    ["post", "/api/admin/users/00000000-0000-4000-8000-000000000000/password-reset"],
   ] as const)("%s %s is admin-only", async (method, path) => {
     expect((await request(app)[method](path)).status).toBe(401);
     expect((await request(app)[method](path).set("Cookie", member.cookie)).status).toBe(403);
@@ -174,6 +175,42 @@ describe("users", () => {
   it("returns 404 for an unknown user", async () => {
     const res = await request(app)
       .delete("/api/admin/users/00000000-0000-4000-8000-000000000000")
+      .set("Cookie", admin.cookie);
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("password reset links", () => {
+  it("creates a link that sets a new password, without mail configured", async () => {
+    vi.spyOn(mailer, "configured").mockReturnValue(false);
+    const send = vi.spyOn(mailer, "send");
+
+    const res = await request(app)
+      .post(`/api/admin/users/${member.user.id}/password-reset`)
+      .set("Cookie", admin.cookie);
+
+    expect(res.status).toBe(201);
+    expect(res.body.link).toMatch(/\/reset-password\/[\w-]+$/);
+    expect(send).not.toHaveBeenCalled();
+    const stored = await prisma.passwordReset.findFirstOrThrow({ where: { userId: member.user.id } });
+    expect(stored.createdById).toBe(admin.user.id);
+
+    // Creating the link alone leaves the user signed in.
+    expect((await request(app).get("/api/auth/me").set("Cookie", member.cookie)).status).toBe(200);
+
+    const token = res.body.link.split("/").pop();
+    const reset = await request(app)
+      .post(`/api/auth/password-reset/${token}`)
+      .send({ password: "brand-new-pass", confirmPassword: "brand-new-pass" });
+    expect(reset.status).toBe(200);
+    expect(reset.body.user.email).toBe("member@example.com");
+    expect((await request(app).get("/api/auth/me").set("Cookie", member.cookie)).status).toBe(401);
+  });
+
+  it("returns 404 for an unknown user", async () => {
+    const res = await request(app)
+      .post("/api/admin/users/00000000-0000-4000-8000-000000000000/password-reset")
       .set("Cookie", admin.cookie);
 
     expect(res.status).toBe(404);

@@ -3,6 +3,7 @@ import { HttpError } from "../lib/httpError.ts";
 import { prisma } from "../lib/prisma.ts";
 import { assertAnotherAdminRemains } from "../services/admins.ts";
 import { createInvite, publicInvite, resendInvite } from "../services/invites.ts";
+import { ADMIN_RESET_TTL_MS, createPasswordReset } from "../services/passwordResets.ts";
 import { assertEmailAvailable, emailTaken, isUniqueViolation } from "../services/users.ts";
 import { releaseWorkspaces } from "../services/workspaces.ts";
 import type { Prisma } from "../generated/prisma/client.ts";
@@ -86,6 +87,18 @@ export async function deleteUser(req: Request, res: Response) {
     await tx.user.delete({ where: { id } });
   });
   res.status(204).end();
+}
+
+// For someone locked out, whether or not mail is set up: the admin hands the
+// link over. It is shown once, and the user's sessions only end when it is used.
+export async function postPasswordReset(req: Request, res: Response) {
+  const { id } = idParamsSchema.parse(req.params);
+  const user = await prisma.user.findUnique({ where: { id }, select: { id: true } });
+  if (!user) {
+    throw new HttpError(404, "User not found");
+  }
+  const result = await createPasswordReset(user.id, { ttlMs: ADMIN_RESET_TTL_MS, createdById: req.userId! });
+  res.status(201).json(result);
 }
 
 export async function listInvites(_req: Request, res: Response) {

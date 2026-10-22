@@ -164,6 +164,20 @@ also emailed; otherwise copy it from the dialog, which shows it only once.
 Resending an emailed invite sends a new link and renews its expiry; the old link
 stops working.
 
+### Password resets
+
+"Forgot password?" on the login page emails a reset link when `SMTP_URL` is set.
+The request always gets the same answer, so it does not reveal which emails have
+accounts. The link works once and expires after 1 hour, and requesting another
+one replaces it. Without mail, the page tells the user to ask an admin, who can
+create a link from the user's actions on the Admin page (it works once, expires
+after 24 hours and is shown only once). Admins can do this whether or not mail
+is set up.
+
+Setting a new password from a link signs the user in and ends every other
+session. Changing the password in Settings does the same, keeping only the
+current browser signed in.
+
 ### Workspaces and teams
 
 Every account has a private **personal workspace**. Anyone can also create a
@@ -484,10 +498,13 @@ so scripts written before workspaces keep working. Routes under
 | Method | Path                 | Description |
 | ------ | -------------------- | ----------- |
 | POST   | `/api/auth/register` | `{ name, email, password, confirmPassword, inviteToken? }`, sets the auth cookie; `inviteToken` is required when `REGISTRATION_MODE=invite` |
-| GET    | `/api/auth/registration` | `{ mode, firstUser }`, so the register page can say whether it is usable |
+| GET    | `/api/auth/registration` | `{ mode, firstUser, mailConfigured }`, so the register page can say whether it is usable and the forgot password page whether a reset can be emailed |
 | GET    | `/api/auth/invites/:token` | The invite's email, inviter and expiry, or 404 when invalid, used or expired |
 | POST   | `/api/auth/invites/:token/accept` | Signed in: joins the team the invite is for and returns that workspace |
 | POST   | `/api/auth/login`    | `{ email, password }`, sets the auth cookie |
+| POST   | `/api/auth/password-reset` | `{ email }`; emails a reset link when the account exists and mail is configured. Always `202 {}` |
+| GET    | `/api/auth/password-reset/:token` | `{ email }` for a valid link, or 404 when invalid, used or expired |
+| POST   | `/api/auth/password-reset/:token` | `{ password, confirmPassword }`; sets the password, ends other sessions, sets the auth cookie and returns the session |
 | POST   | `/api/auth/logout`   | Clears the auth cookie |
 | GET    | `/api/auth/me`       | Current user, or 401 |
 | GET    | `/api/connections`   | The workspace's forge connections, which browser connect flows are configured, and the GitLab OAuth host |
@@ -525,6 +542,7 @@ so scripts written before workspaces keep working. Routes under
 | GET    | `/api/admin/users`   | Admin only: every user with their role |
 | PATCH  | `/api/admin/users/:id` | Admin only: `{ role: "admin" \| "member" }`; refuses to remove the last admin |
 | DELETE | `/api/admin/users/:id` | Admin only: deletes another user and everything they own |
+| POST   | `/api/admin/users/:id/password-reset` | Admin only: returns `{ link, expiresAt }`, a single-use reset link shown only here |
 | GET    | `/api/admin/invites` | Admin only: pending invites |
 | POST   | `/api/admin/invites` | Admin only: `{ email? }`; returns `{ invite, link, emailed }`, the link is shown only here |
 | POST   | `/api/admin/invites/:id/resend` | Admin only: emails a new link for an email invite and renews its expiry; needs SMTP |
@@ -543,7 +561,7 @@ so scripts written before workspaces keep working. Routes under
 | POST   | `/api/workspaces/:id/invites/:inviteId/resend` | Team admins: emails a new link for an email invite and renews its expiry |
 | DELETE | `/api/workspaces/:id/invites/:inviteId` | Team admins: revokes a pending team invite |
 
-Register, login, the registration mode and invite lookups are rate limited (20 requests per 15 minutes per IP).
+Register, login, the registration mode, invite lookups and password resets are rate limited (20 requests per 15 minutes per IP).
 
 </details>
 

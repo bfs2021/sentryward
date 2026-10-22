@@ -1,5 +1,5 @@
 import { createContext } from "react"
-import type { LoginInput, RegisterInput } from "./schemas"
+import type { LoginInput, RegisterInput, ResetPasswordInput } from "./schemas"
 
 export type User = {
   id: string
@@ -33,6 +33,8 @@ export type AuthContextValue = {
   isLoading: boolean
   login: (input: LoginInput) => Promise<User>
   register: (input: RegisterInput) => Promise<User>
+  // Sets a new password from a reset link and signs in as that account.
+  resetPassword: (token: string, input: ResetPasswordInput) => Promise<User>
   logout: () => Promise<void>
   switchWorkspace: (id: string) => void
 }

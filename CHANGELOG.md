@@ -8,6 +8,23 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- Password reset. "Forgot password?" on the login page emails a single-use
+  link that expires after 1 hour, and the request answers the same way
+  whether or not the email has an account. Without mail configured, the page
+  asks the user to contact an admin, who can create a reset link (single use,
+  24 hours) from the user's actions on the Admin page, with or without mail.
+  Setting a new password signs the user in and ends every other session.
+  Includes a migration (a `password_resets` table and a `session_version`
+  column on users). Closes #83.
+
+### Changed
+
+- Changing your password in Settings now signs you out on other devices,
+  keeping only the current browser signed in. Existing sessions stay valid
+  through the upgrade.
+
 ### Fixed
 
 - Webhook deliveries for one PR/MR that arrive at the same moment (two quick

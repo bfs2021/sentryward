@@ -6,8 +6,17 @@ import { HttpError } from "../lib/httpError.ts";
 import { env } from "../config/env.ts";
 import type { Invite, Prisma } from "../generated/prisma/client.ts";
 import { assertInviteEmail, consumeInvite, findValidInvite, joinWorkspace } from "../services/invites.ts";
+import { completePasswordReset, findValidReset, requestPasswordReset } from "../services/passwordResets.ts";
+import { mailer } from "../lib/mailer.ts";
 import { createPersonalWorkspace, workspacesFor } from "../services/workspaces.ts";
-import { inviteTokenParamsSchema, loginSchema, registerSchema } from "../schemas/auth.schema.ts";
+import {
+  inviteTokenParamsSchema,
+  loginSchema,
+  passwordResetRequestSchema,
+  passwordResetSchema,
+  registerSchema,
+  resetTokenParamsSchema,
+} from "../schemas/auth.schema.ts";
 
 export const publicUser = {
   id: true,
@@ -18,8 +27,10 @@ export const publicUser = {
   createdAt: true,
 } as const;
 
-function setAuthCookie(res: Response, userId: string) {
-  res.cookie(AUTH_COOKIE, signToken(userId), authCookieOptions);
+// Signs with the user's current session version, so the cookie survives until
+// the next password change or reset.
+export function setAuthCookie(res: Response, user: { id: string; sessionVersion: number }) {
+  res.cookie(AUTH_COOKIE, signToken(user.id, user.sessionVersion), authCookieOptions);
 }
 
 // Applies REGISTRATION_MODE to everyone but the first account, and returns the
@@ -70,7 +81,7 @@ export async function register(req: Request, res: Response) {
     const invite = firstUser ? null : await admitRegistration(tx, email, inviteToken);
     const user = await tx.user.create({
       data: { name, email, passwordHash, role: firstUser ? "admin" : "member" },
-      select: publicUser,
+      select: { ...publicUser, sessionVersion: true },
     });
     await createPersonalWorkspace(tx, user);
     if (invite?.workspaceId) {
@@ -81,7 +92,7 @@ export async function register(req: Request, res: Response) {
     return user;
   });
 
-  setAuthCookie(res, user.id);
+  setAuthCookie(res, user);
   res.status(201).json(await session(user.id));
 }
 
@@ -93,7 +104,7 @@ export async function login(req: Request, res: Response) {
     throw new HttpError(401, "Invalid email or password");
   }
 
-  setAuthCookie(res, user.id);
+  setAuthCookie(res, user);
   res.json(await session(user.id));
 }
 
@@ -111,10 +122,40 @@ export async function me(req: Request, res: Response) {
   res.json(await session(req.userId!));
 }
 
-// Lets the register page say up front whether it can be used.
+// Lets the register page say up front whether it can be used, and the forgot
+// password page whether a reset can be emailed or needs an admin.
 export async function registration(_req: Request, res: Response) {
   const firstUser = (await prisma.user.count()) === 0;
-  res.json({ mode: env.REGISTRATION_MODE, firstUser });
+  res.json({ mode: env.REGISTRATION_MODE, firstUser, mailConfigured: mailer.configured() });
+}
+
+// Always the same answer, so the endpoint cannot be used to find out which
+// emails have accounts.
+export async function postPasswordResetRequest(req: Request, res: Response) {
+  const { email } = passwordResetRequestSchema.parse(req.body);
+  await requestPasswordReset(email);
+  res.status(202).json({});
+}
+
+// Lets the reset page show an expired link up front instead of after the form.
+export async function showPasswordReset(req: Request, res: Response) {
+  const { token } = resetTokenParamsSchema.parse(req.params);
+  const reset = await findValidReset(token);
+  if (!reset) {
+    throw new HttpError(404, "This reset link is invalid or has expired");
+  }
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: reset.userId }, select: { email: true } });
+  res.json({ email: user.email });
+}
+
+// Signs the user in with a cookie on the new session version; every other
+// session, including one this browser may already hold, has ended.
+export async function postPasswordReset(req: Request, res: Response) {
+  const { token } = resetTokenParamsSchema.parse(req.params);
+  const { password } = passwordResetSchema.parse(req.body);
+  const user = await completePasswordReset(token, password);
+  setAuthCookie(res, user);
+  res.json(await session(user.id));
 }
 
 export async function showInvite(req: Request, res: Response) {

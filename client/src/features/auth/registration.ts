@@ -17,7 +17,10 @@ export interface Invite {
 export function useRegistration() {
   return useQuery({
     queryKey: ["auth", "registration"],
-    queryFn: () => api<{ mode: RegistrationMode; firstUser: boolean }>("/auth/registration"),
+    // mailConfigured tells the forgot password page whether a reset can be
+    // emailed or needs an admin.
+    queryFn: () =>
+      api<{ mode: RegistrationMode; firstUser: boolean; mailConfigured: boolean }>("/auth/registration"),
     retry: false,
   })
 }

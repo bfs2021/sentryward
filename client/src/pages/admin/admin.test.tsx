@@ -120,6 +120,26 @@ describe("Admin users page", () => {
 
     expect(await screen.findByRole("menuitem", { name: "Edit" })).toBeInTheDocument()
     expect(screen.queryByRole("menuitem", { name: "Remove" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("menuitem", { name: "Create reset link" })).not.toBeInTheDocument()
+  })
+
+  it("creates a password reset link to hand over", async () => {
+    const link = "http://localhost:5173/reset-password/tok123"
+    const fetchSpy = adminApi({
+      "POST /api/admin/users/2/password-reset": () => jsonResponse(201, { link, expiresAt: "2026-10-23T00:00:00Z" }),
+    })
+    renderWithProviders(<App />, { route: "/admin/users" })
+
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for Grace Hopper" }))
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Create reset link" }))
+    await userEvent.click(await screen.findByRole("button", { name: "Create link" }))
+
+    expect(await screen.findByLabelText("Reset link")).toHaveValue(link)
+    expect(
+      fetchSpy.mock.calls.some(
+        ([url, init]) => String(url) === "/api/admin/users/2/password-reset" && init?.method === "POST",
+      ),
+    ).toBe(true)
   })
 
   describe("users table", () => {

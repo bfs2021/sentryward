@@ -65,7 +65,10 @@ export function SettingsPage() {
           </div>
         </TabsContent>
         <TabsContent value="password">
-          <Section title="Password" description="Choose a new password of at least 8 characters.">
+          <Section
+            title="Password"
+            description="Choose a new password of at least 8 characters. Changing it signs you out on other devices."
+          >
             <PasswordForm />
           </Section>
         </TabsContent>

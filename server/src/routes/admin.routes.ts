@@ -4,6 +4,7 @@ import {
   listInvites,
   listUsers,
   postInvite,
+  postPasswordReset,
   postResendInvite,
   revokeInvite,
   updateUser,
@@ -18,6 +19,7 @@ adminRouter.use(userLimiter, requireAuth, requireInstanceAdmin);
 adminRouter.get("/users", listUsers);
 adminRouter.patch("/users/:id", updateUser);
 adminRouter.delete("/users/:id", deleteUser);
+adminRouter.post("/users/:id/password-reset", postPasswordReset);
 adminRouter.get("/invites", listInvites);
 adminRouter.post("/invites", postInvite);
 adminRouter.post("/invites/:id/resend", postResendInvite);

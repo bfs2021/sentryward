@@ -61,6 +61,9 @@ export function LoginPage() {
                 type="password"
                 autoComplete="current-password"
               />
+              <Link to="/forgot-password" className="-mt-3 self-end text-sm text-muted-foreground underline-offset-4 hover:underline">
+                Forgot password?
+              </Link>
               <Field>
                 <Button type="submit" disabled={form.formState.isSubmitting}>
                   {form.formState.isSubmitting && <Loader2 className="animate-spin" />}
