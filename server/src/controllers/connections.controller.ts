@@ -16,12 +16,11 @@ import {
   gitlabAuthorizeUrl,
   gitlabOAuthConfigured,
   pkcePair,
-  ReconnectRequiredError,
   storedTokens,
 } from "../services/gitlabOAuth.ts";
-import { AppUninstalledError, reconcileRepoAccess } from "../services/providers/github.ts";
+import { isCredentialRejection, recordCredentials } from "../services/providers/credentials.ts";
+import { reconcileRepoAccess } from "../services/providers/github.ts";
 import { isForgeProvider, PROVIDERS, providerFor } from "../services/providers/index.ts";
-import { UnreadableTokenError } from "../services/providers/token.ts";
 import { isUniqueViolation } from "../services/users.ts";
 import { removeWebhook } from "../services/webhooks.ts";
 import { loadMembership, requireRole } from "../services/workspaces.ts";
@@ -39,6 +38,7 @@ const publicConnection = {
   host: true,
   kind: true,
   accountLogin: true,
+  credentialsRejectedAt: true,
   createdAt: true,
   createdBy: { select: { name: true, email: true } },
 } as const;
@@ -105,6 +105,7 @@ export async function getConnection(req: Request, res: Response) {
       kind: connection.kind,
       accountLogin: connection.accountLogin,
       installationId: connection.installationId,
+      credentialsRejectedAt: connection.credentialsRejectedAt,
       createdAt: connection.createdAt,
       updatedAt: connection.updatedAt,
     },
@@ -121,8 +122,8 @@ export async function getConnection(req: Request, res: Response) {
 
 // Asks the forge whether the stored credentials still work. Always 200: a
 // refused or unreachable forge is the answer, not a failure of this request.
-// A token this server can no longer decrypt, or an OAuth grant GitLab will no
-// longer renew, needs reconnecting, like a revoked one.
+// The answer is stored, so a revoked token pauses automatic reviews and a
+// working one resumes them; an unreachable forge proves neither.
 export async function connectionStatus(req: Request, res: Response) {
   const connection = await loadWorkspaceConnection(req.workspaceId!, String(req.params.id));
   let status: "active" | "revoked" | "unreachable";
@@ -130,13 +131,9 @@ export async function connectionStatus(req: Request, res: Response) {
     await providerFor(connection.provider).checkCredentials(connection);
     status = "active";
   } catch (err) {
-    const refused =
-      err instanceof UnreadableTokenError ||
-      err instanceof ReconnectRequiredError ||
-      err instanceof AppUninstalledError ||
-      (err instanceof ForgeError && [401, 403, 404].includes(err.status));
-    status = refused ? "revoked" : "unreachable";
+    status = isCredentialRejection(err) ? "revoked" : "unreachable";
   }
+  if (status !== "unreachable") await recordCredentials(connection, status === "active");
   res.json({ status });
 }
 
@@ -168,7 +165,9 @@ export async function connectWithToken(req: Request, res: Response) {
   const existing = await prisma.forgeConnection.findFirst({
     where: { workspaceId, provider, kind: "token", host, accountLogin: login },
   });
-  const data = { encryptedToken: encrypt(token) };
+  // A new token for an account already connected replaces the old one on the
+  // same row, so its repositories and review history carry on.
+  const data = { encryptedToken: encrypt(token), credentialsRejectedAt: null };
   const connection = existing
     ? await prisma.forgeConnection.update({ where: { id: existing.id }, data, select: publicConnection })
     : await prisma.forgeConnection.create({
@@ -355,7 +354,7 @@ export async function gitlabOAuthCallback(req: Request, res: Response) {
     const existing = await prisma.forgeConnection.findFirst({
       where: { workspaceId, provider: "gitlab", kind: "oauth", host: state.host, accountLogin: login },
     });
-    const data = storedTokens(tokens);
+    const data = { ...storedTokens(tokens), credentialsRejectedAt: null };
     if (existing) {
       await prisma.forgeConnection.update({ where: { id: existing.id }, data });
     } else {

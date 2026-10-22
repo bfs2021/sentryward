@@ -26,6 +26,12 @@ import { pendingStatus } from "../review/publish/status.ts";
 import { summarize } from "../review/render/json.ts";
 import { cancelledMarkdown, progressMarkdown } from "../review/render/progress.ts";
 import { adapterForConnection, type Forge } from "../services/forge.ts";
+import {
+  CREDENTIALS_REJECTED_REASON,
+  credentialsRefused,
+  isCredentialRejection,
+  recordCredentials,
+} from "../services/providers/credentials.ts";
 import { llmCredentialsFor } from "../services/llm.ts";
 import { CLOSE_CHECK_INTERVAL_MS, watchForClose } from "./closeWatch.ts";
 import { resolveLlm, type LlmCredentials } from "./llmEndpoint.ts";
@@ -39,6 +45,8 @@ const MAX_REJECTED_FINDINGS = 20;
 
 export interface RunJobDeps {
   adapterFor: (connection: ForgeConnection) => Forge;
+  // Whether the forge refuses the connection's credentials outright.
+  credentialsRefused?: (connection: ForgeConnection) => Promise<boolean>;
   generateFor: (keys: ApiKeys, endpoint?: Endpoint, baseUrls?: ProviderBaseUrls) => Generate;
   credentialsFor: (workspaceId: string) => Promise<LlmCredentials>;
   // Absent means every read goes to the forge, as with review.disableCache.
@@ -48,6 +56,7 @@ export interface RunJobDeps {
 
 const defaultDeps: RunJobDeps = {
   adapterFor: adapterForConnection,
+  credentialsRefused,
   generateFor: createGenerate,
   credentialsFor: llmCredentialsFor,
   cache: forgeCache,
@@ -129,6 +138,10 @@ async function toolAnnotations(forge: Forge, changeSet: ChangeSet, warnings: str
   }
 }
 
+function connectionRefused(connection: ForgeConnection, deps: RunJobDeps): Promise<boolean> {
+  return (deps.credentialsRefused ?? credentialsRefused)(connection);
+}
+
 // Loads everything a review needs, runs it, publishes it and stores the
 // result. Anything thrown before the review starts (the repository vanished,
 // the forge is down, no model key) fails the job through the worker, and
@@ -150,6 +163,14 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
     await complete(job.id, { status: "skipped", verdict: null, error });
     return;
   }
+  // Queued before the forge refused the credentials. Dashboard reviews and
+  // reruns still get a run, which doubles as a check of a replaced token;
+  // `/sentryward review` comments arrive through the paused repository hook
+  // and are dropped there.
+  if (repo.connection.credentialsRejectedAt && job.trigger === "webhook") {
+    await complete(job.id, { status: "skipped", verdict: null, error: CREDENTIALS_REJECTED_REASON });
+    return;
+  }
 
   const forge = deps.adapterFor(repo.connection);
   const saved = {
@@ -163,7 +184,23 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
   const savedDisablesCache = loadDashboardConfig(saved).review.disableCache;
   // The PR may have moved since the job was queued; review what is there now
   // and record which head that was.
-  let changeSet = await forge.getChange(repo.fullPath, job.number, cacheFor(savedDisablesCache));
+  let changeSet;
+  try {
+    changeSet = await forge.getChange(repo.fullPath, job.number, cacheFor(savedDisablesCache));
+  } catch (err) {
+    // A refusal for one change (a deleted MR, a repository the token lost)
+    // says nothing about the connection, so it is flagged only when the
+    // account check is refused too. GitHub App connections are never flagged
+    // (an uninstall detaches them), so they skip the extra check.
+    const refused =
+      repo.connection.kind !== "github_app" &&
+      isCredentialRejection(err) &&
+      (await connectionRefused(repo.connection, deps).catch(() => false));
+    if (!refused) throw err;
+    await recordCredentials(repo.connection, false);
+    throw new Error(CREDENTIALS_REJECTED_REASON);
+  }
+  if (repo.connection.credentialsRejectedAt) await recordCredentials(repo.connection, true);
   const loaded = await loadReviewConfig({
     adapter: forge,
     project: repo.fullPath,

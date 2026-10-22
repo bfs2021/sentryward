@@ -61,6 +61,24 @@ describe("POST /api/connections/gitlab", () => {
     expect(decrypt(stored[0]!.encryptedToken!)).toBe("two");
   });
 
+  it("resumes a connection whose token was refused, keeping its repositories and reviews", async () => {
+    vi.stubGlobal("fetch", fetchStub([{ url: /\/user$/, body: { username: "dev" } }]).fetch);
+    await request(app).post("/api/connections/gitlab").set("Cookie", cookie).send({ token: "one" });
+    const { id } = await prisma.forgeConnection.findFirstOrThrow({ where: { workspaceId } });
+    const connection = await prisma.forgeConnection.update({ where: { id }, data: { credentialsRejectedAt: new Date() } });
+    const repo = await prisma.repository.create({
+      data: { connectionId: connection.id, provider: "gitlab", host: "gitlab.com", fullPath: "dev/app", externalId: "1", defaultBranch: "main", enabled: true },
+    });
+    await prisma.reviewJob.create({ data: { repositoryId: repo.id, number: 1, headSha: "a", trigger: "webhook", status: "failed" } });
+
+    const res = await request(app).post("/api/connections/gitlab").set("Cookie", cookie).send({ token: "two" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.connection).toMatchObject({ id: connection.id, credentialsRejectedAt: null });
+    expect(await prisma.repository.count({ where: { connectionId: connection.id, enabled: true } })).toBe(1);
+    expect(await prisma.reviewJob.count({ where: { repositoryId: repo.id } })).toBe(1);
+  });
+
   it("rejects a token GitLab refuses", async () => {
     vi.stubGlobal("fetch", fetchStub([{ url: /\/user$/, status: 401, body: { message: "401 Unauthorized" } }]).fetch);
 
@@ -232,6 +250,51 @@ describe("GET /api/connections/:id/status", () => {
     vi.stubGlobal("fetch", fetchStub([{ url: /gitlab\.com\/api\/v4\/user$/, status: 500 }]).fetch);
 
     expect(await statusFor(connection.id)).toBe("unreachable");
+  });
+
+  const rejectedAt = async (id: string) =>
+    (await prisma.forgeConnection.findUniqueOrThrow({ where: { id } })).credentialsRejectedAt;
+
+  it("remembers a refused token, and clears it once the forge accepts it again", async () => {
+    const connection = await gitlabConnection();
+    vi.stubGlobal("fetch", fetchStub([{ url: /gitlab\.com\/api\/v4\/user$/, status: 401 }]).fetch);
+    await statusFor(connection.id);
+    const flagged = await rejectedAt(connection.id);
+    expect(flagged).toBeInstanceOf(Date);
+
+    // A second refusal keeps the first time it was seen.
+    await statusFor(connection.id);
+    expect(await rejectedAt(connection.id)).toEqual(flagged);
+
+    // An unreachable forge proves nothing either way.
+    vi.stubGlobal("fetch", fetchStub([{ url: /gitlab\.com\/api\/v4\/user$/, status: 500 }]).fetch);
+    await statusFor(connection.id);
+    expect(await rejectedAt(connection.id)).toEqual(flagged);
+
+    vi.stubGlobal("fetch", fetchStub([{ url: /gitlab\.com\/api\/v4\/user$/, body: { username: "me" } }]).fetch);
+    expect(await statusFor(connection.id)).toBe("active");
+    expect(await rejectedAt(connection.id)).toBeNull();
+  });
+
+  it("treats a rate-limited check as unreachable and does not flag the connection", async () => {
+    const connection = await gitlabConnection();
+    vi.stubGlobal(
+      "fetch",
+      fetchStub([{ url: /gitlab\.com\/api\/v4\/user$/, status: 403, headers: { "x-ratelimit-remaining": "0" } }]).fetch,
+    );
+
+    expect(await statusFor(connection.id)).toBe("unreachable");
+    expect(await rejectedAt(connection.id)).toBeNull();
+  });
+
+  it("never flags a GitHub App connection, which an uninstall detaches instead", async () => {
+    const connection = await prisma.forgeConnection.create({
+      data: { workspaceId, provider: "github", host: "github.com", kind: "github_app", installationId: "55", accountLogin: "acme" },
+    });
+    vi.stubGlobal("fetch", fetchStub([{ url: /api\.github\.com\/app\/installations\/55$/, status: 404 }]).fetch);
+
+    expect(await statusFor(connection.id)).toBe("revoked");
+    expect(await rejectedAt(connection.id)).toBeNull();
   });
 
   it("reports an uninstalled GitHub App as revoked", async () => {
@@ -705,6 +768,16 @@ describe("GitLab OAuth", () => {
       const stored = await prisma.forgeConnection.findMany({ where: { workspaceId } });
       expect(stored).toHaveLength(1);
       expect(decrypt(stored[0]!.encryptedToken!)).toBe("second");
+    });
+
+    it("clears a refused-credentials flag when the account signs in again", async () => {
+      vi.stubGlobal("fetch", fetchStub([tokenRoute("second"), userRoute]).fetch);
+      const connection = await oauthConnection(new Date());
+      await prisma.forgeConnection.update({ where: { id: connection.id }, data: { credentialsRejectedAt: new Date() } });
+
+      await callback(`code=abc&state=${(await start()).state}`);
+
+      expect((await prisma.forgeConnection.findUniqueOrThrow({ where: { id: connection.id } })).credentialsRejectedAt).toBeNull();
     });
 
     it("rejects a missing, unknown or reused state", async () => {

@@ -16,6 +16,17 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   are serialized, and the close cancel and stale-job recovery follow the same
   rule: a recovered job is superseded when a newer one is already queued.
   No migration needed. Closes #82.
+- A token or OAuth connection whose credentials the forge refuses (revoked
+  or expired token, withdrawn OAuth grant, a token the server can no longer
+  decrypt) no longer queues a failing review on every push. Sentryward
+  records the refusal, either from the connection status check or from a
+  review that hits a 401/403 confirmed by an account check. It then stops
+  queueing reviews from that connection's repository hooks, skips webhook
+  reviews already queued, and shows "Automatic reviews are paused" on the
+  Repositories page. Connecting the same account again with a new token (or
+  signing in again) resumes reviews and keeps the history, as does a status
+  check that passes. Manual reviews still run. Includes a migration (one
+  nullable column). Closes #103.
 
 ## [0.2.0] - 2026-10-22
 

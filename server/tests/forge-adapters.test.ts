@@ -91,7 +91,19 @@ describe("GitHubAdapter", () => {
     await expect(gh.getChange("acme/web", 1)).rejects.toMatchObject({
       constructor: ForgeError,
       status: 403,
+      rateLimited: false,
     });
+  });
+
+  it("marks a 403 for an exhausted rate limit, which is not a refused token", async () => {
+    const { adapter: gh } = adapter([
+      { url: /\/pulls\/1$/, status: 403, headers: { "x-ratelimit-remaining": "0" }, body: { message: "Forbidden" } },
+      { url: /\/pulls\/2$/, status: 403, headers: { "retry-after": "60" }, body: { message: "Forbidden" } },
+      { url: /\/pulls\/3$/, status: 403, body: { message: "You have exceeded a secondary rate limit." } },
+    ]);
+    for (const number of [1, 2, 3]) {
+      await expect(gh.getChange("acme/web", number)).rejects.toMatchObject({ status: 403, rateLimited: true });
+    }
   });
 
   it("reads a pull request's head and base without its files", async () => {

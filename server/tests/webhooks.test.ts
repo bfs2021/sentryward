@@ -422,6 +422,17 @@ describe("POST /api/webhooks/github/:repoId", () => {
     expect((await sendRepo(disabled.id, "pull_request", repoPrEvent("labeled"))).body.outcome).toBe("ignored");
     expect(await prisma.reviewJob.count()).toBe(0);
   });
+
+  it("queues nothing while the forge refuses the connection's credentials", async () => {
+    const repo = await githubTokenRepo();
+    await prisma.forgeConnection.update({ where: { id: repo.connectionId }, data: { credentialsRejectedAt: new Date() } });
+
+    const res = await sendRepo(repo.id, "pull_request", repoPrEvent("opened"));
+
+    expect(res.status).toBe(202);
+    expect(res.body.outcome).toBe("reconnect_required");
+    expect(await prisma.reviewJob.count()).toBe(0);
+  });
 });
 
 describe("POST /api/webhooks/gitlab/:repoId", () => {
@@ -450,6 +461,17 @@ describe("POST /api/webhooks/gitlab/:repoId", () => {
     expect((await sendGitlab(repo.id, "Merge Request Hook", mrEvent("merge"))).body).toEqual({ outcome: "closed", cancelled: 1 });
     expect((await sendGitlab(repo.id, "Merge Request Hook", mrEvent("close"))).body).toEqual({ outcome: "closed", cancelled: 0 });
     expect((await prisma.reviewJob.findFirst())!.status).toBe("cancelled");
+  });
+
+  it("queues nothing while the forge refuses the connection's credentials, and resumes once cleared", async () => {
+    const repo = await gitlabRepo();
+    await prisma.forgeConnection.update({ where: { id: repo.connectionId }, data: { credentialsRejectedAt: new Date() } });
+
+    expect((await sendGitlab(repo.id, "Merge Request Hook", mrEvent("open"))).body.outcome).toBe("reconnect_required");
+    expect(await prisma.reviewJob.count()).toBe(0);
+
+    await prisma.forgeConnection.update({ where: { id: repo.connectionId }, data: { credentialsRejectedAt: null } });
+    expect((await sendGitlab(repo.id, "Merge Request Hook", mrEvent("open"))).body.outcome).toBe("queued");
   });
 
   it("records the event and actor, and treats leaving draft as opening", async () => {

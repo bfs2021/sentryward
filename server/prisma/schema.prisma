@@ -216,6 +216,10 @@ model ForgeConnection {
   // GitHub App connections only: the installed account's id, which survives
   // a rename where accountLogin does not. Matches a reinstall to this row.
   accountId             String?        @map("account_id")
+  // Token and OAuth connections only: when the forge last refused the stored
+  // credentials. While set, repository hooks queue nothing; reconnecting the
+  // account or a passing status check clears it.
+  credentialsRejectedAt DateTime?      @map("credentials_rejected_at") @db.Timestamptz
   createdAt             DateTime       @default(now()) @map("created_at") @db.Timestamptz
   updatedAt             DateTime       @updatedAt @map("updated_at") @db.Timestamptz
 

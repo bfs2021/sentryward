@@ -1,11 +1,17 @@
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export class ForgeError extends Error {
+  // GitHub answers an exhausted rate limit with 403, the same status as a
+  // refused token, so callers deciding a connection is broken must check this.
+  public rateLimited: boolean;
+
   constructor(
     public status: number,
     message: string,
+    options: { rateLimited?: boolean } = {},
   ) {
     super(message);
+    this.rateLimited = options.rateLimited ?? false;
   }
 }
 
@@ -48,7 +54,9 @@ export class ForgeHttp {
       } catch {
         // Not JSON; keep the raw excerpt.
       }
-      throw new ForgeError(res.status, `${init.method ?? "GET"} ${url} failed (${res.status}): ${message}`);
+      throw new ForgeError(res.status, `${init.method ?? "GET"} ${url} failed (${res.status}): ${message}`, {
+        rateLimited: isRateLimited(res, message),
+      });
     }
     return res;
   }
@@ -89,6 +97,19 @@ export class ForgeHttp {
 }
 
 const MAX_REDIRECTS = 3;
+
+// The primary limit shows in x-ratelimit-remaining; GitHub's secondary limits
+// send retry-after, or sometimes only say so in the message.
+function isRateLimited(res: Response, message: string): boolean {
+  if (res.status !== 403 && res.status !== 429) {
+    return false;
+  }
+  return (
+    res.headers.get("x-ratelimit-remaining") === "0" ||
+    res.headers.has("retry-after") ||
+    /rate limit/i.test(message)
+  );
+}
 
 function isRedirect(status: number): boolean {
   return status >= 300 && status < 400 && status !== 304;
