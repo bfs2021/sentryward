@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query"
 import { api, ApiError, setApiWorkspace } from "@/lib/api"
 import { AuthContext, type Session, type User, type Workspace } from "./auth-context"
-import type { LoginInput, RegisterInput } from "./schemas"
+import type { LoginInput, RegisterInput, ResetPasswordInput } from "./schemas"
 
 const ME_QUERY_KEY = ["auth", "me"] as const
 export const WORKSPACES_QUERY_KEY = ["auth", "workspaces"] as const
@@ -114,6 +114,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [queryClient],
   )
 
+  // The link may be opened while signed in as someone else, so the stored
+  // workspace choice is dropped: it belongs to whoever was signed in before.
+  const resetPassword = useCallback(
+    async (token: string, input: ResetPasswordInput) => {
+      const session = await api<Session>(`/auth/password-reset/${encodeURIComponent(token)}`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      })
+      setSelectedId(null)
+      storeWorkspace(null)
+      const user = seedSession(queryClient, session)
+      queryClient.setQueryData(ME_QUERY_KEY, user)
+      return user
+    },
+    [queryClient],
+  )
+
   const logout = useCallback(async () => {
     await api<void>("/auth/logout", { method: "POST" })
     setSelectedId(null)
@@ -130,10 +147,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isLoading: isLoading || (user !== null && workspacesLoading),
       login,
       register,
+      resetPassword,
       logout,
       switchWorkspace,
     }),
-    [user, workspaces, workspace, isLoading, workspacesLoading, login, register, logout, switchWorkspace],
+    [user, workspaces, workspace, isLoading, workspacesLoading, login, register, resetPassword, logout, switchWorkspace],
   )
 
   return <AuthContext value={value}>{children}</AuthContext>

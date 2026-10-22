@@ -17,6 +17,12 @@ export interface CreatedInvite {
   emailed: boolean
 }
 
+export interface CreatedPasswordReset {
+  // Shown once: the server keeps only a hash of the token.
+  link: string
+  expiresAt: string
+}
+
 export type UserSortKey = "name" | "email" | "role" | "createdAt"
 
 export interface AdminUserQuery {
@@ -79,6 +85,14 @@ export function useDeleteUser() {
   return useMutation({
     mutationFn: (id: string) => api<void>(`/admin/users/${id}`, { method: "DELETE" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: USERS_KEY }),
+  })
+}
+
+// The user's sessions only end once the link is used, so nothing cached changes.
+export function useCreatePasswordReset() {
+  return useMutation({
+    mutationFn: (id: string) =>
+      api<CreatedPasswordReset>(`/admin/users/${id}/password-reset`, { method: "POST" }),
   })
 }
 

@@ -215,7 +215,7 @@ describe("registration modes and invites", () => {
     const token = await inviteToken("grace@example.com");
 
     const mode = await request(app).get("/api/auth/registration");
-    expect(mode.body).toEqual({ mode: "invite", firstUser: false });
+    expect(mode.body).toEqual({ mode: "invite", firstUser: false, mailConfigured: false });
 
     const shown = await request(app).get(`/api/auth/invites/${token}`);
     expect(shown.status).toBe(200);

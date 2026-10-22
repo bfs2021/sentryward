@@ -1,15 +1,11 @@
-import { createHash, randomBytes } from "node:crypto";
 import { env } from "../config/env.ts";
 import { HttpError } from "../lib/httpError.ts";
 import { mailer } from "../lib/mailer.ts";
 import { prisma } from "../lib/prisma.ts";
+import { hashToken, newToken } from "../lib/tokens.ts";
 import type { Invite, Prisma, WorkspaceRole } from "../generated/prisma/client.ts";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-function hashToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
 
 export function inviteLink(token: string): string {
   return `${env.CLIENT_ORIGIN}/invite/${token}`;
@@ -35,7 +31,7 @@ export interface CreateInviteInput {
 // The raw token exists only in this return value: the link is shown once and
 // emailed, and the database keeps its hash.
 export async function createInvite(input: CreateInviteInput) {
-  const token = randomBytes(32).toString("base64url");
+  const token = newToken();
   const invite = await prisma.invite.create({
     data: {
       tokenHash: hashToken(token),
@@ -98,7 +94,7 @@ export async function resendInvite(id: string, inviterName: string, workspace?: 
     throw new HttpError(409, "Email is not set up on this server");
   }
 
-  const token = randomBytes(32).toString("base64url");
+  const token = newToken();
   try {
     await sendInviteEmail({ to: existing.email, link: inviteLink(token), inviterName, workspace });
   } catch (err) {

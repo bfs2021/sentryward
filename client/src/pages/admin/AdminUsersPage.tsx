@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Controller, useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Navigate, useSearchParams } from "react-router"
-import { Loader2, MailPlus, MoreHorizontal, Pencil, Trash2, UserPlus, Users } from "lucide-react"
+import { Copy, KeyRound, Loader2, MailPlus, MoreHorizontal, Pencil, Trash2, UserPlus, Users } from "lucide-react"
 import { toast } from "sonner"
 import { z } from "zod"
 import { PageHeader } from "@/components/PageHeader"
@@ -40,6 +40,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Field, FieldError, FieldLabel } from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -50,12 +51,14 @@ import { useAuth } from "@/features/auth/useAuth"
 import {
   useAdminUsers,
   useCreateInvite,
+  useCreatePasswordReset,
   useDeleteUser,
   useInvites,
   useResendInvite,
   useRevokeInvite,
   useUpdateUser,
   type CreatedInvite,
+  type CreatedPasswordReset,
   type PendingInvite,
   type UserEdit,
   type UserSortKey,
@@ -65,6 +68,7 @@ import { paginate, usePagination } from "@/hooks/use-pagination"
 import { useSort } from "@/hooks/use-sort"
 import { CreatedInviteView } from "@/features/invites/CreatedInviteView"
 import { InviteActions, ResendInviteDialog, RevokeInviteDialog } from "@/features/invites/InviteRowActions"
+import { copyToClipboard } from "@/lib/clipboard"
 import { ALL, matchesQuery, selectedLabel } from "@/lib/filters"
 import { timeAgo } from "@/lib/time"
 
@@ -161,16 +165,19 @@ function InviteDialog() {
 }
 
 // Removing yourself is left out: the server refuses it, and Settings deletes
-// your own account behind a password check.
+// your own account behind a password check. A reset link is left out for the
+// same reason: your own password changes in Settings.
 function UserActions({
   user,
   isSelf,
   onEdit,
+  onResetPassword,
   onRemove,
 }: {
   user: User
   isSelf: boolean
   onEdit: () => void
+  onResetPassword: () => void
   onRemove: () => void
 }) {
   return (
@@ -188,6 +195,10 @@ function UserActions({
         </DropdownMenuItem>
         {!isSelf && (
           <>
+            <DropdownMenuItem onSelect={onResetPassword}>
+              <KeyRound />
+              Create reset link
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={onRemove}>
               <Trash2 />
@@ -287,6 +298,83 @@ function EditUserDialog({ user, onOpenChange }: { user: User | null; onOpenChang
   )
 }
 
+// For someone locked out, whether or not this server can send email: the admin
+// passes the link on themselves. It's shown only here, once.
+function ResetPasswordDialog({ user, onOpenChange }: { user: User | null; onOpenChange: (open: boolean) => void }) {
+  const [created, setCreated] = useState<CreatedPasswordReset | null>(null)
+  const createReset = useCreatePasswordReset()
+
+  async function create() {
+    if (!user) return
+    try {
+      setCreated(await createReset.mutateAsync(user.id))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create the link")
+    }
+  }
+
+  function handleOpenChange(next: boolean) {
+    if (!next) setCreated(null)
+    onOpenChange(next)
+  }
+
+  return (
+    <Dialog open={user !== null} onOpenChange={handleOpenChange}>
+      <DialogContent>
+        {user &&
+          (created ? (
+            <div className="flex flex-col gap-4">
+              <DialogHeader>
+                <DialogTitle>Reset link created</DialogTitle>
+                <DialogDescription>
+                  Send this link to {user.name}. It's shown only once, works once and expires in 24 hours.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex gap-2">
+                <Input
+                  readOnly
+                  value={created.link}
+                  aria-label="Reset link"
+                  onFocus={(e) => e.currentTarget.select()}
+                />
+                <Button type="button" variant="outline" onClick={() => copyToClipboard(created.link, "Reset link")}>
+                  <Copy />
+                  Copy
+                </Button>
+              </div>
+              <DialogFooter>
+                <DialogClose asChild>
+                  <Button type="button">Done</Button>
+                </DialogClose>
+              </DialogFooter>
+            </div>
+          ) : (
+            <>
+              <DialogHeader>
+                <DialogTitle>Create a reset link for {user.name}?</DialogTitle>
+                <DialogDescription>
+                  The link lets whoever opens it set a new password for {user.email}, so only give it to them. Using
+                  it signs them out everywhere else, and any earlier reset link for them stops working.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <DialogClose asChild>
+                  <Button type="button" variant="outline">
+                    Cancel
+                  </Button>
+                </DialogClose>
+                <Button disabled={createReset.isPending} onClick={create}>
+                  {createReset.isPending && <Loader2 className="animate-spin" />}
+                  Create link
+                </Button>
+              </DialogFooter>
+            </>
+          ))}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function RemoveUserDialog({ user, onOpenChange }: { user: User | null; onOpenChange: (open: boolean) => void }) {
   const deleteUser = useDeleteUser()
 
@@ -349,6 +437,7 @@ function UsersCard({ currentUserId }: { currentUserId: string }) {
   })
   const [editing, setEditing] = useState<User | null>(null)
   const [removing, setRemoving] = useState<User | null>(null)
+  const [resetting, setResetting] = useState<User | null>(null)
 
   // A page past the end (e.g. after removing the last user on it) falls back to the last real page.
   const lastPage = data ? Math.max(1, Math.ceil(data.total / pagination.size)) : 1
@@ -433,6 +522,7 @@ function UsersCard({ currentUserId }: { currentUserId: string }) {
                           user={user}
                           isSelf={user.id === currentUserId}
                           onEdit={() => setEditing(user)}
+                          onResetPassword={() => setResetting(user)}
                           onRemove={() => setRemoving(user)}
                         />
                       </TableCell>
@@ -454,6 +544,7 @@ function UsersCard({ currentUserId }: { currentUserId: string }) {
         </CardContent>
       </Card>
       <EditUserDialog user={editing} onOpenChange={(open) => !open && setEditing(null)} />
+      <ResetPasswordDialog user={resetting} onOpenChange={(open) => !open && setResetting(null)} />
       <RemoveUserDialog user={removing} onOpenChange={(open) => !open && setRemoving(null)} />
     </>
   )

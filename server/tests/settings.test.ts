@@ -122,6 +122,11 @@ describe("PUT /api/settings/password", () => {
       .send({ currentPassword: PASSWORD, newPassword: "new-password", confirmPassword: "new-password" });
     expect(res.status).toBe(204);
 
+    // Other sessions end; this one continues on the reissued cookie.
+    expect((await request(app).get("/api/auth/me").set("Cookie", cookie)).status).toBe(401);
+    const fresh = ([] as string[]).concat(res.headers["set-cookie"] ?? [])[0]!.split(";")[0]!;
+    expect((await request(app).get("/api/auth/me").set("Cookie", fresh)).status).toBe(200);
+
     const oldLogin = await request(app).post("/api/auth/login").send({ email: "dev@example.com", password: PASSWORD });
     expect(oldLogin.status).toBe(401);
     const newLogin = await request(app)

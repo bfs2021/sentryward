@@ -24,7 +24,7 @@ import {
 import { assertAnotherAdminRemains } from "../services/admins.ts";
 import { assertEmailAvailable, emailTaken, isUniqueViolation } from "../services/users.ts";
 import { releaseWorkspaces } from "../services/workspaces.ts";
-import { clearAuthCookie, publicUser } from "./auth.controller.ts";
+import { clearAuthCookie, publicUser, setAuthCookie } from "./auth.controller.ts";
 
 const SERVER_KEYS: Record<ProviderName, boolean> = {
   anthropic: Boolean(env.ANTHROPIC_API_KEY),
@@ -94,10 +94,14 @@ export async function updateProfile(req: Request, res: Response) {
 export async function changePassword(req: Request, res: Response) {
   const { currentPassword, newPassword } = changePasswordSchema.parse(req.body);
   await requirePassword(req.userId!, currentPassword, "currentPassword");
-  await prisma.user.update({
+  // Bumping the session version signs out every other session; this one gets a
+  // fresh cookie on the new version so it stays signed in.
+  const user = await prisma.user.update({
     where: { id: req.userId },
-    data: { passwordHash: await hashPassword(newPassword) },
+    data: { passwordHash: await hashPassword(newPassword), sessionVersion: { increment: 1 } },
+    select: { id: true, sessionVersion: true },
   });
+  setAuthCookie(res, user);
   res.status(204).end();
 }
 

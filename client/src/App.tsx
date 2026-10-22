@@ -12,12 +12,14 @@ import { DashboardLayout } from "@/layouts/DashboardLayout"
 const AdminUsersPage = lazy(() => import("@/pages/admin/AdminUsersPage").then((m) => ({ default: m.AdminUsersPage })))
 const ConfigurationPage = lazy(() => import("@/pages/config/ConfigurationPage").then((m) => ({ default: m.ConfigurationPage })))
 const FindingsPage = lazy(() => import("@/pages/findings/FindingsPage").then((m) => ({ default: m.FindingsPage })))
+const ForgotPasswordPage = lazy(() => import("@/pages/auth/ForgotPasswordPage").then((m) => ({ default: m.ForgotPasswordPage })))
 const HomePage = lazy(() => import("@/pages/home/HomePage").then((m) => ({ default: m.HomePage })))
 const InvitePage = lazy(() => import("@/pages/invite/InvitePage").then((m) => ({ default: m.InvitePage })))
 const LlmConnectionsPage = lazy(() => import("@/pages/llm-connections/LlmConnectionsPage").then((m) => ({ default: m.LlmConnectionsPage })))
 const LoginPage = lazy(() => import("@/pages/auth/LoginPage").then((m) => ({ default: m.LoginPage })))
 const RegisterPage = lazy(() => import("@/pages/auth/RegisterPage").then((m) => ({ default: m.RegisterPage })))
 const RepositoriesPage = lazy(() => import("@/pages/forge/RepositoriesPage").then((m) => ({ default: m.RepositoriesPage })))
+const ResetPasswordPage = lazy(() => import("@/pages/auth/ResetPasswordPage").then((m) => ({ default: m.ResetPasswordPage })))
 const ReviewDetailPage = lazy(() => import("@/pages/reviews/ReviewDetailPage").then((m) => ({ default: m.ReviewDetailPage })))
 const ReviewsPage = lazy(() => import("@/pages/reviews/ReviewsPage").then((m) => ({ default: m.ReviewsPage })))
 const SettingsPage = lazy(() => import("@/pages/settings/SettingsPage").then((m) => ({ default: m.SettingsPage })))
@@ -41,9 +43,11 @@ export function App() {
           <Route element={<PublicOnlyRoute />}>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           </Route>
           {/* Reachable signed in or out: it explains what to do in either case. */}
           <Route path="/invite/:token" element={<InvitePage />} />
+          <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
           <Route element={<ProtectedRoute />}>
             <Route element={<DashboardLayout />}>
               <Route path="/home" element={<HomePage />} />
