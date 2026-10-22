@@ -77,6 +77,7 @@ model Workspace {
   llmCredentials LlmCredential[]
   invites        Invite[]
   oauthStates    OAuthState[]
+  notifications  NotificationTarget[]
 
   @@map("workspaces")
 }
@@ -349,6 +350,9 @@ model ReviewJob {
   lockedAt       DateTime?      @map("locked_at") @db.Timestamptz
   startedAt      DateTime?      @map("started_at") @db.Timestamptz
   finishedAt     DateTime?      @map("finished_at") @db.Timestamptz
+  // Claimed before notification targets are sent to, so a job finished by
+  // both its run and stale recovery notifies once.
+  notifiedAt     DateTime?      @map("notified_at") @db.Timestamptz
   createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
 
   repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
@@ -484,4 +488,42 @@ model LlmCredential {
 
   @@unique([workspaceId, provider])
   @@map("llm_credentials")
+}
+
+enum NotificationKind {
+  webhook
+  slack
+  email
+
+  @@map("notification_kind")
+}
+
+enum NotificationEvent {
+  blocked
+  failed
+  completed
+
+  @@map("notification_event")
+}
+
+// Where the worker reports finished reviews. URLs are encrypted: a Slack
+// incoming-webhook URL is itself the credential. A webhook target signs its
+// payloads with `encryptedSecret`; an email target mails `recipientIds`, and
+// only those still members of the workspace.
+model NotificationTarget {
+  id              String              @id @default(uuid()) @db.Uuid
+  workspaceId     String              @map("workspace_id") @db.Uuid
+  kind            NotificationKind
+  name            String
+  events          NotificationEvent[]
+  encryptedUrl    String?             @map("encrypted_url")
+  encryptedSecret String?             @map("encrypted_secret")
+  recipientIds    String[]            @default([]) @map("recipient_ids") @db.Uuid
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime            @updatedAt @map("updated_at") @db.Timestamptz
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("notification_targets")
 }

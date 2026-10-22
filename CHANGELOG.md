@@ -10,6 +10,17 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- Notifications for finished reviews. Workspace admins add targets under
+  Notifications: an outgoing webhook signed with an HMAC-SHA256
+  `X-Sentryward-Signature` header (the secret is shown once), a Slack
+  incoming webhook, or email to chosen members through the existing mailer.
+  Each target picks its events (blocked, failed, completed), can send a test,
+  and gets one delivery per review. The worker sends them best effort once a
+  review finishes, fails or times out: a failed delivery is logged and never
+  fails the job. URLs are stored encrypted and go through the same production
+  host checks as self-hosted forges. Includes a migration (a
+  `notification_targets` table and a `notified_at` column on review jobs).
+  Closes #85.
 - Personal API tokens for scripts and CI. Create them under Settings > API
   tokens, with a name and an optional expiry. The value is shown once and only
   its hash is stored. Requests send it as `Authorization: Bearer <token>` and

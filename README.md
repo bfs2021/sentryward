@@ -40,7 +40,7 @@ dashboard tracks reviews and findings across runs.
 - [How it works](#how-it-works)
 - [Getting started](#getting-started): [runtime environment](#docker-runtime-environment), [users and invites](#users-and-invites), [workspaces and teams](#workspaces-and-teams), [first review](#run-your-first-review), [troubleshooting](#troubleshooting)
 - [Deploying](#deploying)
-- [Forge connections](#forge-connections), [publishing](#publishing-to-the-forge), [automatic reviews](#automatic-reviews)
+- [Forge connections](#forge-connections), [publishing](#publishing-to-the-forge), [automatic reviews](#automatic-reviews), [notifications](#notifications)
 - [Review configuration](#review-configuration): [LLM connections](#llm-connections-and-custom-endpoints), [Ollama](#ollama), [`.sentryward.yaml`](#sentrywardyaml-reference)
 - [API](#api)
 - [Development](#development)
@@ -372,6 +372,34 @@ The worker keeps a small in-memory cache of what a commit fixes: the repository 
 
 With `review.file_context` (the default), each review pass also sees read-only code around the diff, read from the head revision: the enclosing function or class of each hunk, the file's imports, the definitions of functions the diff calls through relative imports, and call sites of functions it changes in files the change does not touch. Head files go through the same cache; caller lookups use the forge's code search (GitHub only indexes the default branch, GitLab searches the head) and are never cached. Context only fills what a pass has left once its diff is planned, so it never displaces a hunk or makes a review partial, and a file or search that cannot be read only costs a warning. Findings on context lines are dropped unless `review.full_file` is on.
 
+## Notifications
+
+Under **Notifications**, workspace admins add targets that hear about finished reviews. Members can see them; only admins add, edit, test or remove them. Each target picks its events:
+
+- **Blocked**: the review found blocking issues.
+- **Failed**: the review could not run or finish (no model key, the forge unreachable, the maximum run time or a worker that stopped responding).
+- **Completed**: any finished review, blocked or not. Skipped and cancelled reviews never notify.
+
+A target gets one delivery per review, named after the most specific event it listens for (failed, then blocked, then completed). There are three kinds:
+
+- **Webhook**: a `POST` with a JSON body, an `X-Sentryward-Event` header and an `X-Sentryward-Signature: sha256=<hex>` header, the HMAC-SHA256 of the raw body keyed with the signing secret shown once when the target is added. Remove the target and add it again to change the URL or rotate the secret.
+
+  ```json
+  {
+    "event": "blocked",
+    "review": { "id": "...", "url": "https://sentryward.example.com/reviews/...", "status": "completed", "verdict": "blocked", "error": null },
+    "repository": { "provider": "github", "fullPath": "acme/api" },
+    "change": { "number": 42, "title": "Add login", "url": "https://github.com/acme/api/pull/42" },
+    "findings": { "total": 3, "bySeverity": { "major": 1, "minor": 2 } }
+  }
+  ```
+
+  `change.title`, `change.url` and `findings` are `null` for a review that failed before it ran.
+- **Slack**: an incoming-webhook URL, posted a one-line message linking to the review.
+- **Email**: chosen members of the workspace, through the configured mail transport (`SMTP_URL`). Members who leave are no longer emailed.
+
+**Send test** posts a sample (`"event": "test"`) and reports the outcome. Deliveries are best effort: the worker sends them once a review reaches its final status, a failed delivery is logged (`[notify] ...`) and never changes the review, and nothing is retried. URLs are stored encrypted, and only their host is ever shown again. In production a URL must be https and resolve only to public addresses, the same rule as self-hosted forge hosts, checked when the target is saved and again before each delivery; redirects are not followed.
+
 ## Review configuration
 
 Settings resolve in this order, highest first:
@@ -523,7 +551,7 @@ Settings. Deleting the account deletes its tokens.
 <summary>Endpoint reference</summary>
 
 Endpoints that act on workspace data (connections, repositories, reviews,
-findings, global config and LLM keys) read the workspace id from the
+findings, global config, LLM keys and notifications) read the workspace id from the
 `x-sentryward-workspace` header. Without it they use the caller's personal workspace,
 so scripts written before workspaces keep working. Routes under
 `/api/workspaces/:id` name the workspace in the path instead.
@@ -569,6 +597,11 @@ so scripts written before workspaces keep working. Routes under
 | GET    | `/api/settings/api-keys/:provider/status` | `{ status }`: `active`, `revoked` when the provider rejects the key, or `unreachable` |
 | GET    | `/api/settings/api-keys/:provider/models` | The model ids the connection lists, prefixed with its provider; 400 when the host rejects the key or is down |
 | POST   | `/api/settings/api-keys/:provider/test` | `{ model }`, runs one minimal generation with the stored credential; returns `{ result }` with latency and token usage, or `ok: false` with a `reason` (`revoked`, `model`, `unreachable`, `output`) and message. 400 when an official API is given another provider's model; 409 when the stored key can't be decrypted |
+| GET    | `/api/notifications` | `{ targets, mailConfigured }`: the workspace's notification targets with their events, a URL's host only and email recipients' user ids |
+| POST   | `/api/notifications` | Workspace admins: `{ kind: "webhook" \| "slack", name, events, url }` or `{ kind: "email", name, events, recipientIds }`; returns `{ target, secret? }`, a webhook's signing secret shown only here |
+| PATCH  | `/api/notifications/:id` | Workspace admins: `{ name?, events?, recipientIds? }` |
+| POST   | `/api/notifications/:id/test` | Workspace admins: sends a sample delivery; returns `{ result }`, `{ ok: true }` or `{ ok: false, error }` |
+| DELETE | `/api/notifications/:id` | Workspace admins: removes a target |
 | PUT    | `/api/settings/avatar` | Raw PNG, JPEG or WebP body (512 KB at most; the dashboard uploads a 256px JPEG); sets the caller's profile picture |
 | GET    | `/api/settings/tokens` | Session only: the caller's API tokens with name, creation, last use and expiry; never the values |
 | POST   | `/api/settings/tokens` | Session only: `{ name, expiresInDays }` (1-365, or `null` for no expiry); returns `{ token, value }`, the value shown only here |

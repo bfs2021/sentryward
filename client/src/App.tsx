@@ -16,6 +16,7 @@ const ForgotPasswordPage = lazy(() => import("@/pages/auth/ForgotPasswordPage").
 const HomePage = lazy(() => import("@/pages/home/HomePage").then((m) => ({ default: m.HomePage })))
 const InvitePage = lazy(() => import("@/pages/invite/InvitePage").then((m) => ({ default: m.InvitePage })))
 const LlmConnectionsPage = lazy(() => import("@/pages/llm-connections/LlmConnectionsPage").then((m) => ({ default: m.LlmConnectionsPage })))
+const NotificationsPage = lazy(() => import("@/pages/notifications/NotificationsPage").then((m) => ({ default: m.NotificationsPage })))
 const LoginPage = lazy(() => import("@/pages/auth/LoginPage").then((m) => ({ default: m.LoginPage })))
 const RegisterPage = lazy(() => import("@/pages/auth/RegisterPage").then((m) => ({ default: m.RegisterPage })))
 const RepositoriesPage = lazy(() => import("@/pages/forge/RepositoriesPage").then((m) => ({ default: m.RepositoriesPage })))
@@ -60,6 +61,7 @@ export function App() {
               <Route path="/connections" element={<ConnectionsRedirect />} />
               <Route path="/configuration" element={<ConfigurationPage />} />
               <Route path="/llm-connections" element={<LlmConnectionsPage />} />
+              <Route path="/notifications" element={<NotificationsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/workspace" element={<WorkspacePage />} />
               <Route path="/admin/users" element={<AdminUsersPage />} />

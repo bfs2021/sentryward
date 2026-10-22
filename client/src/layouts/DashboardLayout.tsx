@@ -1,6 +1,7 @@
 import { Suspense } from "react"
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router"
 import {
+  Bell,
   Bug,
   ChevronRight,
   ChevronsUpDown,
@@ -59,6 +60,7 @@ const NAV = [
   { to: "/repositories", label: "Repositories", icon: FolderGit2 },
   { to: "/configuration", label: "Configuration", icon: SlidersHorizontal },
   { to: "/llm-connections", label: "LLM Connections", icon: KeyRound },
+  { to: "/notifications", label: "Notifications", icon: Bell },
 ]
 
 type NavGroupDef = { label: string; icon: typeof House; items: typeof NAV }
