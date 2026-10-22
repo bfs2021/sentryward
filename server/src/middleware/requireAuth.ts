@@ -16,7 +16,8 @@ declare global {
 // API tokens are for scripts and CI: they may read anything their user can and
 // queue reviews, nothing else. A leaked token then cannot change the account,
 // its connections or settings. Matched against the mounted path, since this
-// runs as router-level middleware before any route is chosen.
+// runs as router-level middleware before any route is chosen. A GET route that
+// changes state (the forge install and OAuth flows) also needs requireSession.
 const TOKEN_WRITES: { method: string; path: RegExp }[] = [
   { method: "POST", path: /^\/api\/reviews\/?$/ },
   { method: "POST", path: /^\/api\/reviews\/[^/]+\/rerun\/?$/ },

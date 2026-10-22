@@ -91,6 +91,19 @@ describe("managing tokens", () => {
     expect(await prisma.apiToken.count()).toBe(1);
   });
 
+  // GET, but they add connections, so a token must not reach them.
+  it.each([
+    "/api/connections/github/install",
+    "/api/connections/github/callback?installation_id=1&setup_action=install&state=x&code=y",
+    "/api/connections/gitlab/oauth/start",
+    "/api/connections/gitlab/oauth/callback?state=x&code=y",
+  ])("cannot run the connection flow %s", async (path) => {
+    const { value } = await createApiToken(userId, "CI", null);
+    const res = await request(app).get(path).set("Authorization", bearer(value)).expect(403);
+    expect(res.headers.location).toBeUndefined();
+    expect(await prisma.oAuthState.count()).toBe(0);
+  });
+
   it("removes a user's tokens with the user", async () => {
     await createApiToken(userId, "CI", null);
     await prisma.user.delete({ where: { id: userId } });

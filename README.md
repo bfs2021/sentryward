@@ -511,11 +511,13 @@ curl https://sentryward.example.com/api/reviews/<review id>/markdown \
 A token can make any `GET` request its user can, plus `POST /api/reviews` and
 `POST /api/reviews/:id/rerun`. Every other write gets `403`, and tokens cannot
 manage tokens, so a leaked one can't change the account or create more tokens.
+The GitHub install and GitLab OAuth flows under `/api/connections` are `GET`
+but add connections, so they need a signed-in session too.
 A revoked, expired or unknown token gets `401`. If the `Authorization` header
 is present, the cookie is ignored. Token requests count against the same
 per-user rate limit as the user's dashboard requests. Tokens survive password
-changes; revoke them one by one in Settings. Deleting the account deletes its
-tokens.
+changes and resets, including resets an admin issues; revoke them one by one in
+Settings. Deleting the account deletes its tokens.
 
 <details>
 <summary>Endpoint reference</summary>
@@ -540,10 +542,10 @@ so scripts written before workspaces keep working. Routes under
 | GET    | `/api/auth/me`       | Current user, or 401 |
 | GET    | `/api/connections`   | The workspace's forge connections, which browser connect flows are configured, and the GitLab OAuth host |
 | POST   | `/api/connections/gitlab` | `{ host?, token }`, validates the token against GitLab and stores it encrypted |
-| GET    | `/api/connections/github/install?workspace=` | Redirects to the GitHub App's install page; the installation is added to that workspace |
-| GET    | `/api/connections/github/callback` | GitHub's return URL after installing the app |
-| GET    | `/api/connections/gitlab/oauth/start?workspace=` | Redirects to GitLab's OAuth authorize page with a single-use state (PKCE) |
-| GET    | `/api/connections/gitlab/oauth/callback` | GitLab's OAuth redirect URI; validates the state, exchanges the code and stores the connection |
+| GET    | `/api/connections/github/install?workspace=` | Session only: redirects to the GitHub App's install page; the installation is added to that workspace |
+| GET    | `/api/connections/github/callback` | Session only: GitHub's return URL after installing the app |
+| GET    | `/api/connections/gitlab/oauth/start?workspace=` | Session only: redirects to GitLab's OAuth authorize page with a single-use state (PKCE) |
+| GET    | `/api/connections/gitlab/oauth/callback` | Session only: GitLab's OAuth redirect URI; validates the state, exchanges the code and stores the connection |
 | DELETE | `/api/connections/:id` | Removes a connection and its repositories |
 | GET    | `/api/repos?connectionId=` | Repositories the connection can see, with their enabled flag |
 | POST   | `/api/repos`         | `{ connectionId, externalId }`, enables a repository for review |
