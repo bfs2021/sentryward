@@ -8,6 +8,32 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-22
+
+Sentryward remains pre-1.0, and this release changes some default behaviour:
+pushes get incremental reviews, and findings dismissed as a false positive or
+as intentional are no longer reported again on the same PR/MR. AI findings
+still need human verification.
+
+### Upgrade notes
+
+- Back up the database and `ENCRYPTION_KEY` before upgrading. The server
+  applies this release's migrations on start.
+- GitHub App: grant the **Checks** (read) permission so static analysis results
+  can be read, and subscribe to the **Pull request review comment** event so
+  replies on inline comments are answered. Without them, reviews still run.
+  GitHub repositories connected with a token have a per-repository webhook
+  without that event; turn reviews off and on again for each to recreate it.
+- GitLab OAuth is optional: set `GITLAB_OAUTH_HOST`, `GITLAB_OAUTH_CLIENT_ID`
+  and `GITLAB_OAUTH_CLIENT_SECRET` and register
+  `<url>/api/connections/gitlab/oauth/callback` as the redirect URI.
+- `WORKER_HEARTBEAT_INTERVAL_MS` (60 seconds by default) must stay below
+  `WORKER_LOCK_TIMEOUT_MS`, or the server and worker refuse to start.
+  `WORKER_MAX_RUN_MS` (30 minutes by default) fails reviews that run longer;
+  raise it if your reviews take that long.
+- To keep the previous behaviour, set `triggers.full_review_on_push: true` and
+  `review.suppress_ignored: false`.
+
 ### Added
 
 - Review details show a Validation card with how many candidate findings were
@@ -73,7 +99,6 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   `review.tool_findings_block` (off by default) lets them fail the verdict. The
   GitHub App needs the Checks (read) permission; without it, or when a report
   cannot be read, the review continues with a warning.
-
 - Reviews triggered by a push are incremental: only files the new commits
   touched since the last completed review are reviewed again (each with its
   whole PR/MR diff), and that review's findings on the other files are carried
@@ -133,9 +158,7 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 - **Download markdown** attaches its temporary link to the page while clicking
   it and frees the file's URL only after the click, so the download also works in
   browsers that ignore a detached link or start downloads asynchronously.
-
 - Copy markdown now shows a spinner and prevents repeated requests while copying a review.
-
 - Secrets stored under a previous `ENCRYPTION_KEY` no longer cause raw crypto
   errors or 500s. API keys are still listed, shown as "Unreadable" with a
   "Re-enter key" badge, and checking or listing models for one returns a 409
@@ -144,7 +167,6 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   fails with a message saying where to re-enter it. A repository whose webhook
   secret cannot be read rejects deliveries with the usual 401 and logs a
   warning; disabling and enabling the repository registers a fresh secret.
-
 - A long-running review is no longer falsely requeued and eventually marked
   `failed` with "Worker stopped responding". The worker now refreshes a job's
   lock on a heartbeat while it runs (`WORKER_HEARTBEAT_INTERVAL_MS`), so
@@ -156,14 +178,12 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   freed, so one stuck job cannot stall the worker. A run that loses its job,
   to that cap or to stale-lock recovery, stops and publishes nothing more, so a
   retried review is no longer posted twice.
-
 - Reviews through a self-hosted LLM gateway behind a proxy (such as Cloudflare)
   no longer fail with an empty-message `AI_APICallError`. The proxied model path
   now streams the response instead of waiting for the whole completion, so a
   long generation keeps the connection active and does not trip the proxy's
   origin timeout (e.g. Cloudflare's 524). Behaviour on the official provider
   APIs is unchanged.
-
 - A partial or failed review with no findings no longer shows the reassuring
   "Nothing in this change needs attention." empty state. It now says review
   coverage was incomplete, so incomplete runs are not mistaken for all-clears.
@@ -316,7 +336,8 @@ boundaries.
 - The Docker Compose setup is for development, not public production hosting.
 - Registration is open, with no invitation gate.
 
-[Unreleased]: https://github.com/rdlugs/sentryward/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/rdlugs/sentryward/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/rdlugs/sentryward/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/rdlugs/sentryward/compare/v0.1.0-alpha.2...v0.1.0
 [0.1.0-alpha.2]: https://github.com/rdlugs/sentryward/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/rdlugs/sentryward/releases/tag/v0.1.0-alpha.1
