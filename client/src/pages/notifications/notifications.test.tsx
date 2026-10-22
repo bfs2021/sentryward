@@ -32,6 +32,29 @@ const members = {
 }
 const MEMBERS_ROUTE = `GET /api/workspaces/${personalWorkspace.id}/members`
 
+const slackTarget = {
+  ...webhook,
+  id: "n3",
+  kind: "slack",
+  name: "Team channel",
+  events: ["blocked"],
+  host: "hooks.slack.com",
+}
+
+async function chooseFilter(label: string, option: string) {
+  await userEvent.click(screen.getByRole("button", { name: "Filters" }))
+  await userEvent.click(await screen.findByRole("combobox", { name: label }))
+  await userEvent.click(screen.getByRole("option", { name: option }))
+  await userEvent.keyboard("{Escape}")
+}
+
+function rowNames() {
+  return screen
+    .getAllByRole("row")
+    .slice(1)
+    .map((row) => within(row).getAllByRole("cell")[0]!.textContent)
+}
+
 function calls(fetchSpy: ReturnType<typeof mockApi>, method: string, path: string) {
   return fetchSpy.mock.calls.filter(([url, init]) => String(url) === path && (init?.method ?? "GET") === method)
 }
@@ -55,9 +78,14 @@ describe("Notifications", () => {
   })
 
   it("adds a webhook and shows its signing secret once", async () => {
+    let created = false
     const fetchSpy = mockApi({
-      "GET /api/notifications": { targets: [], mailConfigured: false },
-      "POST /api/notifications": () => jsonResponse(201, { target: webhook, secret: "abc123" }),
+      // The refetch after adding returns the new target, which swaps the empty state for the table.
+      "GET /api/notifications": () => jsonResponse(200, { targets: created ? [webhook] : [], mailConfigured: false }),
+      "POST /api/notifications": () => {
+        created = true
+        return jsonResponse(201, { target: webhook, secret: "abc123" })
+      },
       [MEMBERS_ROUTE]: members,
     })
     renderWithProviders(<App />, { route: "/notifications" })
@@ -70,6 +98,10 @@ describe("Notifications", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Add target" }))
 
     expect(await within(dialog).findByLabelText("Signing secret")).toHaveValue("abc123")
+    // The secret stays on screen once the table replaces the empty state (the
+    // modal hides the page behind it from role queries).
+    expect(await screen.findByRole("cell", { name: "CI alerts", hidden: true })).toBeInTheDocument()
+    expect(within(dialog).getByLabelText("Signing secret")).toHaveValue("abc123")
     const [, init] = calls(fetchSpy, "POST", "/api/notifications")[0]!
     expect(JSON.parse(String(init?.body))).toEqual({
       kind: "webhook",
@@ -110,6 +142,63 @@ describe("Notifications", () => {
     await userEvent.click(await screen.findByRole("menuitem", { name: "Send test" }))
 
     expect(await screen.findByText("Test to CI alerts failed: Responded with 404")).toBeInTheDocument()
+  })
+
+  it("searches targets by name, host and recipient", async () => {
+    mockApi({
+      "GET /api/notifications": { targets: [webhook, emailTarget, slackTarget], mailConfigured: true },
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    const search = await screen.findByRole("searchbox", { name: "Search notification targets" })
+    await userEvent.type(search, "slack.com")
+    expect(rowNames()).toEqual(["Team channel"])
+
+    await userEvent.clear(search)
+    await userEvent.type(search, testUser.name)
+    expect(rowNames()).toEqual(["Leads"])
+
+    await userEvent.clear(search)
+    await userEvent.type(search, "nothing like this")
+    expect(screen.getByText("No notification targets match your filters.")).toBeInTheDocument()
+  })
+
+  it("filters by type and event, with a chip to remove the filter", async () => {
+    mockApi({
+      "GET /api/notifications": { targets: [webhook, emailTarget, slackTarget], mailConfigured: true },
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    await screen.findByRole("cell", { name: "CI alerts" })
+    await chooseFilter("Type", "Slack")
+    expect(rowNames()).toEqual(["Team channel"])
+
+    await userEvent.click(screen.getByRole("button", { name: "Remove Type filter" }))
+    expect(rowNames()).toHaveLength(3)
+
+    await chooseFilter("Event", "Blocked")
+    expect(rowNames()).toEqual(["CI alerts", "Team channel"])
+  })
+
+  it("pages through many targets", async () => {
+    const targets = Array.from({ length: 12 }, (_, i) => ({
+      ...webhook,
+      id: `p${i}`,
+      name: `Target ${String(i + 1).padStart(2, "0")}`,
+    }))
+    mockApi({
+      "GET /api/notifications": { targets, mailConfigured: false },
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    expect(await screen.findByText("Showing 1-10 of 12")).toBeInTheDocument()
+    expect(rowNames()).toHaveLength(10)
+    await userEvent.click(screen.getByRole("button", { name: "Next page" }))
+    expect(await screen.findByText("Showing 11-12 of 12")).toBeInTheDocument()
+    expect(rowNames()).toEqual(["Target 11", "Target 12"])
   })
 
   it("asks before removing a target", async () => {

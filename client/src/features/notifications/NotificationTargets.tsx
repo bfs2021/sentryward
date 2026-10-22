@@ -1,12 +1,24 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { Controller, useForm, useWatch, type Control, type FieldValues, type Path } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { AlertTriangle, BellRing, Copy, Loader2, MoreHorizontal, Pencil, Plus, Send, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { z } from "zod"
+import { SortableHead } from "@/components/SortableHead"
+import {
+  ActiveFilterChips,
+  FilterPopover,
+  FilterSelect,
+  FilterToolbar,
+  NoMatchesRow,
+  SearchInput,
+  type ActiveFilter,
+} from "@/components/TableFilters"
+import { TablePagination } from "@/components/TablePagination"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
@@ -43,7 +55,11 @@ import { TextField } from "@/features/auth/TextField"
 import { applyServerErrors } from "@/features/auth/applyServerErrors"
 import { useAuth } from "@/features/auth/useAuth"
 import { useMembers, type Member } from "@/features/workspaces/api"
+import { paginate, usePagination } from "@/hooks/use-pagination"
+import { useSort } from "@/hooks/use-sort"
 import { copyToClipboard } from "@/lib/clipboard"
+import { ALL, matchesQuery, selectedLabel } from "@/lib/filters"
+import { timeAgo } from "@/lib/time"
 import {
   EVENT_OPTIONS,
   KIND_LABELS,
@@ -88,6 +104,31 @@ type EditInput = z.infer<typeof editSchema>
 const URL_PLACEHOLDERS: Record<Exclude<NotificationKind, "email">, string> = {
   webhook: "https://ci.example.com/hooks/sentryward",
   slack: "https://hooks.slack.com/services/...",
+}
+
+const KIND_OPTIONS = (Object.keys(KIND_LABELS) as NotificationKind[]).map((kind) => ({
+  value: kind,
+  label: KIND_LABELS[kind],
+}))
+
+type SortKey = "name" | "kind" | "createdAt"
+
+function compareTargets(a: NotificationTarget, b: NotificationTarget, key: SortKey) {
+  switch (key) {
+    case "name":
+      return a.name.localeCompare(b.name)
+    case "kind":
+      return KIND_LABELS[a.kind].localeCompare(KIND_LABELS[b.kind])
+    case "createdAt":
+      return Date.parse(a.createdAt) - Date.parse(b.createdAt)
+  }
+}
+
+type MemberNames = Map<string, string>
+
+// Recipients who left the workspace are not emailed, so they are not listed.
+function recipientNames(target: NotificationTarget, names: MemberNames) {
+  return target.recipientIds.flatMap((id) => names.get(id) ?? [])
 }
 
 function toggle<T>(list: T[], value: T, on: boolean): T[] {
@@ -394,12 +435,10 @@ function RemoveTargetDialog({
   )
 }
 
-function Destination({ target, members }: { target: NotificationTarget; members: Member[] | undefined }) {
+function Destination({ target, memberNames }: { target: NotificationTarget; memberNames: MemberNames }) {
   if (target.undecryptable) return <Badge variant="destructive">Can't be decrypted</Badge>
   if (target.kind !== "email") return <span className="font-mono text-xs">{target.host}</span>
-  const byId = new Map((members ?? []).map((member) => [member.id, member.name]))
-  // Recipients who left the workspace are not emailed, so they are not listed.
-  const names = target.recipientIds.flatMap((id) => byId.get(id) ?? [])
+  const names = recipientNames(target, memberNames)
   return <span>{names.length ? names.join(", ") : <span className="text-muted-foreground">No current members</span>}</span>
 }
 
@@ -463,32 +502,201 @@ function TargetActions({
   )
 }
 
-export function NotificationTargets() {
-  const { workspace } = useAuth()
-  const { data, isPending, isError } = useNotificationTargets()
-  // Members can see the targets; the server lets only admins change them.
-  const canManage = workspace?.role === "owner" || workspace?.role === "admin"
-  // Names for email recipients, and the picker when adding one.
-  const { data: members } = useMembers(workspace?.id ?? "")
+function TargetTable({
+  targets,
+  members,
+  memberNames,
+  canManage,
+}: {
+  targets: NotificationTarget[]
+  members: Member[] | undefined
+  memberNames: MemberNames
+  canManage: boolean
+}) {
+  // Unsorted keeps the API order.
+  const { sort, onSort } = useSort<SortKey>()
   const [editing, setEditing] = useState<NotificationTarget | null>(null)
   const [removing, setRemoving] = useState<NotificationTarget | null>(null)
 
+  const sorted = useMemo(() => {
+    if (!sort) return targets
+    const direction = sort.dir === "asc" ? 1 : -1
+    return [...targets].sort((a, b) => direction * compareTargets(a, b, sort.key) || a.name.localeCompare(b.name))
+  }, [targets, sort])
+  const pagination = usePagination()
+  const page = paginate(sorted, pagination.page, pagination.size)
+
+  const head = { sort, onSort }
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-4">
-        <p className="flex-1 text-sm text-muted-foreground">
-          Sent once a review finishes. A delivery that fails is logged and never affects the review.
-        </p>
-        {canManage && data && <AddTargetDialog mailConfigured={data.mailConfigured} members={members} />}
-      </div>
-      {isPending ? (
-        <Skeleton className="h-24 w-full" />
-      ) : isError ? (
+    <>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <SortableHead label="Name" sortKey="name" {...head} />
+            <SortableHead label="Type" sortKey="kind" {...head} />
+            <TableHead>Destination</TableHead>
+            <TableHead>Events</TableHead>
+            <SortableHead label="Added" sortKey="createdAt" {...head} />
+            {canManage && (
+              <TableHead className="w-0">
+                <span className="sr-only">Actions</span>
+              </TableHead>
+            )}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {!sorted.length && (
+            <NoMatchesRow colSpan={canManage ? 6 : 5}>No notification targets match your filters.</NoMatchesRow>
+          )}
+          {page.rows.map((target) => (
+            <TableRow key={target.id}>
+              <TableCell className="font-medium">{target.name}</TableCell>
+              <TableCell>
+                <Badge variant="outline">{KIND_LABELS[target.kind]}</Badge>
+              </TableCell>
+              <TableCell>
+                <Destination target={target} memberNames={memberNames} />
+              </TableCell>
+              <TableCell>
+                <EventBadges events={target.events} />
+              </TableCell>
+              <TableCell className="text-muted-foreground">{timeAgo(target.createdAt)}</TableCell>
+              {canManage && (
+                <TableCell className="text-right">
+                  <TargetActions
+                    target={target}
+                    onEdit={() => setEditing(target)}
+                    onRemove={() => setRemoving(target)}
+                  />
+                </TableCell>
+              )}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+      {page.total > 0 && (
+        <TablePagination
+          page={page.page}
+          size={pagination.size}
+          total={page.total}
+          onPageChange={pagination.setPage}
+          onSizeChange={pagination.setSize}
+        />
+      )}
+      {editing && (
+        <EditTargetDialog
+          key={editing.id}
+          target={editing}
+          members={members}
+          onOpenChange={(open) => !open && setEditing(null)}
+        />
+      )}
+      <RemoveTargetDialog target={removing} onOpenChange={(open) => !open && setRemoving(null)} />
+    </>
+  )
+}
+
+// The search and filters sit above the card, so their state lives here and
+// the table only sorts what it is given.
+function TargetList({
+  targets,
+  mailConfigured,
+  members,
+  canManage,
+}: {
+  targets: NotificationTarget[]
+  mailConfigured: boolean
+  members: Member[] | undefined
+  canManage: boolean
+}) {
+  const { setPage } = usePagination()
+  const [query, setQuery] = useState("")
+  const [kind, setKind] = useState(ALL)
+  const [event, setEvent] = useState(ALL)
+  const hasTargets = targets.length > 0
+  const filtering = kind !== ALL || event !== ALL
+
+  // A new filter or search starts over at the first page.
+  function filterBy<T>(set: (value: T) => void) {
+    return (value: T) => {
+      set(value)
+      setPage(1)
+    }
+  }
+
+  function clearFilters() {
+    setKind(ALL)
+    setEvent(ALL)
+    setPage(1)
+  }
+
+  const memberNames = useMemo<MemberNames>(
+    () => new Map((members ?? []).map((member) => [member.id, member.name])),
+    [members],
+  )
+
+  const filtered = useMemo(
+    () =>
+      targets.filter(
+        (target) =>
+          // Recipient names let a search for a person find the emails they get.
+          matchesQuery(
+            query,
+            target.name,
+            KIND_LABELS[target.kind],
+            target.host ?? "",
+            ...recipientNames(target, memberNames),
+          ) &&
+          (kind === ALL || target.kind === kind) &&
+          (event === ALL || target.events.includes(event as NotificationEvent)),
+      ),
+    [targets, query, kind, event, memberNames],
+  )
+
+  const activeFilters = [
+    { label: "Type", value: selectedLabel(kind, KIND_OPTIONS), onRemove: () => filterBy(setKind)(ALL) },
+    { label: "Event", value: selectedLabel(event, EVENT_OPTIONS), onRemove: () => filterBy(setEvent)(ALL) },
+  ].filter((filter): filter is ActiveFilter => filter.value !== null)
+
+  return (
+    <>
+      {/* The Add dialog keeps its slot whether or not there are targets, so
+          adding the first one does not remount it and lose the shown secret. */}
+      <FilterToolbar>
+        {hasTargets && <ActiveFilterChips filters={activeFilters} />}
+        {canManage && <AddTargetDialog mailConfigured={mailConfigured} members={members} />}
+        {hasTargets && (
+          <FilterPopover active={filtering} onClear={clearFilters}>
+            <FilterSelect
+              id="notification-type-filter"
+              label="Type"
+              allLabel="All types"
+              value={kind}
+              onValueChange={filterBy(setKind)}
+              options={KIND_OPTIONS}
+            />
+            <FilterSelect
+              id="notification-event-filter"
+              label="Event"
+              allLabel="All events"
+              value={event}
+              onValueChange={filterBy(setEvent)}
+              options={EVENT_OPTIONS}
+            />
+          </FilterPopover>
+        )}
+        {hasTargets && (
+          <SearchInput label="Search notification targets" value={query} onChange={filterBy(setQuery)} />
+        )}
+      </FilterToolbar>
+      {targets.some((target) => target.undecryptable) && (
         <Alert variant="destructive">
           <AlertTriangle />
-          <AlertTitle>Could not load notification targets.</AlertTitle>
+          <AlertTitle>Some targets can't be decrypted</AlertTitle>
+          <AlertDescription>They were saved under a different encryption key. Remove and add them again.</AlertDescription>
         </Alert>
-      ) : data.targets.length === 0 ? (
+      )}
+      {!hasTargets ? (
         <Empty className="border border-dashed">
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -503,63 +711,49 @@ export function NotificationTargets() {
           </EmptyHeader>
         </Empty>
       ) : (
-        <>
-          {data.targets.some((target) => target.undecryptable) && (
-            <Alert variant="destructive">
-              <AlertTriangle />
-              <AlertTitle>Some targets can't be decrypted</AlertTitle>
-              <AlertDescription>They were saved under a different encryption key. Remove and add them again.</AlertDescription>
-            </Alert>
-          )}
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Destination</TableHead>
-                <TableHead>Events</TableHead>
-                {canManage && (
-                  <TableHead className="w-0">
-                    <span className="sr-only">Actions</span>
-                  </TableHead>
-                )}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.targets.map((target) => (
-                <TableRow key={target.id}>
-                  <TableCell className="font-medium">{target.name}</TableCell>
-                  <TableCell>{KIND_LABELS[target.kind]}</TableCell>
-                  <TableCell>
-                    <Destination target={target} members={members} />
-                  </TableCell>
-                  <TableCell>
-                    <EventBadges events={target.events} />
-                  </TableCell>
-                  {canManage && (
-                    <TableCell>
-                      <TargetActions
-                        target={target}
-                        onEdit={() => setEditing(target)}
-                        onRemove={() => setRemoving(target)}
-                      />
-                    </TableCell>
-                  )}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </>
+        <Card>
+          <CardHeader>
+            <CardTitle>Notification targets</CardTitle>
+            <CardDescription>
+              Sent once a review finishes. A delivery that fails is logged and never affects the review.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <TargetTable targets={filtered} members={members} memberNames={memberNames} canManage={canManage} />
+          </CardContent>
+        </Card>
       )}
-      {editing && (
-        <EditTargetDialog
-          key={editing.id}
-          target={editing}
-          members={members}
-          onOpenChange={(open) => !open && setEditing(null)}
-        />
-      )}
-      <RemoveTargetDialog target={removing} onOpenChange={(open) => !open && setRemoving(null)} />
+    </>
+  )
+}
+
+export function NotificationTargets() {
+  const { workspace } = useAuth()
+  const { data, isPending, isError } = useNotificationTargets()
+  // Members can see the targets; the server lets only admins change them.
+  const canManage = workspace?.role === "owner" || workspace?.role === "admin"
+  // Names for email recipients, and the picker when adding one.
+  const { data: members } = useMembers(workspace?.id ?? "")
+
+  if (isPending) return <Skeleton className="h-40 w-full" />
+
+  if (isError) {
+    return (
+      <Alert variant="destructive">
+        <AlertTriangle />
+        <AlertTitle>Could not load notification targets.</AlertTitle>
+      </Alert>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <TargetList
+        targets={data.targets}
+        mailConfigured={data.mailConfigured}
+        members={members}
+        canManage={canManage}
+      />
     </div>
   )
 }
