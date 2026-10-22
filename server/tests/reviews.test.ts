@@ -388,6 +388,18 @@ describe("POST /api/reviews/:id/rerun", () => {
     expect(res.body.review.id).not.toBe(job.id);
     expect(res.body.review).toMatchObject({ number: 7, headSha: "newsha", status: "queued" });
   });
+
+  it("409s for a repository whose reviews are turned off, and queues nothing", async () => {
+    const job = await completedJob();
+    await prisma.repository.update({ where: { id: repoId }, data: { enabled: false } });
+    vi.stubGlobal("fetch", fetchStub([mrRoute("newsha")]).fetch);
+
+    const res = await request(app).post(`/api/reviews/${job.id}/rerun`).set("Cookie", cookie);
+
+    expect(res.status).toBe(409);
+    expect(res.body.message).toContain("Reviews are turned off for");
+    expect(await claimNext()).toBeNull();
+  });
 });
 
 describe("POST /api/reviews/:id/cancel", () => {
