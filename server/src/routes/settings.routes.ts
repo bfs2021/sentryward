@@ -1,4 +1,5 @@
 import express, { Router } from "express";
+import { createToken, listTokens, revokeToken } from "../controllers/apiTokens.controller.ts";
 import { AVATAR_MAX_BYTES, AVATAR_TYPES, removeAvatar, uploadAvatar } from "../controllers/avatar.controller.ts";
 import {
   apiKeyModels,
@@ -12,7 +13,7 @@ import {
   updateProfile,
 } from "../controllers/settings.controller.ts";
 import { authLimiter } from "../middleware/authLimiter.ts";
-import { requireAuth } from "../middleware/requireAuth.ts";
+import { requireAuth, requireSession } from "../middleware/requireAuth.ts";
 import { requireWorkspace, requireWorkspaceRole } from "../middleware/requireWorkspace.ts";
 import { userLimiter } from "../middleware/apiLimiter.ts";
 
@@ -33,3 +34,8 @@ settingsRouter.post("/api-keys/:provider/test", testApiKeyModel);
 settingsRouter.put("/api-keys/:provider", requireWorkspaceRole("admin"), saveApiKey);
 settingsRouter.delete("/api-keys/:provider", requireWorkspaceRole("admin"), deleteApiKey);
 settingsRouter.delete("/account", authLimiter, deleteAccount);
+// Cookie only, so a leaked token can neither mint more nor hide itself.
+settingsRouter.use("/tokens", requireSession);
+settingsRouter.get("/tokens", listTokens);
+settingsRouter.post("/tokens", createToken);
+settingsRouter.delete("/tokens/:id", revokeToken);

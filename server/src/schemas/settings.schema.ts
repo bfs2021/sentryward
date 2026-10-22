@@ -36,3 +36,11 @@ export const testModelSchema = z.object({
 export const deleteAccountSchema = z.object({
   password: z.string().min(1, "Password is required"),
 });
+
+// Null for a token that never expires.
+export const createApiTokenSchema = z.object({
+  name: z.string().trim().min(1, "Name is required").max(100),
+  expiresInDays: z.number().int().min(1).max(365).nullable(),
+});
+
+export const apiTokenParamsSchema = z.object({ id: z.uuid() });

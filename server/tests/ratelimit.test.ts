@@ -2,12 +2,15 @@ import cookieParser from "cookie-parser";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { AUTH_COOKIE, signToken } from "../src/lib/jwt.ts";
+import { prisma } from "../src/lib/prisma.ts";
 import { userLimitOptions } from "../src/middleware/apiLimiter.ts";
+import { createApiToken } from "../src/services/apiTokens.ts";
+import { createUser } from "./helpers/users.ts";
 
 // A bare app with only the limiter, so it is tested on its own instead of
-// through the database. Users are told apart by a real signed auth cookie.
+// through the API. Users are told apart by a real signed auth cookie.
 function limitedApp(limit: number) {
   const app = express();
   app.use(cookieParser());
@@ -40,5 +43,31 @@ describe("userLimiter", () => {
     await request(app).get("/").expect(200);
     await request(app).get("/").set("Cookie", `${AUTH_COOKIE}=forged`).expect(429);
     await request(app).get("/").set("Cookie", as("u1")).expect(200);
+  });
+});
+
+// API tokens are tied to their user by a lookup, so this part needs the database.
+describe("userLimiter with API tokens", () => {
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  it("shares one bucket between a user's cookie and tokens", async () => {
+    await prisma.workspace.deleteMany();
+    await prisma.user.deleteMany();
+    const { user, cookie } = await createUser();
+    const first = await createApiToken(user.id, "CI", null);
+    const second = await createApiToken(user.id, "Script", null);
+    const app = limitedApp(2);
+
+    await request(app).get("/").set("Cookie", cookie).expect(200);
+    await request(app).get("/").set("Authorization", `Bearer ${first.value}`).expect(200);
+    await request(app).get("/").set("Authorization", `Bearer ${second.value}`).expect(429);
+  });
+
+  it("limits an unknown token by address", async () => {
+    const app = limitedApp(1);
+    await request(app).get("/").set("Authorization", "Bearer swt_unknown").expect(200);
+    await request(app).get("/").expect(429);
   });
 });

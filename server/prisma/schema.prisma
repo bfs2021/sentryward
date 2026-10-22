@@ -39,6 +39,7 @@ model User {
   oauthStates        OAuthState[]
   passwordResets     PasswordReset[]   @relation("PasswordResetUser")
   passwordResetsMade PasswordReset[]   @relation("PasswordResetCreator")
+  apiTokens          ApiToken[]
 
   @@map("users")
 }
@@ -143,6 +144,24 @@ model PasswordReset {
 
   @@index([userId])
   @@map("password_resets")
+}
+
+// A personal token for scripts and CI, sent as a bearer token. It acts as its
+// user; only the hash is stored, and the value is shown once on creation.
+model ApiToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  name       String
+  tokenHash  String    @unique @map("token_hash")
+  // Null for a token that never expires.
+  expiresAt  DateTime? @map("expires_at") @db.Timestamptz
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("api_tokens")
 }
 
 enum ForgeProvider {
