@@ -1,3 +1,4 @@
+import { lockChange } from "../lib/changeLock.ts";
 import { HttpError } from "../lib/httpError.ts";
 import { prisma } from "../lib/prisma.ts";
 import { parseReply } from "../lib/webhook.ts";
@@ -66,7 +67,7 @@ export async function recordThreadReply(input: ThreadReplyInput): Promise<Webhoo
     // Count and insert under a lock per change, so concurrent deliveries cannot
     // all pass the count before any of them is recorded.
     const reply = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${repo.id}::text), ${number}::int)`;
+      await lockChange(tx, "replies", repo.id, number);
       const recent = await tx.threadReply.count({
         where: { repositoryId: repo.id, number, createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) } },
       });

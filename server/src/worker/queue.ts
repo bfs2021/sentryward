@@ -1,3 +1,4 @@
+import { lockChange } from "../lib/changeLock.ts";
 import { prisma } from "../lib/prisma.ts";
 import type { Prisma, Repository, ReviewJob, ReviewTrigger } from "../generated/prisma/client.ts";
 import { loadDashboardConfig } from "../review/config/load.ts";
@@ -11,13 +12,16 @@ export interface EnqueueInput {
   actor?: string;
 }
 
-// Concurrent deliveries for one change (two quick pushes, a push and a review
-// comment) would otherwise both pass the checks below before either job is
-// committed, and the same head would be reviewed twice. Under READ COMMITTED the
-// second transaction sees the first one's job once it gets the lock. The key is
-// prefixed so it does not contend with the thread-reply lock on the same change.
-async function lockChange(tx: Prisma.TransactionClient, repositoryId: string, number: number): Promise<void> {
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`enqueue:${repositoryId}`}::text), ${number}::int)`;
+// Every write that queues, supersedes or cancels a change's queued jobs takes
+// this lock first. Concurrent deliveries for one change (two quick pushes, a
+// push and a review comment) would otherwise both pass their checks before
+// either job is committed, and the same head would be reviewed twice. Under
+// READ COMMITTED the second transaction sees the first one's job once it gets
+// the lock. The lock covers a few short queries, so waiters are held for
+// milliseconds; only a large burst for one change gets near Prisma's
+// interactive-transaction limits (2s to start, 5s to finish).
+function lockEnqueue(tx: Prisma.TransactionClient, repositoryId: string, number: number): Promise<void> {
+  return lockChange(tx, "enqueue", repositoryId, number);
 }
 
 // A newer push makes any still-queued review of the same PR pointless, so it is
@@ -25,25 +29,26 @@ async function lockChange(tx: Prisma.TransactionClient, repositoryId: string, nu
 // head that is already queued or running is returned instead of duplicated.
 export async function enqueue(input: EnqueueInput): Promise<ReviewJob> {
   return prisma.$transaction(async (tx) => {
-    await lockChange(tx, input.repositoryId, input.number);
-    return enqueueIn(tx, input);
+    await lockEnqueue(tx, input.repositoryId, input.number);
+
+    const existing = await tx.reviewJob.findFirst({
+      where: {
+        repositoryId: input.repositoryId,
+        number: input.number,
+        headSha: input.headSha,
+        status: { in: ["queued", "running"] },
+      },
+    });
+    if (existing) {
+      return existing;
+    }
+
+    return supersedeAndCreate(tx, input);
   });
 }
 
-// The caller holds the change's lock.
-async function enqueueIn(tx: Prisma.TransactionClient, input: EnqueueInput): Promise<ReviewJob> {
-  const existing = await tx.reviewJob.findFirst({
-    where: {
-      repositoryId: input.repositoryId,
-      number: input.number,
-      headSha: input.headSha,
-      status: { in: ["queued", "running"] },
-    },
-  });
-  if (existing) {
-    return existing;
-  }
-
+// The caller holds the change's lock and has checked the head is not queued.
+async function supersedeAndCreate(tx: Prisma.TransactionClient, input: EnqueueInput): Promise<ReviewJob> {
   await tx.reviewJob.updateMany({
     where: {
       repositoryId: input.repositoryId,
@@ -68,12 +73,13 @@ export type WebhookEnqueueResult =
 // For automatic triggers: a head that was ever queued or reviewed is left
 // alone. A person asking explicitly (manual or comment) goes through enqueue().
 // The duplicate check runs under the change's lock, so a redelivery racing the
-// original is refused. The queue-full count spans other changes, which take
+// original is refused, and it already covers a queued or running job for this
+// head, so enqueue()'s own check is not repeated. The queue-full count spans other changes, which take
 // their own locks, so concurrent pushes to several changes can exceed it by a
 // few; it bounds a burst, not a hard quota.
 export async function enqueueFromWebhook(input: EnqueueInput): Promise<WebhookEnqueueResult> {
   return prisma.$transaction(async (tx): Promise<WebhookEnqueueResult> => {
-    await lockChange(tx, input.repositoryId, input.number);
+    await lockEnqueue(tx, input.repositoryId, input.number);
 
     const seen = await tx.reviewJob.findFirst({
       where: {
@@ -96,7 +102,7 @@ export async function enqueueFromWebhook(input: EnqueueInput): Promise<WebhookEn
     });
     if (queued >= MAX_QUEUED_PER_REPOSITORY) return { queued: false, reason: "queue_full" };
 
-    return { queued: true, job: await enqueueIn(tx, input) };
+    return { queued: true, job: await supersedeAndCreate(tx, input) };
   });
 }
 
@@ -196,11 +202,17 @@ export async function cancelQueuedForClosedChange(
     followGlobal: repo.followGlobal,
   });
   if (!config.triggers.abortOnClose) return 0;
-  const { count } = await prisma.reviewJob.updateMany({
-    where: { repositoryId: repo.id, number, status: "queued" },
-    data: { status: "cancelled", error: CLOSED_REASON, finishedAt: new Date() },
+  // Under the change's lock, so a push being queued at the same moment commits
+  // first and is cancelled too. The worker re-checks the change before
+  // reviewing anyway; this spares it a claim and a forge call.
+  return prisma.$transaction(async (tx) => {
+    await lockEnqueue(tx, repo.id, number);
+    const { count } = await tx.reviewJob.updateMany({
+      where: { repositoryId: repo.id, number, status: "queued" },
+      data: { status: "cancelled", error: CLOSED_REASON, finishedAt: new Date() },
+    });
+    return count;
   });
-  return count;
 }
 
 // A person stopping a review. One status check and write, so it cannot race a
@@ -261,23 +273,45 @@ export async function claimState(id: string, attempts: number): Promise<"owned" 
 
 // A worker that died mid-job leaves it running forever. Jobs locked longer than
 // the timeout go back to the queue, or fail once they have used every attempt.
+// One whose change has had a newer push queued since is superseded instead:
+// requeueing it would leave two queued jobs for the change, and the newer one
+// already reviews the current head.
 export async function recoverStale(lockTimeoutMs: number, maxAttempts: number): Promise<number> {
   const cutoff = new Date(Date.now() - lockTimeoutMs);
-  const [requeued, failed] = await prisma.$transaction([
-    prisma.reviewJob.updateMany({
-      where: { status: "running", lockedAt: { lt: cutoff }, attempts: { lt: maxAttempts } },
-      data: { status: "queued", lockedAt: null },
-    }),
-    prisma.reviewJob.updateMany({
-      where: { status: "running", lockedAt: { lt: cutoff }, attempts: { gte: maxAttempts } },
-      data: {
-        status: "failed",
-        verdict: "error",
-        error: "Worker stopped responding",
-        lockedAt: null,
-        finishedAt: new Date(),
-      },
-    }),
-  ]);
-  return requeued.count + failed.count;
+  const stale = { status: "running", lockedAt: { lt: cutoff } } as const;
+
+  const failed = await prisma.reviewJob.updateMany({
+    where: { ...stale, attempts: { gte: maxAttempts } },
+    data: {
+      status: "failed",
+      verdict: "error",
+      error: "Worker stopped responding",
+      lockedAt: null,
+      finishedAt: new Date(),
+    },
+  });
+
+  const retryable = await prisma.reviewJob.findMany({
+    where: { ...stale, attempts: { lt: maxAttempts } },
+    select: { id: true, repositoryId: true, number: true },
+  });
+  let recovered = 0;
+  for (const job of retryable) {
+    recovered += await prisma.$transaction(async (tx) => {
+      await lockEnqueue(tx, job.repositoryId, job.number);
+      const newer = await tx.reviewJob.findFirst({
+        where: { repositoryId: job.repositoryId, number: job.number, status: "queued" },
+        select: { id: true },
+      });
+      // Still stale: a heartbeat that landed since means the worker is alive.
+      const { count } = await tx.reviewJob.updateMany({
+        where: { id: job.id, ...stale },
+        data: newer
+          ? { status: "superseded", lockedAt: null, finishedAt: new Date() }
+          : { status: "queued", lockedAt: null },
+      });
+      return count;
+    });
+  }
+  return recovered + failed.count;
 }
