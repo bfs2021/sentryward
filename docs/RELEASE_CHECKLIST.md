@@ -1,5 +1,40 @@
 # Release handoff
 
+## 0.2.0 preparation (2026-10-22)
+
+Release metadata is prepared for `v0.2.0`. Both package manifests and
+lockfile root entries use `0.2.0`, and the production env example and README
+pin it. The changelog's `0.2.0` section has the release notes, upgrade notes
+and comparison link. The production Compose file now passes
+`WORKER_HEARTBEAT_INTERVAL_MS` and `WORKER_MAX_RUN_MS` to the worker, which it
+did not before.
+
+### Verification
+
+- Server: 836 tests pass, type check passes, and Prisma schema validation passes.
+- Client: 286 tests pass with `--maxWorkers=2`; type check, lint and production
+  build pass. Lint reports the same two Fast Refresh warnings in
+  `AuthProvider.tsx` as 0.1.0, and the build reports the same chunk-size warning.
+- The production Compose file renders with `.env.production.example`, using
+  image `ghcr.io/rdlugs/sentryward:0.2.0` and the new worker settings.
+- Dependency audits: server reports zero findings with and without dev
+  dependencies. Client reports zero runtime findings and the same seven high
+  findings in shadcn development tooling accepted since alpha.
+- Not performed: a production image build, an upgrade from a 0.1.0 database, a
+  browser walkthrough, a live forge/model review, or hosted CI on the
+  preparation commit.
+
+### Publication steps
+
+- [ ] Authorize staging and committing the preparation changes.
+- [ ] Push the approved commit and obtain passing hosted CI for it.
+- [ ] Create and push `v0.2.0` on that verified commit.
+- [ ] Verify both architecture images are published to GHCR and `latest` moved.
+- [ ] Add the Checks (read) permission and the Pull request review comment event
+  to the public GitHub App, if one is published.
+- [ ] Publish a stable GitHub release using the `0.2.0` changelog section,
+  including its upgrade notes.
+
 ## 0.1.0 preparation (2026-10-13)
 
 Release metadata is prepared for `v0.1.0`. Both package manifests and
