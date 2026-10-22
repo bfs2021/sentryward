@@ -10,6 +10,15 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- Personal API tokens for scripts and CI. Create them under Settings > API
+  tokens, with a name and an optional expiry. The value is shown once and only
+  its hash is stored. Requests send it as `Authorization: Bearer <token>` and
+  act as the token's user, with the workspace header choosing the workspace.
+  A token can read anything its user can and queue or rerun reviews; other
+  writes, and managing tokens, need a signed-in session. Revoked or expired
+  tokens get 401, token requests share their user's rate limit, and deleting
+  the account deletes its tokens. Includes a migration (an `api_tokens`
+  table). Closes #84.
 - Password reset. "Forgot password?" on the login page emails a single-use
   link that expires after 1 hour, and the request answers the same way
   whether or not the email has an account. Without mail configured, the page

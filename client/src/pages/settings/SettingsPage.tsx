@@ -1,11 +1,12 @@
 import type { ReactNode } from "react"
 import { Navigate, useSearchParams } from "react-router"
-import { LockKeyhole, TriangleAlert, UserRound } from "lucide-react"
+import { KeyRound, LockKeyhole, TriangleAlert, UserRound } from "lucide-react"
 import { PageHeader } from "@/components/PageHeader"
 import { PageShell } from "@/components/PageShell"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useAuth } from "@/features/auth/useAuth"
+import { ApiTokens } from "@/features/settings/ApiTokens"
 import { AvatarForm } from "@/features/settings/AvatarForm"
 import { DeleteAccount } from "@/features/settings/DeleteAccount"
 import { PasswordForm } from "@/features/settings/PasswordForm"
@@ -14,6 +15,7 @@ import { ProfileForm } from "@/features/settings/ProfileForm"
 const TAB_ITEMS = [
   { value: "profile", label: "Profile", icon: UserRound },
   { value: "password", label: "Password", icon: LockKeyhole },
+  { value: "tokens", label: "API tokens", icon: KeyRound },
   { value: "account", label: "Account", icon: TriangleAlert },
 ] as const
 type Tab = (typeof TAB_ITEMS)[number]["value"]
@@ -44,7 +46,7 @@ export function SettingsPage() {
 
   return (
     <PageShell>
-      <PageHeader title="Settings" description="Manage your profile, password and account." />
+      <PageHeader title="Settings" description="Manage your profile, password, API tokens and account." />
       <Tabs className="max-w-3xl" value={tab} onValueChange={(value) => setParams({ tab: value }, { replace: true })}>
         <TabsList>
           {TAB_ITEMS.map((item) => (
@@ -70,6 +72,14 @@ export function SettingsPage() {
             description="Choose a new password of at least 8 characters. Changing it signs you out on other devices."
           >
             <PasswordForm />
+          </Section>
+        </TabsContent>
+        <TabsContent value="tokens">
+          <Section
+            title="API tokens"
+            description="Personal tokens for scripts and CI. Revoke any you no longer use."
+          >
+            <ApiTokens />
           </Section>
         </TabsContent>
         <TabsContent value="account">

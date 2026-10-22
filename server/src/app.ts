@@ -25,6 +25,8 @@ if (env.TRUST_PROXY !== undefined) {
 }
 
 app.use(helmet());
+// Authorization is left out of the allowed headers: API tokens are for
+// scripts and CI, which CORS does not apply to, and the dashboard uses cookies.
 app.use(
   cors({
     origin: env.CLIENT_ORIGIN,

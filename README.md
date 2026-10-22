@@ -488,6 +488,35 @@ Only results on lines the change added are kept (or anywhere in a changed file, 
 
 ## API
 
+### API tokens
+
+Scripts and CI authenticate with a personal API token instead
+of the browser cookie. Create one under **Settings > API tokens**, with a name
+and an expiry (7, 30, 90 or 365 days, or none). The value starts with `swt_`
+and is shown only once, because only its hash is stored. Send it as a bearer
+token; it acts as the user who created it, and the workspace header works as
+it does for the dashboard:
+
+```sh
+curl -X POST https://sentryward.example.com/api/reviews \
+  -H "Authorization: Bearer $SENTRYWARD_TOKEN" \
+  -H "x-sentryward-workspace: <workspace id>" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://github.com/acme/api/pull/42"}'
+
+curl https://sentryward.example.com/api/reviews/<review id>/markdown \
+  -H "Authorization: Bearer $SENTRYWARD_TOKEN"
+```
+
+A token can make any `GET` request its user can, plus `POST /api/reviews` and
+`POST /api/reviews/:id/rerun`. Every other write gets `403`, and tokens cannot
+manage tokens, so a leaked one can't change the account or create more tokens.
+A revoked, expired or unknown token gets `401`. If the `Authorization` header
+is present, the cookie is ignored. Token requests count against the same
+per-user rate limit as the user's dashboard requests. Tokens survive password
+changes; revoke them one by one in Settings. Deleting the account deletes its
+tokens.
+
 <details>
 <summary>Endpoint reference</summary>
 
@@ -539,6 +568,9 @@ so scripts written before workspaces keep working. Routes under
 | GET    | `/api/settings/api-keys/:provider/models` | The model ids the connection lists, prefixed with its provider; 400 when the host rejects the key or is down |
 | POST   | `/api/settings/api-keys/:provider/test` | `{ model }`, runs one minimal generation with the stored credential; returns `{ result }` with latency and token usage, or `ok: false` with a `reason` (`revoked`, `model`, `unreachable`, `output`) and message. 400 when an official API is given another provider's model; 409 when the stored key can't be decrypted |
 | PUT    | `/api/settings/avatar` | Raw PNG, JPEG or WebP body (512 KB at most; the dashboard uploads a 256px JPEG); sets the caller's profile picture |
+| GET    | `/api/settings/tokens` | Session only: the caller's API tokens with name, creation, last use and expiry; never the values |
+| POST   | `/api/settings/tokens` | Session only: `{ name, expiresInDays }` (1-365, or `null` for no expiry); returns `{ token, value }`, the value shown only here |
+| DELETE | `/api/settings/tokens/:id` | Session only: revokes one of the caller's tokens |
 | DELETE | `/api/settings/avatar` | Removes the caller's profile picture, so their initials show again |
 | GET    | `/api/users/:id/avatar` | A user's profile picture, for any signed-in user; 404 when they have none |
 | GET    | `/api/admin/users`   | Admin only: every user with their role |

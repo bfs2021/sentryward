@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api, ApiError } from "@/lib/api"
 import type { User } from "@/features/auth/auth-context"
 
@@ -71,5 +71,47 @@ export function useRemoveAvatar() {
   return useMutation({
     mutationFn: () => sendAvatar("DELETE"),
     onSuccess: (user) => queryClient.setQueryData(ME_QUERY_KEY, user),
+  })
+}
+
+const TOKENS_KEY = ["settings", "tokens"]
+
+export interface ApiToken {
+  id: string
+  name: string
+  expiresAt: string | null
+  lastUsedAt: string | null
+  createdAt: string
+}
+
+export interface ApiTokenInput {
+  name: string
+  // Null for a token that never expires.
+  expiresInDays: number | null
+}
+
+export function useApiTokens() {
+  return useQuery({
+    queryKey: TOKENS_KEY,
+    queryFn: () => api<{ tokens: ApiToken[] }>("/settings/tokens"),
+    select: (data) => data.tokens,
+  })
+}
+
+// The value comes back only from this call; the server keeps just its hash.
+export function useCreateApiToken() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: ApiTokenInput) =>
+      api<{ token: ApiToken; value: string }>("/settings/tokens", { method: "POST", body: JSON.stringify(input) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: TOKENS_KEY }),
+  })
+}
+
+export function useRevokeApiToken() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api<void>(`/settings/tokens/${id}`, { method: "DELETE" }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: TOKENS_KEY }),
   })
 }
