@@ -8,7 +8,12 @@ import { mailer } from "../src/lib/mailer.ts";
 import { hashPassword } from "../src/lib/password.ts";
 import { prisma } from "../src/lib/prisma.ts";
 import { hashToken } from "../src/lib/tokens.ts";
-import { ADMIN_RESET_TTL_MS, createPasswordReset } from "../src/services/passwordResets.ts";
+import {
+  ADMIN_RESET_TTL_MS,
+  createPasswordReset,
+  EMAILED_RESET_COOLDOWN_MS,
+  requestPasswordReset,
+} from "../src/services/passwordResets.ts";
 import { createUser } from "./helpers/users.ts";
 
 const NEW_PASSWORD = { password: "brand-new-pass", confirmPassword: "brand-new-pass" };
@@ -51,7 +56,8 @@ describe("POST /api/auth/password-reset", () => {
     const res = await requestReset("ADA@example.com");
 
     expect(res.status).toBe(202);
-    expect(send).toHaveBeenCalledOnce();
+    // The request is handled after the response, so wait for it.
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
     const mail = send.mock.calls[0]![0];
     expect(mail.to).toBe("ada@example.com");
     const token = mail.text.match(/reset-password\/([\w-]+)/)![1]!;
@@ -71,6 +77,8 @@ describe("POST /api/auth/password-reset", () => {
 
     expect(unknown.status).toBe(known.status);
     expect(unknown.body).toEqual(known.body);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    await requestPasswordReset("nobody@example.com");
     expect(send).toHaveBeenCalledOnce();
   });
 
@@ -78,19 +86,66 @@ describe("POST /api/auth/password-reset", () => {
     vi.spyOn(mailer, "configured").mockReturnValue(false);
     const send = vi.spyOn(mailer, "send");
 
-    const res = await requestReset("ada@example.com");
+    expect((await requestReset("ada@example.com")).status).toBe(202);
+    await requestPasswordReset("ada@example.com");
 
-    expect(res.status).toBe(202);
     expect(send).not.toHaveBeenCalled();
     expect(await prisma.passwordReset.count()).toBe(0);
   });
 
-  it("still answers when the email fails to send", async () => {
+  it("still answers when the email fails to send, and logs instead of throwing", async () => {
     vi.spyOn(mailer, "configured").mockReturnValue(true);
     vi.spyOn(mailer, "send").mockRejectedValue(new Error("smtp down"));
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     expect((await requestReset("ada@example.com")).status).toBe(202);
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+  });
+
+  it("sends at most one email per account within the cooldown", async () => {
+    vi.spyOn(mailer, "configured").mockReturnValue(true);
+    const send = vi.spyOn(mailer, "send").mockResolvedValue();
+
+    await requestPasswordReset("ada@example.com");
+    await requestPasswordReset("ada@example.com");
+
+    expect(send).toHaveBeenCalledOnce();
+    const first = await prisma.passwordReset.findFirstOrThrow({ where: { userId: user.user.id } });
+
+    // Once the cooldown has passed, a new link replaces the earlier one.
+    await prisma.passwordReset.update({
+      where: { id: first.id },
+      data: { createdAt: new Date(Date.now() - EMAILED_RESET_COOLDOWN_MS - 1000) },
+    });
+    await requestPasswordReset("ada@example.com");
+
+    expect(send).toHaveBeenCalledTimes(2);
+    const remaining = await prisma.passwordReset.findMany({ where: { userId: user.user.id } });
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.id).not.toBe(first.id);
+  });
+
+  it("leaves an admin's link working when a reset is requested by email", async () => {
+    vi.spyOn(mailer, "configured").mockReturnValue(true);
+    vi.spyOn(mailer, "send").mockResolvedValue();
+    const admin = await createUser("admin@example.com", "admin");
+    const handedOver = await createPasswordReset(user.user.id, { ttlMs: ADMIN_RESET_TTL_MS, createdById: admin.user.id });
+
+    await requestPasswordReset("ada@example.com");
+
+    expect(await prisma.passwordReset.count({ where: { userId: user.user.id } })).toBe(2);
+    const res = await request(app).post(`/api/auth/password-reset/${tokenOf(handedOver.link)}`).send(NEW_PASSWORD);
+    expect(res.status).toBe(200);
+  });
+
+  it("sweeps expired links when a new one is created", async () => {
+    const other = await createUser("grace@example.com");
+    await createPasswordReset(other.user.id, { ttlMs: ADMIN_RESET_TTL_MS });
+    await prisma.passwordReset.updateMany({ data: { expiresAt: new Date(Date.now() - 1000) } });
+
+    await createPasswordReset(user.user.id, { ttlMs: ADMIN_RESET_TTL_MS });
+
+    expect(await prisma.passwordReset.count({ where: { userId: other.user.id } })).toBe(0);
   });
 
   it("validates the email", async () => {
@@ -164,6 +219,21 @@ describe("completing a reset", () => {
 
     expect((await request(app).post(`/api/auth/password-reset/${tokenOf(first.link)}`).send(NEW_PASSWORD)).status).toBe(400);
     expect((await request(app).post(`/api/auth/password-reset/${tokenOf(second.link)}`).send(NEW_PASSWORD)).status).toBe(200);
+  });
+
+  it("lets only one of two concurrent uses of a link win", async () => {
+    const { link } = await createPasswordReset(user.user.id, { ttlMs: ADMIN_RESET_TTL_MS });
+    const url = `/api/auth/password-reset/${tokenOf(link)}`;
+
+    const results = await Promise.all([
+      request(app).post(url).send(NEW_PASSWORD),
+      request(app).post(url).send({ password: "another-pass", confirmPassword: "another-pass" }),
+    ]);
+
+    expect(results.map((r) => r.status).sort()).toEqual([200, 400]);
+    expect(await prisma.passwordReset.count({ where: { usedAt: { not: null } } })).toBe(1);
+    const { sessionVersion } = await prisma.user.findUniqueOrThrow({ where: { id: user.user.id } });
+    expect(sessionVersion).toBe(1);
   });
 
   it("rejects an unknown token and a weak or mismatched password", async () => {

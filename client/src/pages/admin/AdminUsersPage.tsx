@@ -354,7 +354,7 @@ function ResetPasswordDialog({ user, onOpenChange }: { user: User | null; onOpen
                 <DialogTitle>Create a reset link for {user.name}?</DialogTitle>
                 <DialogDescription>
                   The link lets whoever opens it set a new password for {user.email}, so only give it to them. Using
-                  it signs them out everywhere else, and any earlier reset link stops working.
+                  it signs them out everywhere else, and any earlier reset link for them stops working.
                 </DialogDescription>
               </DialogHeader>
               <DialogFooter>

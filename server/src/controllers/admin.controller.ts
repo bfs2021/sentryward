@@ -91,8 +91,12 @@ export async function deleteUser(req: Request, res: Response) {
 
 // For someone locked out, whether or not mail is set up: the admin hands the
 // link over. It is shown once, and the user's sessions only end when it is used.
+// Your own password changes in Settings, behind the current password.
 export async function postPasswordReset(req: Request, res: Response) {
   const { id } = idParamsSchema.parse(req.params);
+  if (id === req.userId) {
+    throw new HttpError(400, "Change your own password from Settings");
+  }
   const user = await prisma.user.findUnique({ where: { id }, select: { id: true } });
   if (!user) {
     throw new HttpError(404, "User not found");

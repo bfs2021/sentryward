@@ -168,11 +168,13 @@ stops working.
 
 "Forgot password?" on the login page emails a reset link when `SMTP_URL` is set.
 The request always gets the same answer, so it does not reveal which emails have
-accounts. The link works once and expires after 1 hour, and requesting another
-one replaces it. Without mail, the page tells the user to ask an admin, who can
-create a link from the user's actions on the Admin page (it works once, expires
-after 24 hours and is shown only once). Admins can do this whether or not mail
-is set up.
+accounts. The link works once and expires after 1 hour. Requesting another one
+replaces it, but at most one email is sent to an account every 2 minutes. Without
+mail, the page tells the user to ask an admin, who can create a link from the
+user's actions on the Admin page (it works once, expires after 24 hours and is
+shown only once). Admins can do this whether or not mail is set up. An admin's
+link replaces any earlier one, and a later emailed request leaves it working.
+Whether mail is configured is public, through `GET /api/auth/registration`.
 
 Setting a new password from a link signs the user in and ends every other
 session. Changing the password in Settings does the same, keeping only the

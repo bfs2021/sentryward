@@ -7,7 +7,10 @@ import { AUTH_COOKIE, verifyToken } from "../lib/jwt.ts";
 // authentication. It is still keyed by user, read from the auth cookie: in
 // development every request reaches the API through the Vite proxy, so a per-IP
 // limit would be one shared bucket. Requests without a valid cookie (logout,
-// the GitHub install callback, expired sessions) fall back to IP.
+// the GitHub install callback, expired sessions) fall back to IP. Only the
+// signature is checked, not the session version, to keep a database lookup out
+// of the limiter; a revoked cookie still counts against its user, which only
+// spends that user's own allowance.
 function userOrIp(req: Request): string {
   const token = req.cookies?.[AUTH_COOKIE];
   const payload = typeof token === "string" ? verifyToken(token) : null;

@@ -130,10 +130,11 @@ export async function registration(_req: Request, res: Response) {
 }
 
 // Always the same answer, so the endpoint cannot be used to find out which
-// emails have accounts.
+// emails have accounts. Not awaited: the lookup and any database writes would
+// otherwise make known addresses answer measurably slower.
 export async function postPasswordResetRequest(req: Request, res: Response) {
   const { email } = passwordResetRequestSchema.parse(req.body);
-  await requestPasswordReset(email);
+  void requestPasswordReset(email);
   res.status(202).json({});
 }
 

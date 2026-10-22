@@ -10,18 +10,26 @@ import type { PasswordReset, Prisma } from "../generated/prisma/client.ts";
 // admin's link is passed on by hand, which can take longer.
 export const EMAILED_RESET_TTL_MS = 60 * 60 * 1000;
 export const ADMIN_RESET_TTL_MS = 24 * 60 * 60 * 1000;
+// Anyone who knows an address can request a reset for it; this caps the mail
+// one account gets, where authLimiter only caps each IP.
+export const EMAILED_RESET_COOLDOWN_MS = 2 * 60 * 1000;
 
 export function resetLink(token: string): string {
   return `${env.CLIENT_ORIGIN}/reset-password/${token}`;
 }
 
-// Issuing a link replaces any earlier unused one, so only the newest works. The
-// raw token exists only in the returned link.
+// An admin's link replaces every earlier unused one. An emailed link replaces
+// only earlier emailed ones: anyone can request those, and they must not be
+// able to cancel a link an admin handed over. Expired links are swept here
+// too, like OAuth states. The raw token exists only in the returned link.
 export async function createPasswordReset(userId: string, options: { ttlMs: number; createdById?: string }) {
   const token = newToken();
-  const expiresAt = new Date(Date.now() + options.ttlMs);
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + options.ttlMs);
+  const replaced = options.createdById ? {} : { createdById: null };
   await prisma.$transaction([
-    prisma.passwordReset.deleteMany({ where: { userId, usedAt: null } }),
+    prisma.passwordReset.deleteMany({ where: { expiresAt: { lt: now } } }),
+    prisma.passwordReset.deleteMany({ where: { userId, usedAt: null, ...replaced } }),
     prisma.passwordReset.create({
       data: { tokenHash: hashToken(token), userId, createdById: options.createdById ?? null, expiresAt },
     }),
@@ -29,26 +37,37 @@ export async function createPasswordReset(userId: string, options: { ttlMs: numb
   return { link: resetLink(token), expiresAt };
 }
 
-// The caller answers the same way whatever happens here, so nothing reveals
-// whether the email has an account. The email is sent in the background for
-// the same reason: waiting on SMTP only for known addresses would show in the
-// response time.
+// Runs after the caller has answered, so neither the response nor its timing
+// reveals whether the email has an account. Nothing here may throw: there is
+// no request left to report it to.
 export async function requestPasswordReset(email: string): Promise<void> {
-  if (!mailer.configured()) return;
-  const user = await prisma.user.findUnique({ where: { email }, select: { id: true, email: true } });
-  if (!user) return;
+  try {
+    if (!mailer.configured()) return;
+    const user = await prisma.user.findUnique({ where: { email }, select: { id: true, email: true } });
+    if (!user) return;
 
-  const { link } = await createPasswordReset(user.id, { ttlMs: EMAILED_RESET_TTL_MS });
-  mailer
-    .send({
+    const recent = await prisma.passwordReset.findFirst({
+      where: {
+        userId: user.id,
+        createdById: null,
+        createdAt: { gt: new Date(Date.now() - EMAILED_RESET_COOLDOWN_MS) },
+      },
+      select: { id: true },
+    });
+    if (recent) return;
+
+    const { link } = await createPasswordReset(user.id, { ttlMs: EMAILED_RESET_TTL_MS });
+    await mailer.send({
       to: user.email,
       subject: "Reset your Sentryward password",
       text:
         `Someone asked to reset the password for your Sentryward account.\n\n` +
         `Set a new password: ${link}\n\n` +
         `This link expires in 1 hour and works once. If you didn't ask for this, you can ignore this email.`,
-    })
-    .catch((err: unknown) => console.warn(`Could not email a password reset to user ${user.id}`, err));
+    });
+  } catch (err) {
+    console.warn("Could not handle a password reset request", err);
+  }
 }
 
 export async function findValidReset(

@@ -208,6 +208,15 @@ describe("password reset links", () => {
     expect((await request(app).get("/api/auth/me").set("Cookie", member.cookie)).status).toBe(401);
   });
 
+  it("refuses a link for yourself", async () => {
+    const res = await request(app)
+      .post(`/api/admin/users/${admin.user.id}/password-reset`)
+      .set("Cookie", admin.cookie);
+
+    expect(res.status).toBe(400);
+    expect(await prisma.passwordReset.count()).toBe(0);
+  });
+
   it("returns 404 for an unknown user", async () => {
     const res = await request(app)
       .post("/api/admin/users/00000000-0000-4000-8000-000000000000/password-reset")
