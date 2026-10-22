@@ -32,11 +32,45 @@ export async function githubWebhook(req: Request, res: Response) {
 
   if (event === "ping") return res.json({ outcome: "pong" });
 
+  // Keep the connection rather than deleting it: repositories, reviews and
+  // findings cascade from it, and a reinstall reattaches it (githubCallback).
+  // Without an installation id it no longer matches any event below.
   if (event === "installation" && payload.action === "deleted" && payload.installation) {
-    const { count } = await prisma.forgeConnection.deleteMany({
+    const { count } = await prisma.forgeConnection.updateMany({
       where: { provider: "github", installationId: String(payload.installation.id) },
+      data: { installationId: null },
     });
     return res.status(202).json({ outcome: "uninstalled", connections: count });
+  }
+
+  // The app lost access to these repositories, so no more events will arrive
+  // for them. Disabling keeps their settings and history; accessLostAt marks
+  // them to come back if access is granted again. One a user already disabled
+  // is left alone.
+  if (event === "installation_repositories" && payload.action === "removed" && payload.installation) {
+    const { count } = await prisma.repository.updateMany({
+      where: {
+        provider: "github",
+        enabled: true,
+        externalId: { in: (payload.repositories_removed ?? []).map((repo) => String(repo.id)) },
+        connection: { installationId: String(payload.installation.id) },
+      },
+      data: { enabled: false, accessLostAt: new Date() },
+    });
+    return res.status(202).json({ outcome: "repositories_removed", repositories: count });
+  }
+
+  if (event === "installation_repositories" && payload.action === "added" && payload.installation) {
+    const { count } = await prisma.repository.updateMany({
+      where: {
+        provider: "github",
+        accessLostAt: { not: null },
+        externalId: { in: (payload.repositories_added ?? []).map((repo) => String(repo.id)) },
+        connection: { installationId: String(payload.installation.id) },
+      },
+      data: { enabled: true, accessLostAt: null },
+    });
+    return res.status(202).json({ outcome: "repositories_added", repositories: count });
   }
 
   if (!isGithubReviewEvent(event, payload)) return res.status(202).json({ outcome: "ignored" });

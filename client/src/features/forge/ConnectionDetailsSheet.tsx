@@ -57,7 +57,7 @@ function CopyableId({ label, value }: { label: string; value: string }) {
   )
 }
 
-function StatusRow({ connectionId }: { connectionId: string }) {
+function StatusRow({ connectionId, appInstall }: { connectionId: string; appInstall: boolean }) {
   const { status, isFetching, refetch } = useConnectionStatus(connectionId)
   return (
     <>
@@ -73,8 +73,12 @@ function StatusRow({ connectionId }: { connectionId: string }) {
       {status === "revoked" && !isFetching && (
         <dd className="col-span-2">
           <Alert variant="destructive">
+            {/* Removing an app connection deletes its review history, and a
+                reinstall reattaches it anyway. */}
             <AlertDescription>
-              The forge rejected the stored credentials. Remove this connection and add it again.
+              {appInstall
+                ? "The app is no longer installed or is suspended. Install it again to reattach these repositories and their review history."
+                : "The forge rejected the stored credentials. Remove this connection and add it again."}
             </AlertDescription>
           </Alert>
         </dd>
@@ -203,7 +207,7 @@ export function ConnectionDetailsSheet({
                   <DetailRow label="Forge">{provider.label}</DetailRow>
                   <DetailRow label="Host">{connection.host}</DetailRow>
                   <DetailRow label="Connection type">{kind}</DetailRow>
-                  <StatusRow connectionId={connection.id} />
+                  <StatusRow connectionId={connection.id} appInstall={connection.kind === "github_app"} />
                   <DetailRow label="Created">{formatDateTime(connection.createdAt)}</DetailRow>
                   {data && <DetailRow label="Last updated">{formatDateTime(data.connection.updatedAt)}</DetailRow>}
                 </dl>

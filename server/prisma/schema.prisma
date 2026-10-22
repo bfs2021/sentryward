@@ -213,6 +213,9 @@ model ForgeConnection {
   encryptedRefreshToken String?        @map("encrypted_refresh_token")
   tokenExpiresAt        DateTime?      @map("token_expires_at") @db.Timestamptz
   accountLogin          String         @map("account_login")
+  // GitHub App connections only: the installed account's id, which survives
+  // a rename where accountLogin does not. Matches a reinstall to this row.
+  accountId             String?        @map("account_id")
   createdAt             DateTime       @default(now()) @map("created_at") @db.Timestamptz
   updatedAt             DateTime       @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -220,6 +223,8 @@ model ForgeConnection {
   createdBy    User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
   repositories Repository[]
 
+  // Several detached (null) rows may coexist; an installation is saved once.
+  @@unique([workspaceId, installationId])
   @@index([workspaceId])
   @@map("forge_connections")
 }
@@ -251,6 +256,9 @@ model Repository {
   externalId             String        @map("external_id")
   defaultBranch          String        @map("default_branch")
   enabled                Boolean       @default(false)
+  // Set when the forge took the app's access away (and disabled the repo), as
+  // opposed to a user disabling it. Only these come back on their own.
+  accessLostAt           DateTime?     @map("access_lost_at") @db.Timestamptz
   settings               Json          @default("{}")
   // When set, `settings` is ignored and only the workspace's global config applies.
   followGlobal           Boolean       @default(true) @map("follow_global")

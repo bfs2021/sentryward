@@ -110,9 +110,16 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- Uninstalling the GitHub App no longer deletes its connection, and with it
+  the repositories, reviews and findings. The connection is detached (it shows
+  as revoked and API calls on it return 409), and installing the app again on
+  the same account reattaches it, even if the account was renamed or the
+  uninstall webhook never arrived. Repositories removed from the installation
+  are disabled and come back when access is granted again, while one a user
+  disabled stays disabled. The dashboard no longer suggests removing an app
+  connection. Requires a database migration. Closes #81.
 - Rerunning a review on a repository whose reviews are turned off is refused
   with a 409, like a new manual review, instead of queueing and publishing a run.
-
 - **Download markdown** attaches its temporary link to the page while clicking
   it and frees the file's URL only after the click, so the download also works in
   browsers that ignore a detached link or start downloads asynchronously.

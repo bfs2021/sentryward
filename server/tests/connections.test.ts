@@ -243,6 +243,15 @@ describe("GET /api/connections/:id/status", () => {
     expect(await statusFor(connection.id)).toBe("revoked");
   });
 
+  it("reports an app connection detached by the uninstall webhook as revoked", async () => {
+    const connection = await prisma.forgeConnection.create({
+      data: { workspaceId, provider: "github", host: "github.com", kind: "github_app", accountLogin: "acme" },
+    });
+    vi.stubGlobal("fetch", fetchStub([]).fetch);
+
+    expect(await statusFor(connection.id)).toBe("revoked");
+  });
+
   it("404s on someone else's connection and requires authentication", async () => {
     const other = await createUser("other@example.com");
     const theirs = await gitlabConnection(other.workspace.id);
@@ -323,6 +332,37 @@ describe("GET /api/connections/:id", () => {
   });
 });
 
+describe("a GitHub App connection detached by an uninstall", () => {
+  it("409s with a reinstall hint instead of failing on the forge routes", async () => {
+    const connection = await prisma.forgeConnection.create({
+      data: { workspaceId, provider: "github", host: "github.com", kind: "github_app", accountLogin: "acme" },
+    });
+    const repo = await prisma.repository.create({
+      data: {
+        connectionId: connection.id,
+        provider: "github",
+        host: "github.com",
+        fullPath: "acme/web",
+        externalId: "900",
+        defaultBranch: "main",
+        enabled: true,
+      },
+    });
+    vi.stubGlobal("fetch", fetchStub([]).fetch);
+
+    const responses = [
+      await request(app).get(`/api/repos/available?connectionId=${connection.id}`).set("Cookie", cookie),
+      await request(app).get(`/api/repos/${repo.id}/changes`).set("Cookie", cookie),
+      await request(app).post("/api/reviews").set("Cookie", cookie).send({ repoId: repo.id, number: 7 }),
+    ];
+
+    for (const res of responses) {
+      expect(res.status).toBe(409);
+      expect(res.body.message).toMatch(/no longer installed/);
+    }
+  });
+});
+
 describe("DELETE /api/connections/:id", () => {
   it("deletes the caller's connection and 404s on someone else's", async () => {
     const other = await createUser("other@example.com");
@@ -343,11 +383,48 @@ describe("GitHub App installation", () => {
   const state = (sub: string, purpose = "github-install", stateWorkspace = workspaceId) =>
     jwt.sign({ sub, purpose, workspaceId: stateWorkspace }, env.JWT_SECRET, { expiresIn: "10m" });
 
-  const githubRoutes = (installationIds: number[]) => [
+  // `visible` is what /installation/repositories returns once the connection
+  // is saved and its repositories are reconciled.
+  const githubRoutes = (installationIds: number[], { login = "acme", visible = [] as number[] } = {}) => [
     { method: "POST", url: /github\.com\/login\/oauth\/access_token$/, body: { access_token: "user-tok" } },
     { url: /api\.github\.com\/user\/installations/, body: { installations: installationIds.map((id) => ({ id })) } },
-    { url: /api\.github\.com\/app\/installations\/55$/, body: { id: 55, account: { login: "acme" } } },
+    { url: /api\.github\.com\/app\/installations\/55$/, body: { id: 55, account: { id: 1, login } } },
+    {
+      method: "POST",
+      url: /\/app\/installations\/55\/access_tokens$/,
+      body: { token: "inst", expires_at: new Date(Date.now() + 3600_000).toISOString() },
+    },
+    {
+      url: /api\.github\.com\/installation\/repositories/,
+      body: {
+        repositories: visible.map((id) => ({
+          id,
+          full_name: `acme/r${id}`,
+          default_branch: "main",
+          private: false,
+          html_url: `https://github.com/acme/r${id}`,
+        })),
+      },
+    },
   ];
+
+  const callback = () =>
+    request(app)
+      .get(`/api/connections/github/callback?installation_id=55&setup_action=install&code=c&state=${state(userId)}`)
+      .set("Cookie", cookie);
+
+  const githubAppRepo = (connectionId: string, externalId: string, data: { enabled: boolean; accessLostAt?: Date }) =>
+    prisma.repository.create({
+      data: {
+        connectionId,
+        provider: "github",
+        host: "github.com",
+        fullPath: `acme/r${externalId}`,
+        externalId,
+        defaultBranch: "main",
+        ...data,
+      },
+    });
 
   it("redirects to the app's install page with a signed state", async () => {
     const res = await request(app).get("/api/connections/github/install").set("Cookie", cookie);
@@ -373,6 +450,87 @@ describe("GitHub App installation", () => {
       installationId: "55",
       accountLogin: "acme",
     });
+  });
+
+  it("reattaches the connection an uninstall detached, with its repositories", async () => {
+    const detached = await prisma.forgeConnection.create({
+      data: { workspaceId, provider: "github", host: "github.com", kind: "github_app", accountLogin: "acme" },
+    });
+    await prisma.repository.create({
+      data: {
+        connectionId: detached.id,
+        provider: "github",
+        host: "github.com",
+        fullPath: "acme/web",
+        externalId: "900",
+        defaultBranch: "main",
+        enabled: true,
+      },
+    });
+    vi.stubGlobal("fetch", fetchStub(githubRoutes([55], { visible: [900] })).fetch);
+
+    await request(app)
+      .get(`/api/connections/github/callback?installation_id=55&setup_action=install&code=c&state=${state(userId)}`)
+      .set("Cookie", cookie);
+
+    expect(await prisma.forgeConnection.findMany({ select: { id: true, installationId: true } })).toEqual([
+      { id: detached.id, installationId: "55" },
+    ]);
+    expect(await prisma.repository.count({ where: { connectionId: detached.id } })).toBe(1);
+  });
+
+  it("records the account id so a later reinstall can find the connection", async () => {
+    vi.stubGlobal("fetch", fetchStub(githubRoutes([55])).fetch);
+
+    await callback();
+
+    expect(await prisma.forgeConnection.findFirstOrThrow()).toMatchObject({ accountId: "1", installationId: "55" });
+  });
+
+  it("replaces a stale installation of the same account even if the uninstall webhook never arrived", async () => {
+    const stale = await prisma.forgeConnection.create({
+      data: { workspaceId, provider: "github", host: "github.com", kind: "github_app", installationId: "44", accountLogin: "acme" },
+    });
+    vi.stubGlobal("fetch", fetchStub(githubRoutes([55])).fetch);
+
+    await callback();
+
+    expect(await prisma.forgeConnection.findMany({ select: { id: true, installationId: true, accountId: true } })).toEqual([
+      { id: stale.id, installationId: "55", accountId: "1" },
+    ]);
+  });
+
+  it("reattaches by account id after the account was renamed", async () => {
+    const detached = await prisma.forgeConnection.create({
+      data: { workspaceId, provider: "github", host: "github.com", kind: "github_app", accountLogin: "acme", accountId: "1" },
+    });
+    vi.stubGlobal("fetch", fetchStub(githubRoutes([55], { login: "acme-inc" })).fetch);
+
+    await callback();
+
+    expect(await prisma.forgeConnection.findMany({ select: { id: true, installationId: true, accountLogin: true } })).toEqual([
+      { id: detached.id, installationId: "55", accountLogin: "acme-inc" },
+    ]);
+  });
+
+  it("brings back only the repositories the app lost access to and can reach again", async () => {
+    const detached = await prisma.forgeConnection.create({
+      data: { workspaceId, provider: "github", host: "github.com", kind: "github_app", accountLogin: "acme", accountId: "1" },
+    });
+    const regained = await githubAppRepo(detached.id, "900", { enabled: false, accessLostAt: new Date() });
+    const stillLost = await githubAppRepo(detached.id, "901", { enabled: false, accessLostAt: new Date() });
+    const userDisabled = await githubAppRepo(detached.id, "902", { enabled: false });
+    const unreachable = await githubAppRepo(detached.id, "903", { enabled: true });
+    vi.stubGlobal("fetch", fetchStub(githubRoutes([55], { visible: [900, 902] })).fetch);
+
+    await callback();
+
+    const repos = await prisma.repository.findMany({ select: { id: true, enabled: true, accessLostAt: true } });
+    const byId = new Map(repos.map((repo) => [repo.id, repo]));
+    expect(byId.get(regained.id)).toMatchObject({ enabled: true, accessLostAt: null });
+    expect(byId.get(stillLost.id)).toMatchObject({ enabled: false, accessLostAt: expect.any(Date) });
+    expect(byId.get(userDisabled.id)).toMatchObject({ enabled: false, accessLostAt: null });
+    expect(byId.get(unreachable.id)).toMatchObject({ enabled: false, accessLostAt: expect.any(Date) });
   });
 
   it("refuses the callback when the user is no longer an admin of the workspace in the state", async () => {
