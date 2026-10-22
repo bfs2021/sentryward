@@ -831,6 +831,49 @@ describe("runJob when the forge refuses the connection's credentials", () => {
     expect(await rejectedAt()).toBeNull();
   });
 
+  it("does not check the credentials for a rate limit answered with 403", async () => {
+    const job = await claimedJob();
+    const changeError = new ForgeError(403, "403 rate limit", { rateLimited: true });
+    const { runDeps } = deps({}, answers, undefined, { changeError });
+    runDeps.credentialsRefused = async () => {
+      throw new Error("should not be called");
+    };
+
+    await expect(runJob(job, runDeps)).rejects.toThrow("403 rate limit");
+    expect(await rejectedAt()).toBeNull();
+  });
+
+  it("does not flag a connection that was reconnected while the check ran", async () => {
+    const job = await claimedJob();
+    const { runDeps } = deps({}, answers, undefined, { changeError: new ForgeError(401, "401 Unauthorized") });
+    // The user connects the account again with a new token mid-check; the
+    // refusal was for the old one.
+    runDeps.credentialsRefused = async () => {
+      await prisma.forgeConnection.update({
+        where: { id: connectionId },
+        data: { encryptedToken: "new", credentialsRejectedAt: null },
+      });
+      return true;
+    };
+
+    await expect(runJob(job, runDeps)).rejects.toThrow(/rejected this connection's credentials/);
+    expect(await rejectedAt()).toBeNull();
+  });
+
+  it("does not check the credentials of a GitHub App connection", async () => {
+    await prisma.forgeConnection.update({
+      where: { id: connectionId },
+      data: { kind: "github_app", installationId: "55", encryptedToken: null },
+    });
+    const job = await claimedJob();
+    const { runDeps } = deps({}, answers, undefined, { changeError: new ForgeError(404, "404 Not Found") });
+    runDeps.credentialsRefused = async () => {
+      throw new Error("should not be called");
+    };
+
+    await expect(runJob(job, runDeps)).rejects.toThrow("404 Not Found");
+  });
+
   it("does not check the credentials for an error that is not a refusal", async () => {
     const job = await claimedJob();
     const { runDeps } = deps({}, answers, undefined, { changeError: new ForgeError(502, "502 Bad Gateway") });

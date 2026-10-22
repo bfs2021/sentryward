@@ -10,13 +10,14 @@ export const CREDENTIALS_REJECTED_REASON =
   "The forge rejected this connection's credentials; connect the account again to resume reviews";
 
 // A token this server can no longer decrypt, or an OAuth grant GitLab will no
-// longer renew, needs reconnecting, like a revoked one.
+// longer renew, needs reconnecting, like a revoked one. A rate limit is not a
+// refusal even when answered with 403: the token works again once it resets.
 export function isCredentialRejection(err: unknown): boolean {
   return (
     err instanceof UnreadableTokenError ||
     err instanceof ReconnectRequiredError ||
     err instanceof AppUninstalledError ||
-    (err instanceof ForgeError && [401, 403, 404].includes(err.status))
+    (err instanceof ForgeError && !err.rateLimited && [401, 403, 404].includes(err.status))
   );
 }
 
@@ -36,10 +37,19 @@ export async function credentialsRefused(connection: ForgeConnection): Promise<b
 // queueing reviews that cannot run. GitHub App connections are left out: an
 // uninstall detaches them instead (webhooks.controller). Writes only when the
 // state changes, so a healthy connection costs no update.
-export async function recordCredentials(connection: Pick<ForgeConnection, "id" | "kind">, ok: boolean): Promise<void> {
+//
+// A refusal is stored only if the row is unchanged since `connection` was
+// read: a reconnect (or OAuth refresh) while the check ran replaced the
+// credentials it tested, so the refusal no longer says anything about them.
+export async function recordCredentials(
+  connection: Pick<ForgeConnection, "id" | "kind" | "updatedAt">,
+  ok: boolean,
+): Promise<void> {
   if (connection.kind === "github_app") return;
   await prisma.forgeConnection.updateMany({
-    where: { id: connection.id, credentialsRejectedAt: ok ? { not: null } : null },
+    where: ok
+      ? { id: connection.id, credentialsRejectedAt: { not: null } }
+      : { id: connection.id, credentialsRejectedAt: null, updatedAt: connection.updatedAt },
     data: { credentialsRejectedAt: ok ? null : new Date() },
   });
 }

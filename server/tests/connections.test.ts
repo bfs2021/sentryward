@@ -276,6 +276,17 @@ describe("GET /api/connections/:id/status", () => {
     expect(await rejectedAt(connection.id)).toBeNull();
   });
 
+  it("treats a rate-limited check as unreachable and does not flag the connection", async () => {
+    const connection = await gitlabConnection();
+    vi.stubGlobal(
+      "fetch",
+      fetchStub([{ url: /gitlab\.com\/api\/v4\/user$/, status: 403, headers: { "x-ratelimit-remaining": "0" } }]).fetch,
+    );
+
+    expect(await statusFor(connection.id)).toBe("unreachable");
+    expect(await rejectedAt(connection.id)).toBeNull();
+  });
+
   it("never flags a GitHub App connection, which an uninstall detaches instead", async () => {
     const connection = await prisma.forgeConnection.create({
       data: { workspaceId, provider: "github", host: "github.com", kind: "github_app", installationId: "55", accountLogin: "acme" },

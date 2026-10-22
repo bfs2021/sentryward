@@ -122,7 +122,9 @@ export async function repoWebhook(req: Request, res: Response) {
   }
   // The hook secret is stored per repository and outlives the token, so the
   // forge keeps delivering after it refused the credentials. Anything queued
-  // now would fail; reconnecting the account clears the flag.
+  // now would fail; reconnecting the account clears the flag. Close events are
+  // dropped too: a job left queued for a closed change is cancelled when it
+  // runs (runJob's close watch).
   if (repo.connection.credentialsRejectedAt) {
     return res.status(202).json({ outcome: "reconnect_required" });
   }

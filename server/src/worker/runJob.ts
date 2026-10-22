@@ -163,8 +163,10 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
     await complete(job.id, { status: "skipped", verdict: null, error });
     return;
   }
-  // Queued before the forge refused the credentials. A person asking for a
-  // review still gets a run, which doubles as a check of a replaced token.
+  // Queued before the forge refused the credentials. Dashboard reviews and
+  // reruns still get a run, which doubles as a check of a replaced token;
+  // `/sentryward review` comments arrive through the paused repository hook
+  // and are dropped there.
   if (repo.connection.credentialsRejectedAt && job.trigger === "webhook") {
     await complete(job.id, { status: "skipped", verdict: null, error: CREDENTIALS_REJECTED_REASON });
     return;
@@ -186,10 +188,14 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
   try {
     changeSet = await forge.getChange(repo.fullPath, job.number, cacheFor(savedDisablesCache));
   } catch (err) {
-    // A refusal for one change (a deleted MR, a repository the token lost, a
-    // rate limit answered with 403) says nothing about the connection, so it is
-    // flagged only when the account check is refused too.
-    const refused = isCredentialRejection(err) && (await connectionRefused(repo.connection, deps).catch(() => false));
+    // A refusal for one change (a deleted MR, a repository the token lost)
+    // says nothing about the connection, so it is flagged only when the
+    // account check is refused too. GitHub App connections are never flagged
+    // (an uninstall detaches them), so they skip the extra check.
+    const refused =
+      repo.connection.kind !== "github_app" &&
+      isCredentialRejection(err) &&
+      (await connectionRefused(repo.connection, deps).catch(() => false));
     if (!refused) throw err;
     await recordCredentials(repo.connection, false);
     throw new Error(CREDENTIALS_REJECTED_REASON);
