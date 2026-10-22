@@ -8,6 +8,15 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Webhook deliveries for one PR/MR that arrive at the same moment (two quick
+  pushes, a push and a `/sentryward review` comment, or a redelivery) queue
+  one review instead of reviewing the same head twice. Enqueues for a change
+  are serialized, and the close cancel and stale-job recovery follow the same
+  rule: a recovered job is superseded when a newer one is already queued.
+  No migration needed. Closes #82.
+
 ## [0.2.0] - 2026-10-22
 
 Sentryward remains pre-1.0, and this release changes some default behaviour:

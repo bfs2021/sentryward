@@ -1,9 +1,11 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { lockChange } from "../src/lib/changeLock.ts";
 import { prisma } from "../src/lib/prisma.ts";
 import {
   ACCESS_LOST_REASON,
   cancelForDisabledRepositories,
   cancelJob,
+  cancelQueuedForClosedChange,
   claimNext,
   claimState,
   complete,
@@ -78,6 +80,22 @@ describe("enqueue", () => {
     expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: other.id } })).status).toBe(
       "queued",
     );
+  });
+
+  it("leaves one queued job when newer heads arrive concurrently", async () => {
+    await Promise.all(["a", "b", "c", "d", "e"].map((sha) => job(sha)));
+
+    const jobs = await prisma.reviewJob.findMany();
+    expect(jobs).toHaveLength(5);
+    expect(jobs.filter((j) => j.status === "queued")).toHaveLength(1);
+    expect(jobs.filter((j) => j.status === "superseded")).toHaveLength(4);
+  });
+
+  it("creates one job when the same head is enqueued concurrently", async () => {
+    const results = await Promise.all(Array.from({ length: 5 }, () => job("aaa")));
+
+    expect(new Set(results.map((r) => r.id)).size).toBe(1);
+    expect(await prisma.reviewJob.count()).toBe(1);
   });
 });
 
@@ -170,7 +188,41 @@ describe("cancelForDisabledRepositories", () => {
   });
 });
 
+describe("cancelQueuedForClosedChange", () => {
+  it("cancels a push being queued at the same moment", async () => {
+    const repo = await prisma.repository.findUniqueOrThrow({ where: { id: repositoryId } });
+    let cancelling!: Promise<number>;
+    await prisma.$transaction(async (tx) => {
+      await lockChange(tx, "enqueue", repositoryId, 7);
+      await tx.reviewJob.create({ data: { repositoryId, number: 7, headSha: "aaa", trigger: "webhook" } });
+      cancelling = cancelQueuedForClosedChange(repo, 7);
+      // Long enough for the cancel to reach the lock before this job commits.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+
+    expect(await cancelling).toBe(1);
+    expect(await prisma.reviewJob.findFirstOrThrow()).toMatchObject({ status: "cancelled" });
+  });
+});
+
 describe("recoverStale", () => {
+  it("supersedes a stale job when a newer head of its change is queued", async () => {
+    const stale = await job("aaa");
+    await claimNext();
+    await prisma.reviewJob.update({
+      where: { id: stale.id },
+      data: { lockedAt: new Date(Date.now() - 60 * 60 * 1000) },
+    });
+    const newer = await job("bbb");
+
+    expect(await recoverStale(15 * 60 * 1000, 3)).toBe(1);
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: stale.id } })).toMatchObject({
+      status: "superseded",
+      lockedAt: null,
+    });
+    expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: newer.id } })).status).toBe("queued");
+  });
+
   it("requeues a stale job with attempts left and fails one without", async () => {
     const retry = await job("aaa", 1);
     const exhausted = await job("bbb", 2);
@@ -342,6 +394,27 @@ describe("enqueueFromWebhook", () => {
       queued: false,
       reason: "duplicate",
     });
+  });
+
+  it("queues a head once when its delivery is repeated concurrently", async () => {
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => enqueueFromWebhook({ repositoryId, number: 7, headSha: "aaa", trigger: "webhook" })),
+    );
+
+    expect(results.filter((r) => r.queued)).toHaveLength(1);
+    expect(results.filter((r) => !r.queued && r.reason === "duplicate")).toHaveLength(4);
+    expect(await prisma.reviewJob.count()).toBe(1);
+  });
+
+  it("leaves one queued job when deliveries of newer heads arrive concurrently", async () => {
+    const results = await Promise.all(
+      ["a", "b", "c", "d", "e"].map((headSha) => enqueueFromWebhook({ repositoryId, number: 7, headSha, trigger: "webhook" })),
+    );
+
+    expect(results.filter((r) => r.queued)).toHaveLength(5);
+    const jobs = await prisma.reviewJob.findMany();
+    expect(jobs.filter((j) => j.status === "queued")).toHaveLength(1);
+    expect(jobs.filter((j) => j.status === "superseded")).toHaveLength(4);
   });
 
   it("stops queueing once a repository's queue is full", async () => {
