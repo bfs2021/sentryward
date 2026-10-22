@@ -79,6 +79,22 @@ describe("enqueue", () => {
       "queued",
     );
   });
+
+  it("leaves one queued job when newer heads arrive concurrently", async () => {
+    await Promise.all(["a", "b", "c", "d", "e"].map((sha) => job(sha)));
+
+    const jobs = await prisma.reviewJob.findMany();
+    expect(jobs).toHaveLength(5);
+    expect(jobs.filter((j) => j.status === "queued")).toHaveLength(1);
+    expect(jobs.filter((j) => j.status === "superseded")).toHaveLength(4);
+  });
+
+  it("creates one job when the same head is enqueued concurrently", async () => {
+    const results = await Promise.all(Array.from({ length: 5 }, () => job("aaa")));
+
+    expect(new Set(results.map((r) => r.id)).size).toBe(1);
+    expect(await prisma.reviewJob.count()).toBe(1);
+  });
 });
 
 describe("claimNext", () => {
@@ -342,6 +358,16 @@ describe("enqueueFromWebhook", () => {
       queued: false,
       reason: "duplicate",
     });
+  });
+
+  it("queues a head once when its delivery is repeated concurrently", async () => {
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => enqueueFromWebhook({ repositoryId, number: 7, headSha: "aaa", trigger: "webhook" })),
+    );
+
+    expect(results.filter((r) => r.queued)).toHaveLength(1);
+    expect(results.filter((r) => !r.queued && r.reason === "duplicate")).toHaveLength(4);
+    expect(await prisma.reviewJob.count()).toBe(1);
   });
 
   it("stops queueing once a repository's queue is full", async () => {

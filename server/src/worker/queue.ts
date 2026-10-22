@@ -11,34 +11,49 @@ export interface EnqueueInput {
   actor?: string;
 }
 
+// Concurrent deliveries for one change (two quick pushes, a push and a review
+// comment) would otherwise both pass the checks below before either job is
+// committed, and the same head would be reviewed twice. Under READ COMMITTED the
+// second transaction sees the first one's job once it gets the lock. The key is
+// prefixed so it does not contend with the thread-reply lock on the same change.
+async function lockChange(tx: Prisma.TransactionClient, repositoryId: string, number: number): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`enqueue:${repositoryId}`}::text), ${number}::int)`;
+}
+
 // A newer push makes any still-queued review of the same PR pointless, so it is
 // marked superseded rather than left to spend a model call. A job for the same
 // head that is already queued or running is returned instead of duplicated.
 export async function enqueue(input: EnqueueInput): Promise<ReviewJob> {
   return prisma.$transaction(async (tx) => {
-    const existing = await tx.reviewJob.findFirst({
-      where: {
-        repositoryId: input.repositoryId,
-        number: input.number,
-        headSha: input.headSha,
-        status: { in: ["queued", "running"] },
-      },
-    });
-    if (existing) {
-      return existing;
-    }
-
-    await tx.reviewJob.updateMany({
-      where: {
-        repositoryId: input.repositoryId,
-        number: input.number,
-        status: "queued",
-      },
-      data: { status: "superseded", finishedAt: new Date() },
-    });
-
-    return tx.reviewJob.create({ data: input });
+    await lockChange(tx, input.repositoryId, input.number);
+    return enqueueIn(tx, input);
   });
+}
+
+// The caller holds the change's lock.
+async function enqueueIn(tx: Prisma.TransactionClient, input: EnqueueInput): Promise<ReviewJob> {
+  const existing = await tx.reviewJob.findFirst({
+    where: {
+      repositoryId: input.repositoryId,
+      number: input.number,
+      headSha: input.headSha,
+      status: { in: ["queued", "running"] },
+    },
+  });
+  if (existing) {
+    return existing;
+  }
+
+  await tx.reviewJob.updateMany({
+    where: {
+      repositoryId: input.repositoryId,
+      number: input.number,
+      status: "queued",
+    },
+    data: { status: "superseded", finishedAt: new Date() },
+  });
+
+  return tx.reviewJob.create({ data: input });
 }
 
 // Forge redeliveries and repeated events must not review a commit twice, and a
@@ -52,29 +67,37 @@ export type WebhookEnqueueResult =
 
 // For automatic triggers: a head that was ever queued or reviewed is left
 // alone. A person asking explicitly (manual or comment) goes through enqueue().
+// The duplicate check runs under the change's lock, so a redelivery racing the
+// original is refused. The queue-full count spans other changes, which take
+// their own locks, so concurrent pushes to several changes can exceed it by a
+// few; it bounds a burst, not a hard quota.
 export async function enqueueFromWebhook(input: EnqueueInput): Promise<WebhookEnqueueResult> {
-  const seen = await prisma.reviewJob.findFirst({
-    where: {
-      repositoryId: input.repositoryId,
-      number: input.number,
-      headSha: input.headSha,
-      // A skipped job does not count: a draft marked ready for review keeps its
-      // head, and must still be reviewed.
-      status: { notIn: ["superseded", "skipped"] },
-      // Nor does one cancelled only because reviews were off: that head was
-      // never reviewed, and turning the repository back on should pick it up.
-      NOT: { status: "cancelled", error: { in: OFF_REASONS } },
-    },
-    select: { id: true },
-  });
-  if (seen) return { queued: false, reason: "duplicate" };
+  return prisma.$transaction(async (tx): Promise<WebhookEnqueueResult> => {
+    await lockChange(tx, input.repositoryId, input.number);
 
-  const queued = await prisma.reviewJob.count({
-    where: { repositoryId: input.repositoryId, status: "queued", number: { not: input.number } },
-  });
-  if (queued >= MAX_QUEUED_PER_REPOSITORY) return { queued: false, reason: "queue_full" };
+    const seen = await tx.reviewJob.findFirst({
+      where: {
+        repositoryId: input.repositoryId,
+        number: input.number,
+        headSha: input.headSha,
+        // A skipped job does not count: a draft marked ready for review keeps its
+        // head, and must still be reviewed.
+        status: { notIn: ["superseded", "skipped"] },
+        // Nor does one cancelled only because reviews were off: that head was
+        // never reviewed, and turning the repository back on should pick it up.
+        NOT: { status: "cancelled", error: { in: OFF_REASONS } },
+      },
+      select: { id: true },
+    });
+    if (seen) return { queued: false, reason: "duplicate" };
 
-  return { queued: true, job: await enqueue(input) };
+    const queued = await tx.reviewJob.count({
+      where: { repositoryId: input.repositoryId, status: "queued", number: { not: input.number } },
+    });
+    if (queued >= MAX_QUEUED_PER_REPOSITORY) return { queued: false, reason: "queue_full" };
+
+    return { queued: true, job: await enqueueIn(tx, input) };
+  });
 }
 
 // Claims the oldest queued job whose workspace is under the per-workspace
