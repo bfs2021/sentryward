@@ -521,6 +521,9 @@ describe("GitHub App installation", () => {
     const stillLost = await githubAppRepo(detached.id, "901", { enabled: false, accessLostAt: new Date() });
     const userDisabled = await githubAppRepo(detached.id, "902", { enabled: false });
     const unreachable = await githubAppRepo(detached.id, "903", { enabled: true });
+    const inFlight = await prisma.reviewJob.create({
+      data: { repositoryId: unreachable.id, number: 1, headSha: "h1", trigger: "webhook", status: "running" },
+    });
     vi.stubGlobal("fetch", fetchStub(githubRoutes([55], { visible: [900, 902] })).fetch);
 
     await callback();
@@ -531,6 +534,10 @@ describe("GitHub App installation", () => {
     expect(byId.get(stillLost.id)).toMatchObject({ enabled: false, accessLostAt: expect.any(Date) });
     expect(byId.get(userDisabled.id)).toMatchObject({ enabled: false, accessLostAt: null });
     expect(byId.get(unreachable.id)).toMatchObject({ enabled: false, accessLostAt: expect.any(Date) });
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: inFlight.id } })).toMatchObject({
+      status: "cancelled",
+      error: "Sentryward lost access to this repository",
+    });
   });
 
   it("refuses the callback when the user is no longer an admin of the workspace in the state", async () => {

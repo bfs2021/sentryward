@@ -8,6 +8,7 @@ import type { ChangeSet, RejectedFinding, ToolAnnotation } from "../review/core/
 import type { ContextSource } from "../review/context/gather.ts";
 import { cacheKey, cached, forgeCache, type ForgeCache } from "../review/forge/cache.ts";
 import { ForgeError } from "../review/forge/http.ts";
+import type { CommitStatus } from "../review/forge/types.ts";
 import { searchTerms } from "../review/forge/issues.ts";
 import {
   abortableGenerate,
@@ -23,13 +24,13 @@ import { runReview } from "../review/pipeline.ts";
 import { publishes, publishReview, resolvesThreads } from "../review/publish/publisher.ts";
 import { pendingStatus } from "../review/publish/status.ts";
 import { summarize } from "../review/render/json.ts";
-import { progressMarkdown } from "../review/render/progress.ts";
+import { cancelledMarkdown, progressMarkdown } from "../review/render/progress.ts";
 import { adapterForConnection, type Forge } from "../services/forge.ts";
 import { llmCredentialsFor } from "../services/llm.ts";
 import { CLOSE_CHECK_INTERVAL_MS, watchForClose } from "./closeWatch.ts";
 import { resolveLlm, type LlmCredentials } from "./llmEndpoint.ts";
 import { incrementFor } from "./incremental.ts";
-import { claimState, CLOSED_REASON, complete, DISABLED_REASON } from "./queue.ts";
+import { ACCESS_LOST_REASON, claimState, CLOSED_REASON, complete, DISABLED_REASON } from "./queue.ts";
 import { findingTransitions, syncFindings, threadOperations, type ThreadOutcome } from "./syncFindings.ts";
 
 // How many recent dismissals to feed into the review prompt; bounded so a noisy
@@ -141,10 +142,12 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
   if (!repo) {
     throw new Error("The repository is no longer connected");
   }
-  // Turning reviews off cancels queued jobs, but one claimed just before that,
-  // or for a repository turned off because access was lost, still lands here.
+  // Turning a repository off cancels its jobs, but one claimed just before the
+  // cancel still lands here. Checked here rather than in claimNext, which would
+  // leave such a job queued until the repository came back on.
   if (!repo.enabled) {
-    await complete(job.id, { status: "skipped", verdict: null, error: DISABLED_REASON });
+    const error = repo.accessLostAt ? ACCESS_LOST_REASON : DISABLED_REASON;
+    await complete(job.id, { status: "skipped", verdict: null, error });
     return;
   }
 
@@ -208,19 +211,24 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
   // catches the rest: a close the webhook missed, and one that lands mid-review.
   // A run that lost its claim (failed on timeout, or recovered and claimed
   // again) stops too, so it never publishes for a job it no longer owns.
-  let cancelledBy: "manual" | "closed" | "lost" | undefined;
-  const watch = watchForClose(async () => {
+  let cancelledBy: "manual" | "closed" | "disabled" | "lost" | undefined;
+  const ownsClaim = async () => {
     const claim = await claimState(job.id, job.attempts);
-    if (claim !== "owned") {
-      cancelledBy = claim === "cancelled" ? "manual" : "lost";
-      return true;
-    }
+    if (claim === "owned") return true;
+    cancelledBy = claim === "cancelled" ? "manual" : claim;
+    return false;
+  };
+  const watch = watchForClose(async () => {
+    if (!(await ownsClaim())) return true;
     if (!config.triggers.abortOnClose) return false;
     const { state } = await forge.getChangeHead(repo.fullPath, job.number);
     if (state !== "closed" && state !== "merged") return false;
     cancelledBy = "closed";
     return true;
   }, deps.closeCheckIntervalMs ?? CLOSE_CHECK_INTERVAL_MS);
+  // Whether the summary comment (progress note or review) is on the change, so
+  // a cancel knows to replace it.
+  let summaryPosted = false;
   const cancel = async (posted: boolean) => {
     watch.stop();
     // The job belongs to whoever holds it now: the worker that failed it, or
@@ -228,19 +236,32 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
     // writing here could finish that run's job, and a status could overwrite
     // its pending one.
     if (cancelledBy === "lost") return;
-    const closed = cancelledBy === "closed";
+    const reason =
+      cancelledBy === "closed" ? CLOSED_REASON : cancelledBy === "disabled" ? DISABLED_REASON : "Review cancelled";
     // Best effort, and only over what this run already put on the change.
-    if (posted && config.output.postCheck) {
-      const description = closed ? "Review cancelled: the change was closed" : "Review cancelled";
-      await forge.setCommitStatus(ref, { state: "error", description, targetUrl }).catch(() => undefined);
+    if (summaryPosted) {
+      await forge.upsertSummaryComment(ref, cancelledMarkdown(reason)).catch(() => undefined);
     }
-    // A manual cancel already stored its reason and status, so this only
-    // finishes a job the change being closed stopped.
+    if (posted && config.output.postCheck) {
+      // A repository turned off runs no more reviews, so an error here would
+      // block a required check for good; success clears it.
+      const status: CommitStatus =
+        cancelledBy === "disabled"
+          ? { state: "success", description: "Reviews turned off for this repository", targetUrl }
+          : {
+              state: "error",
+              description: cancelledBy === "closed" ? "Review cancelled: the change was closed" : "Review cancelled",
+              targetUrl,
+            };
+      await forge.setCommitStatus(ref, status).catch(() => undefined);
+    }
+    // A manual or turn-off cancel already stored its reason and status, so
+    // this only finishes a job the change being closed stopped.
     await complete(job.id, {
       status: "cancelled",
       verdict: null,
       resolvedConfig,
-      error: closed ? CLOSED_REASON : "Review cancelled",
+      error: reason,
       headSha: ref.headSha,
       baseSha: ref.baseSha,
     });
@@ -254,9 +275,14 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
     // Best effort: a review must not fail because its progress note did.
     if (config.output.postSummary) {
       const outputs = { walkthrough, inline: config.output.postInline, status: config.output.postCheck };
-      await forge.upsertSummaryComment(ref, progressMarkdown(changeSet, outputs)).catch((err: unknown) => {
-        warnings.push(`Progress comment failed: ${message(err)}`);
-      });
+      await forge
+        .upsertSummaryComment(ref, progressMarkdown(changeSet, outputs))
+        .then(() => {
+          summaryPosted = true;
+        })
+        .catch((err: unknown) => {
+          warnings.push(`Progress comment failed: ${message(err)}`);
+        });
     }
     if (config.output.postCheck) {
       await forge.setCommitStatus(ref, pendingStatus(targetUrl)).catch((err: unknown) => {
@@ -370,7 +396,11 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
       resolvedFingerprints: threads.resolve,
       reopenedFingerprints: threads.reopen,
       targetUrl,
+      // A cancel can land while publishing; the watch is stopped by now, so
+      // the claim is checked before each step instead.
+      proceed: ownsClaim,
     });
+    if (publication.summaryCommentId) summaryPosted = true;
     if (resolvesThreads(config)) {
       threadOutcome = { attempted: [...threads.resolve, ...threads.reopen], failed: publication.threadsFailed ?? [] };
     }
@@ -384,6 +414,12 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
         })),
         skipDuplicates: true,
       });
+    }
+    // The comments that did go up are recorded above so a later run does not
+    // repost them; the job itself keeps the cancel, and findings are not synced.
+    if (publication.stopped) {
+      await cancel(true);
+      return;
     }
   }
 

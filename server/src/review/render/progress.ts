@@ -33,6 +33,12 @@ export function progressMarkdown(changeSet: ChangeSet, outputs: ProgressOutputs)
   ].join("\n");
 }
 
+// Replaces the progress note when a run stops early, so the change does not
+// keep promising a review that will never arrive.
+export function cancelledMarkdown(reason: string): string {
+  return [`**Review cancelled**`, "", `<sub>${reason}.</sub>`, "", BRAND_FOOTER, "", SUMMARY_MARKER, ""].join("\n");
+}
+
 function list(items: string[]): string {
   return items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items.at(-1)}` : items[0]!;
 }

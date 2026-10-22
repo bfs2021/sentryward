@@ -20,6 +20,8 @@ export interface PublishInput {
   reopenedFingerprints?: string[];
   // Where the commit status links: the review in the dashboard.
   targetUrl?: string;
+  // Asked before each step; false stops publishing (the job was cancelled).
+  proceed?: () => Promise<boolean>;
 }
 
 export interface Publication {
@@ -37,6 +39,8 @@ export interface Publication {
   threadsReopened?: string[];
   // Threads that could not be moved; they are retried on the next run.
   threadsFailed?: string[];
+  // Publishing stopped partway because proceed() said so.
+  stopped?: boolean;
   errors: string[];
 }
 
@@ -46,7 +50,8 @@ function message(err: unknown): string {
 
 // Inline comments, the summary and the commit status are published
 // independently: one failing never stops the others, and each failure is
-// recorded rather than thrown.
+// recorded rather than thrown. A cancel is checked between steps: a write
+// already under way still finishes, but nothing after it is sent.
 export async function publishReview(input: PublishInput): Promise<Publication> {
   const { publisher, changeSet, result, config } = input;
   const ref = changeSet.forgeRef;
@@ -64,9 +69,15 @@ export async function publishReview(input: PublishInput): Promise<Publication> {
     errors: [],
   };
   const placement = summaryPlacement(config, result);
+  const halted = async () => {
+    if (!input.proceed || (await input.proceed())) return false;
+    publication.stopped = true;
+    return true;
+  };
 
   // The summary goes first so it sits at the top of the conversation, above
   // the inline comments, even when no progress comment was posted.
+  if (await halted()) return publication;
   if (placement.summary !== null) {
     try {
       publication.summaryCommentId = await publisher.upsertSummaryComment(ref, placement.summary);
@@ -77,6 +88,7 @@ export async function publishReview(input: PublishInput): Promise<Publication> {
   }
 
   if (placement.walkthroughComment !== null) {
+    if (await halted()) return publication;
     try {
       await publisher.upsertComment(ref, WALKTHROUGH_MARKER, placement.walkthroughComment);
       publication.walkthroughLocation = "comment";
@@ -86,6 +98,7 @@ export async function publishReview(input: PublishInput): Promise<Publication> {
   }
 
   if (config.output.postInline) {
+    if (await halted()) return publication;
     try {
       // The forge's own markers cover a database row that was never written.
       const onForge = await publisher.listPostedFingerprints(ref).catch(() => new Set<string>());
@@ -114,6 +127,7 @@ export async function publishReview(input: PublishInput): Promise<Publication> {
     ] as const;
     for (const step of steps) {
       if (step.prints.length === 0) continue;
+      if (await halted()) return publication;
       try {
         const outcome = await publisher.setThreadsResolved(ref, step.prints, step.resolved);
         if (step.resolved) publication.threadsResolved = outcome.updated;
@@ -135,6 +149,7 @@ export async function publishReview(input: PublishInput): Promise<Publication> {
   // meant to write counts as a failure: a token that cannot edit the PR/MR
   // body must not mark every review partial.
   const summary = descriptionSummary(config, result);
+  if (await halted()) return publication;
   await publisher.updateDescription(ref, (description) => withDescriptionSummary(description, summary)).catch((err: unknown) => {
     if (summary) publication.errors.push(`Description summary failed: ${message(err)}`);
   });
@@ -142,6 +157,7 @@ export async function publishReview(input: PublishInput): Promise<Publication> {
   if (result.walkthrough) {
     const { add, remove } = labelChanges(result.walkthrough, config.output);
     if (add.length || remove.length) {
+      if (await halted()) return publication;
       try {
         await publisher.setLabels(ref, add, remove);
         publication.labels = add;
@@ -152,6 +168,7 @@ export async function publishReview(input: PublishInput): Promise<Publication> {
   }
 
   if (config.output.postCheck) {
+    if (await halted()) return publication;
     const status = commitStatus(result, input.targetUrl);
     try {
       await publisher.setCommitStatus(ref, status);
