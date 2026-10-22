@@ -120,6 +120,10 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   connection. Requires a database migration. Closes #81.
 - Rerunning a review on a repository whose reviews are turned off is refused
   with a 409, like a new manual review, instead of queueing and publishing a run.
+- Turning reviews off for a repository cancels its queued and running reviews
+  ("Reviews were turned off for this repository"), and the worker skips any
+  job whose repository is off when it starts, so nothing more is published to
+  it. Closes #80.
 - **Download markdown** attaches its temporary link to the page while clicking
   it and frees the file's URL only after the click, so the download also works in
   browsers that ignore a detached link or start downloads asynchronously.

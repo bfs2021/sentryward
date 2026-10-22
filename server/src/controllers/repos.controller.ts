@@ -6,6 +6,7 @@ import { hostOrigin } from "../review/forge/types.ts";
 import { adapterForConnection, loadWorkspaceConnection, toHttpError } from "../services/forge.ts";
 import { requireStoredLlmConnection } from "../services/llm.ts";
 import { ensureWebhook, removeWebhook } from "../services/webhooks.ts";
+import { cancelForDisabledRepository } from "../worker/queue.ts";
 import {
   availableReposQuerySchema,
   enableRepoSchema,
@@ -139,7 +140,12 @@ export async function updateRepo(req: Request, res: Response) {
   });
   let webhook;
   if (enabled === true) webhook = await ensureWebhook(updated, existing.connection);
-  if (enabled === false) await removeWebhook(updated, existing.connection);
+  if (enabled === false) {
+    // After the update, so a job claimed in between finds the repository off
+    // in runJob.
+    await cancelForDisabledRepository(id);
+    await removeWebhook(updated, existing.connection);
+  }
   const repo = await prisma.repository.findUniqueOrThrow({ where: { id }, select: publicRepo });
   res.json({ repo, ...(webhook ? { webhook } : {}) });
 }

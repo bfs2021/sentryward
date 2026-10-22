@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "../src/lib/prisma.ts";
 import {
+  cancelForDisabledRepository,
   cancelJob,
   claimNext,
   claimState,
@@ -131,6 +132,27 @@ describe("complete and fail", () => {
 
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: claimed.id } });
     expect(stored).toMatchObject({ status: "failed", verdict: "error", error: "boom" });
+  });
+});
+
+describe("cancelForDisabledRepository", () => {
+  it("cancels the repository's queued and running jobs and leaves finished ones", async () => {
+    const running = await job("aaa", 1);
+    await claimNext();
+    const queued = await job("bbb", 2);
+    const done = await job("ccc", 3);
+    await prisma.reviewJob.update({ where: { id: done.id }, data: { status: "completed", finishedAt: new Date() } });
+
+    expect(await cancelForDisabledRepository(repositoryId)).toBe(2);
+
+    for (const id of [running.id, queued.id]) {
+      const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id } });
+      expect(stored).toMatchObject({ status: "cancelled", error: "Reviews were turned off for this repository", lockedAt: null });
+      expect(stored.finishedAt).toBeInstanceOf(Date);
+    }
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: done.id } })).toMatchObject({ status: "completed", error: null });
+    // The worker cannot overwrite the reason when it finishes.
+    expect(await complete(running.id, { status: "completed", verdict: "pass" })).toBe(false);
   });
 });
 

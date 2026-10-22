@@ -147,6 +147,7 @@ export async function fail(id: string, error: string): Promise<void> {
 }
 
 export const CLOSED_REASON = "The pull or merge request was closed or merged";
+export const DISABLED_REASON = "Reviews were turned off for this repository";
 
 // A closed or merged change needs no review, so its queued jobs are
 // cancelled when the forge reports the close, unless the dashboard settings
@@ -180,6 +181,18 @@ export async function cancelJob(id: string, workspaceId: string, reason: string)
   const { count } = await prisma.reviewJob.updateMany({
     where: { id, repository: { connection: { workspaceId } }, status: { in: ["queued", "running"] } },
     data: { status: "cancelled", error: reason, lockedAt: null, finishedAt: new Date() },
+  });
+  return count;
+}
+
+// Turning a repository off stops everything it still has in flight, so nothing
+// is published to it afterwards. A running job sees the cancel through
+// claimState and stops before publishing; complete() and fail() only finish
+// running jobs, so this reason is the one that stays.
+export async function cancelForDisabledRepository(repositoryId: string): Promise<number> {
+  const { count } = await prisma.reviewJob.updateMany({
+    where: { repositoryId, status: { in: ["queued", "running"] } },
+    data: { status: "cancelled", error: DISABLED_REASON, lockedAt: null, finishedAt: new Date() },
   });
   return count;
 }

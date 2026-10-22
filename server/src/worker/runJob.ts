@@ -29,7 +29,7 @@ import { llmCredentialsFor } from "../services/llm.ts";
 import { CLOSE_CHECK_INTERVAL_MS, watchForClose } from "./closeWatch.ts";
 import { resolveLlm, type LlmCredentials } from "./llmEndpoint.ts";
 import { incrementFor } from "./incremental.ts";
-import { claimState, CLOSED_REASON, complete } from "./queue.ts";
+import { claimState, CLOSED_REASON, complete, DISABLED_REASON } from "./queue.ts";
 import { findingTransitions, syncFindings, threadOperations, type ThreadOutcome } from "./syncFindings.ts";
 
 // How many recent dismissals to feed into the review prompt; bounded so a noisy
@@ -140,6 +140,12 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
   });
   if (!repo) {
     throw new Error("The repository is no longer connected");
+  }
+  // Turning reviews off cancels queued jobs, but one claimed just before that,
+  // or for a repository turned off because access was lost, still lands here.
+  if (!repo.enabled) {
+    await complete(job.id, { status: "skipped", verdict: null, error: DISABLED_REASON });
+    return;
   }
 
   const forge = deps.adapterFor(repo.connection);

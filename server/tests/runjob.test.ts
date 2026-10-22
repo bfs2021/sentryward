@@ -5,7 +5,7 @@ import { ForgeCache } from "../src/review/forge/cache.ts";
 import { ForgeError } from "../src/review/forge/http.ts";
 import type { InlineComment } from "../src/review/forge/types.ts";
 import type { Forge } from "../src/services/forge.ts";
-import { cancelJob, claimNext, enqueue, fail } from "../src/worker/queue.ts";
+import { cancelForDisabledRepository, cancelJob, claimNext, enqueue, fail } from "../src/worker/queue.ts";
 import { runJob, skipReason, walkthroughEnabled, type RunJobDeps } from "../src/worker/runJob.ts";
 import { DEFAULT_CONFIG } from "../src/review/config/schema.ts";
 import { fingerprint } from "../src/review/core/fingerprint.ts";
@@ -691,6 +691,48 @@ describe("runJob when cancelled from the dashboard", () => {
       expect(published.statuses).toEqual(["pending", "error"]);
     });
   }
+});
+
+describe("runJob when the repository is turned off", () => {
+  const answers = { code_review: { findings: [modelFinding()] }, walkthrough: WALKTHROUGH };
+
+  it("skips a job claimed after the repository was turned off, without reading the change", async () => {
+    const job = await claimedJob();
+    await prisma.repository.update({ where: { id: repositoryId }, data: { enabled: false } });
+    const { runDeps, reads, model, published } = deps({}, answers);
+
+    await runJob(job, runDeps);
+
+    const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(stored).toMatchObject({
+      status: "skipped",
+      verdict: null,
+      error: "Reviews were turned off for this repository",
+      lockedAt: null,
+    });
+    expect(reads).toEqual([]);
+    expect(model.requests).toHaveLength(0);
+    expect(published).toEqual({ inline: [], summaries: [], statuses: [], descriptions: [], labels: [], threads: [] });
+  });
+
+  it("stops and publishes no review when the repository is turned off mid-review", async () => {
+    const job = await claimedJob();
+    const { runDeps, model, published } = deps({}, answers);
+    runDeps.closeCheckIntervalMs = 5;
+    runDeps.generateFor = () => async (request) => {
+      await cancelForDisabledRepository(repositoryId);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return model.generate(request);
+    };
+
+    await runJob(job, runDeps);
+
+    const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(stored).toMatchObject({ status: "cancelled", verdict: null, error: "Reviews were turned off for this repository" });
+    expect(published.inline).toEqual([]);
+    expect(published.summaries).toHaveLength(1);
+    expect(published.statuses).toEqual(["pending", "error"]);
+  });
 });
 
 describe("runJob when it loses its claim", () => {
