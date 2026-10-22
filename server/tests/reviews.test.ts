@@ -1,6 +1,6 @@
 import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Prisma } from "../src/generated/prisma/client.ts";
+import { Prisma } from "../src/generated/prisma/client.ts";
 import { app } from "../src/app.ts";
 import { encrypt } from "../src/lib/crypto.ts";
 import { prisma } from "../src/lib/prisma.ts";
@@ -368,6 +368,25 @@ describe("GET /api/reviews/:id and /markdown", () => {
     });
     const res = await request(app).get(`/api/reviews/${job.id}/markdown`).set("Cookie", cookie);
     expect(res.status).toBe(409);
+  });
+
+  it("marks a result expired by retention, and 410s for its markdown", async () => {
+    const job = await completedJob();
+    const expiredAt = new Date("2026-01-01T00:00:00Z");
+    await prisma.reviewJob.update({
+      where: { id: job.id },
+      data: { result: Prisma.DbNull, resolvedConfig: Prisma.DbNull, resultExpiredAt: expiredAt },
+    });
+
+    const detail = await request(app).get(`/api/reviews/${job.id}`).set("Cookie", cookie);
+    expect(detail.status).toBe(200);
+    expect(detail.body.review.result).toBeNull();
+    expect(detail.body.review.resultExpiredAt).toBe(expiredAt.toISOString());
+    expect(detail.body.review.summary).not.toBeNull();
+
+    const res = await request(app).get(`/api/reviews/${job.id}/markdown`).set("Cookie", cookie);
+    expect(res.status).toBe(410);
+    expect(res.body.message).toMatch(/expired/);
   });
 
   it("404s for another user's review", async () => {

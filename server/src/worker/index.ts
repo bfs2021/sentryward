@@ -5,9 +5,15 @@ import { execute } from "./execute.ts";
 import { claimNext, recoverStale } from "./queue.ts";
 import { claimNextReply, recoverStaleReplies } from "./replyQueue.ts";
 import { executeReply } from "./executeReply.ts";
+import { pruneReviews } from "./retention.ts";
 
 let stopping = false;
 const running = new Set<Promise<void>>();
+
+// Retention is about days, so an hourly pass is plenty. The first tick after
+// start runs it.
+const RETENTION_INTERVAL_MS = 60 * 60 * 1000;
+let lastPruneAt = 0;
 
 // Claims are awaited one at a time; the work itself runs in the background up
 // to WORKER_CONCURRENCY jobs. Replies to inline threads share the slots and
@@ -21,6 +27,15 @@ async function tick(): Promise<void> {
   // Jobs failed here never return to an execute() that would notify for them.
   for (const id of stale.failedIds) {
     await notifyJob(id);
+  }
+  if (env.REVIEW_RETENTION_DAYS && Date.now() - lastPruneAt >= RETENTION_INTERVAL_MS) {
+    // Set first so a failing prune waits for the next interval instead of
+    // retrying every poll.
+    lastPruneAt = Date.now();
+    const pruned = await pruneReviews(env.REVIEW_RETENTION_DAYS);
+    if (pruned.deleted || pruned.trimmed) {
+      console.log(`[worker] retention: deleted ${pruned.deleted} job(s), expired ${pruned.trimmed} result(s)`);
+    }
   }
   while (!stopping && running.size < env.WORKER_CONCURRENCY) {
     const job = await claimNext(env.WORKER_USER_CONCURRENCY);

@@ -326,39 +326,44 @@ model Repository {
 }
 
 model ReviewJob {
-  id             String         @id @default(uuid()) @db.Uuid
-  repositoryId   String         @map("repository_id") @db.Uuid
-  number         Int
-  headSha        String         @map("head_sha")
-  baseSha        String?        @map("base_sha")
-  trigger        ReviewTrigger
+  id              String         @id @default(uuid()) @db.Uuid
+  repositoryId    String         @map("repository_id") @db.Uuid
+  number          Int
+  headSha         String         @map("head_sha")
+  baseSha         String?        @map("base_sha")
+  trigger         ReviewTrigger
   // For webhook jobs, whether the change was opened ("open") or received new
   // commits ("push"); trigger settings treat the two differently.
-  event          String?
+  event           String?
   // Forge login of whoever opened, pushed or commented, for the author skip list.
-  actor          String?
-  status         ReviewStatus   @default(queued)
-  verdict        ReviewVerdict?
-  resolvedConfig Json?          @map("resolved_config")
-  result         Json?
+  actor           String?
+  status          ReviewStatus   @default(queued)
+  verdict         ReviewVerdict?
+  resolvedConfig  Json?          @map("resolved_config")
+  result          Json?
   // Small digest of the result (title, counts) so lists never load results.
-  summary        Json?
+  summary         Json?
   // What was posted to the forge: inline comments, summary, commit status.
-  publication    Json?
-  error          String?
-  attempts       Int            @default(0)
-  lockedAt       DateTime?      @map("locked_at") @db.Timestamptz
-  startedAt      DateTime?      @map("started_at") @db.Timestamptz
-  finishedAt     DateTime?      @map("finished_at") @db.Timestamptz
+  publication     Json?
+  error           String?
+  attempts        Int            @default(0)
+  lockedAt        DateTime?      @map("locked_at") @db.Timestamptz
+  startedAt       DateTime?      @map("started_at") @db.Timestamptz
+  finishedAt      DateTime?      @map("finished_at") @db.Timestamptz
   // Claimed before notification targets are sent to, so a job finished by
   // both its run and stale recovery notifies once.
-  notifiedAt     DateTime?      @map("notified_at") @db.Timestamptz
-  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  notifiedAt      DateTime?      @map("notified_at") @db.Timestamptz
+  // Set when REVIEW_RETENTION_DAYS cleared result, resolvedConfig and
+  // publication, so an expired result reads differently from a run that never
+  // stored one.
+  resultExpiredAt DateTime?      @map("result_expired_at") @db.Timestamptz
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz
 
   repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
   findings   Finding[]
 
   @@index([status, createdAt])
+  @@index([status, finishedAt])
   @@index([repositoryId, number])
   @@map("review_jobs")
 }

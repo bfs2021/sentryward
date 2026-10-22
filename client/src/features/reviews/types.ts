@@ -170,6 +170,8 @@ export interface ReviewDetail extends ReviewListItem {
   attempts: number
   result: ReviewResult | null
   publication: Publication | null
+  // Set once the server's retention setting cleared the full result.
+  resultExpiredAt: string | null
 }
 
 export interface ReviewStats {

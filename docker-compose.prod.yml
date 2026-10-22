@@ -90,6 +90,8 @@ services:
       WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-3}
       WORKER_HEARTBEAT_INTERVAL_MS: ${WORKER_HEARTBEAT_INTERVAL_MS:-60000}
       WORKER_MAX_RUN_MS: ${WORKER_MAX_RUN_MS:-1800000}
+      # Empty is allowed here: it means "keep every review".
+      REVIEW_RETENTION_DAYS: ${REVIEW_RETENTION_DAYS:-}
     depends_on:
       db:
         condition: service_healthy
