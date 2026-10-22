@@ -1,0 +1,392 @@
+import request from "supertest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { app } from "../src/app.ts";
+import { env } from "../src/config/env.ts";
+import type { NotificationEvent, ReviewStatus, ReviewVerdict } from "../src/generated/prisma/client.ts";
+import { decrypt, encrypt } from "../src/lib/crypto.ts";
+import { mailer } from "../src/lib/mailer.ts";
+import { prisma } from "../src/lib/prisma.ts";
+import { eventsFor, notifyJob, signature } from "../src/services/notifications.ts";
+import { fetchStub } from "./helpers/fetchStub.ts";
+import { addMember, createUser, inWorkspace } from "./helpers/users.ts";
+
+let cookie: string;
+let userId: string;
+let workspaceId: string;
+let repositoryId: string;
+
+beforeEach(async () => {
+  await prisma.workspace.deleteMany();
+  await prisma.user.deleteMany();
+  ({ cookie, user: { id: userId }, workspace: { id: workspaceId } } = await createUser());
+  const connection = await prisma.forgeConnection.create({
+    data: {
+      workspaceId,
+      provider: "github",
+      host: "github.com",
+      kind: "github_app",
+      installationId: "1",
+      accountLogin: "acme",
+    },
+  });
+  const repository = await prisma.repository.create({
+    data: {
+      connectionId: connection.id,
+      provider: "github",
+      host: "github.com",
+      fullPath: "acme/web",
+      externalId: "100",
+      defaultBranch: "main",
+      enabled: true,
+    },
+  });
+  repositoryId = repository.id;
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+afterAll(async () => {
+  await prisma.$disconnect();
+});
+
+const summary = {
+  title: "Add login",
+  webUrl: "https://github.com/acme/web/pull/7",
+  total: 3,
+  bySeverity: { major: 1, minor: 2 },
+  byBucket: {},
+  hasBlocking: true,
+  usageTotals: { calls: 1, inputTokens: 1, outputTokens: 1 },
+};
+
+function finishedJob(status: ReviewStatus, verdict: ReviewVerdict | null, error: string | null = null) {
+  return prisma.reviewJob.create({
+    data: {
+      repositoryId,
+      number: 7,
+      headSha: "aaa",
+      trigger: "manual",
+      status,
+      verdict,
+      error,
+      summary: status === "failed" ? undefined : summary,
+      finishedAt: new Date(),
+    },
+  });
+}
+
+function target(kind: "webhook" | "slack", events: NotificationEvent[], url = "https://hooks.example.com/sw") {
+  return prisma.notificationTarget.create({
+    data: {
+      workspaceId,
+      kind,
+      name: kind,
+      events,
+      encryptedUrl: encrypt(url),
+      encryptedSecret: kind === "webhook" ? encrypt("shh") : null,
+    },
+  });
+}
+
+describe("eventsFor", () => {
+  it.each([
+    ["completed", "pass", ["completed"]],
+    ["completed", "blocked", ["blocked", "completed"]],
+    ["partial", "blocked", ["blocked", "completed"]],
+    ["failed", "error", ["failed"]],
+    ["skipped", null, []],
+    ["cancelled", null, []],
+    ["superseded", null, []],
+  ] as const)("%s with %s counts as %j", (status, verdict, events) => {
+    expect(eventsFor({ status, verdict })).toEqual(events);
+  });
+});
+
+describe("notifyJob", () => {
+  it("sends a signed webhook only to targets listening for one of the job's events", async () => {
+    const stub = fetchStub([{ method: "POST", url: /hooks\.example\.com/ }]);
+    vi.stubGlobal("fetch", stub.fetch);
+    await target("webhook", ["completed"]);
+    await target("webhook", ["failed"], "https://hooks.example.com/failures");
+    const job = await finishedJob("completed", "blocked");
+
+    await notifyJob(job.id);
+
+    expect(stub.calls).toHaveLength(1);
+    const [call] = stub.calls;
+    expect(call!.url).toBe("https://hooks.example.com/sw");
+    expect(call!.headers["x-sentryward-event"]).toBe("completed");
+    expect(call!.headers["x-sentryward-signature"]).toBe(signature("shh", call!.body!));
+    expect(JSON.parse(call!.body!)).toEqual({
+      event: "completed",
+      review: {
+        id: job.id,
+        url: `${env.CLIENT_ORIGIN}/reviews/${job.id}`,
+        status: "completed",
+        verdict: "blocked",
+        error: null,
+      },
+      repository: { provider: "github", fullPath: "acme/web" },
+      change: { number: 7, title: "Add login", url: "https://github.com/acme/web/pull/7" },
+      findings: { total: 3, bySeverity: { major: 1, minor: 2 } },
+    });
+  });
+
+  it("names the most specific event a target listens for", async () => {
+    const stub = fetchStub([{ method: "POST", url: /hooks\.example\.com/ }]);
+    vi.stubGlobal("fetch", stub.fetch);
+    await target("webhook", ["blocked", "completed"]);
+    const job = await finishedJob("completed", "blocked");
+
+    await notifyJob(job.id);
+
+    expect(stub.calls).toHaveLength(1);
+    expect(JSON.parse(stub.calls[0]!.body!).event).toBe("blocked");
+  });
+
+  it("posts a short Slack message linking to the review", async () => {
+    const stub = fetchStub([{ method: "POST", url: /hooks\.slack\.com/ }]);
+    vi.stubGlobal("fetch", stub.fetch);
+    await target("slack", ["failed"], "https://hooks.slack.com/services/T/B/X");
+    const job = await finishedJob("failed", "error", "No API key for anthropic");
+
+    await notifyJob(job.id);
+
+    expect(JSON.parse(stub.calls[0]!.body!)).toEqual({
+      text: `Review failed: acme/web#7 - No API key for anthropic <${env.CLIENT_ORIGIN}/reviews/${job.id}|View review>`,
+    });
+  });
+
+  it("does not notify skipped or cancelled jobs", async () => {
+    const stub = fetchStub([]);
+    vi.stubGlobal("fetch", stub.fetch);
+    await target("webhook", ["blocked", "failed", "completed"]);
+
+    await notifyJob((await finishedJob("skipped", null)).id);
+    await notifyJob((await finishedJob("cancelled", null)).id);
+
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  it("notifies a job once", async () => {
+    const stub = fetchStub([{ method: "POST", url: /hooks\.example\.com/ }]);
+    vi.stubGlobal("fetch", stub.fetch);
+    await target("webhook", ["failed"]);
+    const job = await finishedJob("failed", "error", "Worker stopped responding");
+
+    await notifyJob(job.id);
+    await notifyJob(job.id);
+
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it("logs a failed delivery, still delivers to the other targets and leaves the job alone", async () => {
+    const stub = fetchStub([
+      { method: "POST", url: /broken\.example\.com/, status: 500 },
+      { method: "POST", url: /hooks\.example\.com/ },
+    ]);
+    vi.stubGlobal("fetch", stub.fetch);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken = await target("webhook", ["failed"], "https://broken.example.com/sw");
+    await target("slack", ["failed"]);
+    const job = await finishedJob("failed", "error", "Forge unreachable");
+
+    await expect(notifyJob(job.id)).resolves.toBeUndefined();
+
+    expect(stub.calls.map((call) => call.url)).toEqual(
+      expect.arrayContaining(["https://broken.example.com/sw", "https://hooks.example.com/sw"]),
+    );
+    expect(errors).toHaveBeenCalledWith(`[notify] target ${broken.id} job ${job.id}: Responded with 500`);
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({
+      status: "failed",
+      error: "Forge unreachable",
+    });
+  });
+
+  it("logs a delivery that throws", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("getaddrinfo ENOTFOUND");
+      }),
+    );
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const hook = await target("webhook", ["completed"]);
+    const job = await finishedJob("completed", "pass");
+
+    await notifyJob(job.id);
+
+    expect(errors).toHaveBeenCalledWith(`[notify] target ${hook.id} job ${job.id}: getaddrinfo ENOTFOUND`);
+  });
+
+  it("emails only recipients who are still members", async () => {
+    vi.spyOn(mailer, "configured").mockReturnValue(true);
+    const send = vi.spyOn(mailer, "send").mockResolvedValue();
+    const { user: gone } = await createUser("gone@example.com");
+    await prisma.notificationTarget.create({
+      data: { workspaceId, kind: "email", name: "Leads", events: ["blocked"], recipientIds: [userId, gone.id] },
+    });
+    const job = await finishedJob("completed", "blocked");
+
+    await notifyJob(job.id);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({
+      to: "dev@example.com",
+      subject: 'Review blocked: acme/web#7 "Add login" - 3 findings',
+      text: `Review blocked: acme/web#7 "Add login" - 3 findings\n\n${env.CLIENT_ORIGIN}/reviews/${job.id}\n`,
+    });
+  });
+});
+
+describe("/api/notifications", () => {
+  it("lets an admin add a webhook, returning its secret once and only the host afterwards", async () => {
+    vi.spyOn(mailer, "configured").mockReturnValue(false);
+    const res = await request(app)
+      .post("/api/notifications")
+      .set("Cookie", cookie)
+      .send({ kind: "webhook", name: "CI", events: ["failed", "blocked"], url: "https://hooks.example.com/sw?key=1" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.secret).toMatch(/^[0-9a-f]{64}$/);
+    expect(res.body.target).toMatchObject({ kind: "webhook", name: "CI", events: ["failed", "blocked"], host: "hooks.example.com" });
+    const stored = await prisma.notificationTarget.findUniqueOrThrow({ where: { id: res.body.target.id } });
+    expect(decrypt(stored.encryptedSecret!)).toBe(res.body.secret);
+    expect(decrypt(stored.encryptedUrl!)).toBe("https://hooks.example.com/sw?key=1");
+
+    const list = await request(app).get("/api/notifications").set("Cookie", cookie);
+    expect(list.body.targets).toHaveLength(1);
+    expect(list.body.mailConfigured).toBe(false);
+    expect(JSON.stringify(list.body)).not.toContain("key=1");
+    expect(list.body.targets[0]).not.toHaveProperty("secret");
+  });
+
+  it("validates the target by kind", async () => {
+    const noEvents = await request(app)
+      .post("/api/notifications")
+      .set("Cookie", cookie)
+      .send({ kind: "slack", name: "Team", events: [], url: "https://hooks.slack.com/x" });
+    expect(noEvents.status).toBe(400);
+    expect(noEvents.body.errors.events).toBeDefined();
+
+    const badUrl = await request(app)
+      .post("/api/notifications")
+      .set("Cookie", cookie)
+      .send({ kind: "webhook", name: "CI", events: ["failed"], url: "ftp://example.com" });
+    expect(badUrl.status).toBe(400);
+    expect(badUrl.body.errors.url).toBeDefined();
+  });
+
+  it("rejects private URLs in production", async () => {
+    const original = env.NODE_ENV;
+    env.NODE_ENV = "production";
+    try {
+      for (const url of ["https://127.0.0.1/hook", "https://[::1]/hook", "http://hooks.example.com/hook"]) {
+        const res = await request(app)
+          .post("/api/notifications")
+          .set("Cookie", cookie)
+          .send({ kind: "webhook", name: "CI", events: ["failed"], url });
+        expect(res.status, url).toBe(400);
+        expect(res.body.errors.url, url).toBeDefined();
+      }
+    } finally {
+      env.NODE_ENV = original;
+    }
+    expect(await prisma.notificationTarget.count()).toBe(0);
+  });
+
+  it("adds email targets only for members, and only with mail configured", async () => {
+    const { user: outsider } = await createUser("outsider@example.com");
+    vi.spyOn(mailer, "configured").mockReturnValue(false);
+    const unconfigured = await request(app)
+      .post("/api/notifications")
+      .set("Cookie", cookie)
+      .send({ kind: "email", name: "Leads", events: ["blocked"], recipientIds: [userId] });
+    expect(unconfigured.status).toBe(400);
+
+    vi.spyOn(mailer, "configured").mockReturnValue(true);
+    const notMember = await request(app)
+      .post("/api/notifications")
+      .set("Cookie", cookie)
+      .send({ kind: "email", name: "Leads", events: ["blocked"], recipientIds: [outsider.id] });
+    expect(notMember.status).toBe(400);
+    expect(notMember.body.errors.recipientIds).toBeDefined();
+
+    const ok = await request(app)
+      .post("/api/notifications")
+      .set("Cookie", cookie)
+      .send({ kind: "email", name: "Leads", events: ["blocked"], recipientIds: [userId] });
+    expect(ok.status).toBe(201);
+    expect(ok.body.target).toMatchObject({ kind: "email", host: null, recipientIds: [userId] });
+  });
+
+  it("updates a target's events and removes it", async () => {
+    const hook = await target("webhook", ["failed"]);
+
+    const patched = await request(app)
+      .patch(`/api/notifications/${hook.id}`)
+      .set("Cookie", cookie)
+      .send({ events: ["completed", "failed"] });
+    expect(patched.status).toBe(200);
+    expect(patched.body.target.events).toEqual(["failed", "completed"]);
+
+    const removed = await request(app).delete(`/api/notifications/${hook.id}`).set("Cookie", cookie);
+    expect(removed.status).toBe(204);
+    expect(await prisma.notificationTarget.count()).toBe(0);
+  });
+
+  it("reports a test delivery's outcome", async () => {
+    const stub = fetchStub([
+      { method: "POST", url: /hooks\.example\.com/ },
+      { method: "POST", url: /broken\.example\.com/, status: 404 },
+    ]);
+    vi.stubGlobal("fetch", stub.fetch);
+    const good = await target("webhook", ["failed"]);
+    const bad = await target("slack", ["failed"], "https://broken.example.com/x");
+
+    const ok = await request(app).post(`/api/notifications/${good.id}/test`).set("Cookie", cookie);
+    expect(ok.body.result).toEqual({ ok: true });
+    expect(JSON.parse(stub.calls[0]!.body!).event).toBe("test");
+    expect(stub.calls[0]!.headers["x-sentryward-signature"]).toBe(signature("shh", stub.calls[0]!.body!));
+
+    const failed = await request(app).post(`/api/notifications/${bad.id}/test`).set("Cookie", cookie);
+    expect(failed.status).toBe(200);
+    expect(failed.body.result).toEqual({ ok: false, error: "Responded with 404" });
+  });
+
+  it("lets members list but not change targets", async () => {
+    const hook = await target("webhook", ["failed"]);
+    const { user: member, cookie: memberCookie } = await createUser("member@example.com");
+    await addMember(workspaceId, member.id, "member");
+    const header = inWorkspace(workspaceId);
+
+    const list = await request(app).get("/api/notifications").set("Cookie", memberCookie).set(...header);
+    expect(list.status).toBe(200);
+    expect(list.body.targets).toHaveLength(1);
+
+    for (const call of [
+      request(app).post("/api/notifications").send({ kind: "slack", name: "x", events: ["failed"], url: "https://a.b/c" }),
+      request(app).patch(`/api/notifications/${hook.id}`).send({ name: "x" }),
+      request(app).post(`/api/notifications/${hook.id}/test`),
+      request(app).delete(`/api/notifications/${hook.id}`),
+    ]) {
+      const res = await call.set("Cookie", memberCookie).set(...header);
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it("hides another workspace's targets", async () => {
+    const hook = await target("webhook", ["failed"]);
+    const { cookie: otherCookie } = await createUser("other@example.com");
+
+    const list = await request(app).get("/api/notifications").set("Cookie", otherCookie);
+    expect(list.body.targets).toEqual([]);
+    const removed = await request(app).delete(`/api/notifications/${hook.id}`).set("Cookie", otherCookie);
+    expect(removed.status).toBe(404);
+    const tested = await request(app).post(`/api/notifications/${hook.id}/test`).set("Cookie", otherCookie);
+    expect(tested.status).toBe(404);
+  });
+});

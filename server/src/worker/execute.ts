@@ -1,16 +1,20 @@
 import { env } from "../config/env.ts";
 import type { ReviewJob } from "../generated/prisma/client.ts";
+import { notifyJob } from "../services/notifications.ts";
 import { fail, heartbeat } from "./queue.ts";
 import { runJob } from "./runJob.ts";
 
 export interface ExecuteDeps {
   runJob: (job: ReviewJob) => Promise<void>;
+  // Never throws; told about every job once its run ends, however it ended.
+  notify: (jobId: string) => Promise<void>;
   heartbeatMs: number;
   maxRunMs: number;
 }
 
 const defaultDeps: ExecuteDeps = {
   runJob: (job) => runJob(job),
+  notify: notifyJob,
   heartbeatMs: env.WORKER_HEARTBEAT_INTERVAL_MS,
   maxRunMs: env.WORKER_MAX_RUN_MS,
 };
@@ -57,5 +61,8 @@ export async function execute(job: ReviewJob, deps: ExecuteDeps = defaultDeps): 
   } finally {
     clearInterval(beat);
     clearTimeout(timer);
+    // After the job is stored, so a delivery cannot change its outcome. It
+    // only sends for a job left completed, partial or failed.
+    await deps.notify(job.id);
   }
 }

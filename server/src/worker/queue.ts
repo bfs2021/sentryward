@@ -275,12 +275,16 @@ export async function claimState(id: string, attempts: number): Promise<"owned" 
 // the timeout go back to the queue, or fail once they have used every attempt.
 // One whose change has had a newer push queued since is superseded instead:
 // requeueing it would leave two queued jobs for the change, and the newer one
-// already reviews the current head.
-export async function recoverStale(lockTimeoutMs: number, maxAttempts: number): Promise<number> {
+// already reviews the current head. Returns how many jobs were recovered, and
+// which of them failed, for notifications.
+export async function recoverStale(
+  lockTimeoutMs: number,
+  maxAttempts: number,
+): Promise<{ count: number; failedIds: string[] }> {
   const cutoff = new Date(Date.now() - lockTimeoutMs);
   const stale = { status: "running", lockedAt: { lt: cutoff } } as const;
 
-  const failed = await prisma.reviewJob.updateMany({
+  const failed = await prisma.reviewJob.updateManyAndReturn({
     where: { ...stale, attempts: { gte: maxAttempts } },
     data: {
       status: "failed",
@@ -289,6 +293,7 @@ export async function recoverStale(lockTimeoutMs: number, maxAttempts: number): 
       lockedAt: null,
       finishedAt: new Date(),
     },
+    select: { id: true },
   });
 
   const retryable = await prisma.reviewJob.findMany({
@@ -313,5 +318,5 @@ export async function recoverStale(lockTimeoutMs: number, maxAttempts: number): 
       return count;
     });
   }
-  return recovered + failed.count;
+  return { count: recovered + failed.length, failedIds: failed.map((job) => job.id) };
 }

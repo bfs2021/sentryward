@@ -1,5 +1,6 @@
 import { env } from "../config/env.ts";
 import { prisma } from "../lib/prisma.ts";
+import { notifyJob } from "../services/notifications.ts";
 import { execute } from "./execute.ts";
 import { claimNext, recoverStale } from "./queue.ts";
 import { claimNextReply, recoverStaleReplies } from "./replyQueue.ts";
@@ -12,11 +13,14 @@ const running = new Set<Promise<void>>();
 // to WORKER_CONCURRENCY jobs. Replies to inline threads share the slots and
 // are claimed after reviews, which they are much smaller than.
 async function tick(): Promise<void> {
-  const recovered =
-    (await recoverStale(env.WORKER_LOCK_TIMEOUT_MS, env.WORKER_MAX_ATTEMPTS)) +
-    (await recoverStaleReplies(env.WORKER_LOCK_TIMEOUT_MS, env.WORKER_MAX_ATTEMPTS));
+  const stale = await recoverStale(env.WORKER_LOCK_TIMEOUT_MS, env.WORKER_MAX_ATTEMPTS);
+  const recovered = stale.count + (await recoverStaleReplies(env.WORKER_LOCK_TIMEOUT_MS, env.WORKER_MAX_ATTEMPTS));
   if (recovered > 0) {
     console.log(`[worker] recovered ${recovered} stale job(s)`);
+  }
+  // Jobs failed here never return to an execute() that would notify for them.
+  for (const id of stale.failedIds) {
+    await notifyJob(id);
   }
   while (!stopping && running.size < env.WORKER_CONCURRENCY) {
     const job = await claimNext(env.WORKER_USER_CONCURRENCY);

@@ -215,7 +215,7 @@ describe("recoverStale", () => {
     });
     const newer = await job("bbb");
 
-    expect(await recoverStale(15 * 60 * 1000, 3)).toBe(1);
+    expect((await recoverStale(15 * 60 * 1000, 3)).count).toBe(1);
     expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: stale.id } })).toMatchObject({
       status: "superseded",
       lockedAt: null,
@@ -236,7 +236,7 @@ describe("recoverStale", () => {
       data: { status: "running", lockedAt: longAgo, attempts: 3 },
     });
 
-    expect(await recoverStale(15 * 60 * 1000, 3)).toBe(2);
+    expect(await recoverStale(15 * 60 * 1000, 3)).toEqual({ count: 2, failedIds: [exhausted.id] });
     expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: retry.id } })).status).toBe(
       "queued",
     );
@@ -249,7 +249,7 @@ describe("recoverStale", () => {
     await job("aaa");
     await claimNext();
 
-    expect(await recoverStale(15 * 60 * 1000, 3)).toBe(0);
+    expect((await recoverStale(15 * 60 * 1000, 3)).count).toBe(0);
   });
 });
 
@@ -265,7 +265,7 @@ describe("heartbeat", () => {
     await heartbeat(slow.id);
 
     // The bumped lock is now fresh, so recovery leaves the job running.
-    expect(await recoverStale(15 * 60 * 1000, 3)).toBe(0);
+    expect((await recoverStale(15 * 60 * 1000, 3)).count).toBe(0);
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: slow.id } });
     expect(stored.status).toBe("running");
     expect(stored.lockedAt!.getTime()).toBeGreaterThan(longAgo.getTime());

@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "../src/lib/prisma.ts";
 import { execute } from "../src/worker/execute.ts";
 import { claimNext, enqueue, recoverStale } from "../src/worker/queue.ts";
@@ -47,14 +47,16 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 describe("execute", () => {
   it("fails a run that never settles once it passes the maximum run time", async () => {
     const job = await claimedJob();
+    const notify = vi.fn(async () => {});
 
-    await execute(job, { runJob: () => new Promise(() => {}), heartbeatMs: 1000, maxRunMs: 30 });
+    await execute(job, { runJob: () => new Promise(() => {}), heartbeatMs: 1000, maxRunMs: 30, notify });
 
     expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({
       status: "failed",
       verdict: "error",
       error: "Review exceeded the maximum run time",
     });
+    expect(notify).toHaveBeenCalledWith(job.id);
   });
 
   it("keeps a long run's lock fresh so recovery leaves it alone", async () => {
@@ -66,10 +68,11 @@ describe("execute", () => {
     await execute(job, {
       runJob: async () => {
         await sleep(60);
-        recovered = await recoverStale(15 * 60 * 1000, 3);
+        recovered = (await recoverStale(15 * 60 * 1000, 3)).count;
       },
       heartbeatMs: 10,
       maxRunMs: 60_000,
+      notify: async () => {},
     });
 
     expect(recovered).toBe(0);
@@ -80,6 +83,7 @@ describe("execute", () => {
 
   it("records a thrown error as the failure", async () => {
     const job = await claimedJob();
+    const notify = vi.fn(async () => {});
 
     await execute(job, {
       runJob: async () => {
@@ -87,11 +91,13 @@ describe("execute", () => {
       },
       heartbeatMs: 1000,
       maxRunMs: 60_000,
+      notify,
     });
 
     expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({
       status: "failed",
       error: "The repository is no longer connected",
     });
+    expect(notify).toHaveBeenCalledWith(job.id);
   });
 });

@@ -1,0 +1,132 @@
+import { describe, expect, it } from "vitest"
+import { screen, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
+import { App } from "@/App"
+import { jsonResponse, renderWithProviders } from "@/test/renderWithProviders"
+import { mockApi, personalWorkspace, testUser } from "@/test/apiRoutes"
+
+const webhook = {
+  id: "n1",
+  kind: "webhook",
+  name: "CI alerts",
+  events: ["failed", "blocked"],
+  host: "ci.example.com",
+  undecryptable: false,
+  recipientIds: [],
+  createdAt: "2026-10-01T00:00:00.000Z",
+  updatedAt: "2026-10-01T00:00:00.000Z",
+}
+
+const emailTarget = {
+  ...webhook,
+  id: "n2",
+  kind: "email",
+  name: "Leads",
+  events: ["completed"],
+  host: null,
+  recipientIds: [testUser.id, "gone"],
+}
+
+const members = {
+  members: [{ id: testUser.id, name: testUser.name, email: testUser.email, role: "owner", joinedAt: "" }],
+}
+const MEMBERS_ROUTE = `GET /api/workspaces/${personalWorkspace.id}/members`
+
+function calls(fetchSpy: ReturnType<typeof mockApi>, method: string, path: string) {
+  return fetchSpy.mock.calls.filter(([url, init]) => String(url) === path && (init?.method ?? "GET") === method)
+}
+
+describe("Notifications", () => {
+  it("lists targets with their destination and events", async () => {
+    mockApi({
+      "GET /api/notifications": { targets: [webhook, emailTarget], mailConfigured: true },
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    const ci = (await screen.findByRole("cell", { name: "CI alerts" })).closest("tr")!
+    expect(within(ci).getByText("ci.example.com")).toBeInTheDocument()
+    expect(within(ci).getByText("Failed")).toBeInTheDocument()
+    expect(within(ci).getByText("Blocked")).toBeInTheDocument()
+    const leads = screen.getByRole("cell", { name: "Leads" }).closest("tr")!
+    // A recipient who left the workspace is not emailed, so is not listed.
+    expect(await within(leads).findByText(testUser.name)).toBeInTheDocument()
+    expect(within(leads).getByText("Completed")).toBeInTheDocument()
+  })
+
+  it("adds a webhook and shows its signing secret once", async () => {
+    const fetchSpy = mockApi({
+      "GET /api/notifications": { targets: [], mailConfigured: false },
+      "POST /api/notifications": () => jsonResponse(201, { target: webhook, secret: "abc123" }),
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    expect(await screen.findByText("No notification targets")).toBeInTheDocument()
+    await userEvent.click(screen.getByRole("button", { name: "Add target" }))
+    const dialog = await screen.findByRole("dialog")
+    await userEvent.type(within(dialog).getByLabelText("Name"), "CI alerts")
+    await userEvent.type(within(dialog).getByLabelText("URL"), "https://ci.example.com/hook")
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add target" }))
+
+    expect(await within(dialog).findByLabelText("Signing secret")).toHaveValue("abc123")
+    const [, init] = calls(fetchSpy, "POST", "/api/notifications")[0]!
+    expect(JSON.parse(String(init?.body))).toEqual({
+      kind: "webhook",
+      name: "CI alerts",
+      events: ["blocked", "failed"],
+      url: "https://ci.example.com/hook",
+    })
+  })
+
+  it("needs a URL and at least one event", async () => {
+    const fetchSpy = mockApi({
+      "GET /api/notifications": { targets: [], mailConfigured: false },
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add target" }))
+    const dialog = await screen.findByRole("dialog")
+    await userEvent.type(within(dialog).getByLabelText("Name"), "CI")
+    await userEvent.click(within(dialog).getByLabelText("Blocked"))
+    await userEvent.click(within(dialog).getByLabelText("Failed"))
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add target" }))
+
+    expect(await within(dialog).findByText("Enter an http or https URL")).toBeInTheDocument()
+    expect(within(dialog).getByText("Choose at least one event")).toBeInTheDocument()
+    expect(calls(fetchSpy, "POST", "/api/notifications")).toHaveLength(0)
+  })
+
+  it("sends a test and reports a failed delivery", async () => {
+    mockApi({
+      "GET /api/notifications": { targets: [webhook], mailConfigured: false },
+      "POST /api/notifications/n1/test": { result: { ok: false, error: "Responded with 404" } },
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for CI alerts" }))
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Send test" }))
+
+    expect(await screen.findByText("Test to CI alerts failed: Responded with 404")).toBeInTheDocument()
+  })
+
+  it("asks before removing a target", async () => {
+    const fetchSpy = mockApi({
+      "GET /api/notifications": { targets: [webhook], mailConfigured: false },
+      "DELETE /api/notifications/n1": () => new Response(null, { status: 204 }),
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for CI alerts" }))
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Remove" }))
+    const dialog = await screen.findByRole("dialog")
+    expect(calls(fetchSpy, "DELETE", "/api/notifications/n1")).toHaveLength(0)
+    await userEvent.click(within(dialog).getByRole("button", { name: "Remove target" }))
+
+    expect(await screen.findByText("Removed CI alerts")).toBeInTheDocument()
+    expect(calls(fetchSpy, "DELETE", "/api/notifications/n1")).toHaveLength(1)
+  })
+})
