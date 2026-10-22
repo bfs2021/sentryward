@@ -6,6 +6,7 @@ import { hostOrigin } from "../review/forge/types.ts";
 import { adapterForConnection, loadWorkspaceConnection, toHttpError } from "../services/forge.ts";
 import { requireStoredLlmConnection } from "../services/llm.ts";
 import { ensureWebhook, removeWebhook } from "../services/webhooks.ts";
+import { cancelForDisabledRepositories, DISABLED_REASON } from "../worker/queue.ts";
 import {
   availableReposQuerySchema,
   enableRepoSchema,
@@ -133,9 +134,15 @@ export async function updateRepo(req: Request, res: Response) {
   // Turning a repository on or off by hand overrides any access-loss marker,
   // so a reinstall no longer flips it back.
   const accessLostAt = enabled === undefined ? undefined : null;
-  const updated = await prisma.repository.update({
-    where: { id },
-    data: { enabled, settings, followGlobal, accessLostAt },
+  // The cancel commits with the update, so a repository is never left off with
+  // jobs still in flight. A job claimed just before finds it off in runJob.
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.repository.update({
+      where: { id },
+      data: { enabled, settings, followGlobal, accessLostAt },
+    });
+    if (enabled === false) await cancelForDisabledRepositories([id], DISABLED_REASON, tx);
+    return row;
   });
   let webhook;
   if (enabled === true) webhook = await ensureWebhook(updated, existing.connection);

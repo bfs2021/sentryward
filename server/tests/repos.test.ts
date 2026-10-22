@@ -263,6 +263,33 @@ describe("POST /api/repos and PATCH /api/repos/:id", () => {
 
     expect(res.status).toBe(404);
   });
+
+  it("cancels the repository's queued and running reviews when it is turned off", async () => {
+    const repoData = { connectionId, provider: "gitlab" as const, host: "gitlab.com", defaultBranch: "main", enabled: true };
+    const repo = await prisma.repository.create({ data: { ...repoData, fullPath: "team/web", externalId: "1" } });
+    const other = await prisma.repository.create({ data: { ...repoData, fullPath: "team/api", externalId: "2" } });
+    const jobOf = (repositoryId: string, number: number, status: "queued" | "running" | "completed") =>
+      prisma.reviewJob.create({ data: { repositoryId, number, headSha: `h${number}`, trigger: "webhook", status } });
+    const queued = await jobOf(repo.id, 1, "queued");
+    const running = await jobOf(repo.id, 2, "running");
+    const done = await jobOf(repo.id, 3, "completed");
+    const elsewhere = await jobOf(other.id, 4, "queued");
+
+    // Settings alone leave the jobs alone.
+    await request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ settings: { profile: "strict" } });
+    expect(await prisma.reviewJob.count({ where: { status: "cancelled" } })).toBe(0);
+
+    const res = await request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ enabled: false });
+    expect(res.status).toBe(200);
+
+    const statuses = await prisma.reviewJob.findMany({ select: { id: true, status: true, error: true } });
+    const byId = Object.fromEntries(statuses.map((job) => [job.id, job]));
+    for (const id of [queued.id, running.id]) {
+      expect(byId[id]).toMatchObject({ status: "cancelled", error: "Reviews were turned off for this repository" });
+    }
+    expect(byId[done.id]!.status).toBe("completed");
+    expect(byId[elsewhere.id]!.status).toBe("queued");
+  });
 });
 
 describe("DELETE /api/repos/:id", () => {

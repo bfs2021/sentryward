@@ -8,7 +8,13 @@ import { GitHubAdapter } from "../../review/forge/github.ts";
 import type { GitHubApp } from "../../review/forge/githubApp.ts";
 import { ForgeError } from "../../review/forge/http.ts";
 import { githubConnectSchema } from "../../schemas/connections.schema.ts";
-import { cancelQueuedForClosedChange, enqueue, enqueueFromWebhook } from "../../worker/queue.ts";
+import {
+  ACCESS_LOST_REASON,
+  cancelForDisabledRepositories,
+  cancelQueuedForClosedChange,
+  enqueue,
+  enqueueFromWebhook,
+} from "../../worker/queue.ts";
 import { getGitHubApp, githubConfigured } from "../githubApp.ts";
 import { recordThreadReply } from "../threadReplies.ts";
 import type { HeaderReader, ProviderDefinition, RepoWithConnection, WebhookOutcome } from "./types.ts";
@@ -184,19 +190,25 @@ export async function handleGithubEvent(
 
 // Brings the stored repositories in line with what a (re)attached installation
 // can reach. Only repositories the app lost access to come back; one a user
-// disabled stays disabled.
+// disabled stays disabled. Lost ones have their in-flight reviews cancelled.
 export async function reconcileRepoAccess(connection: ForgeConnection): Promise<void> {
   const visible = (await adapterFor(connection).listRepos()).map((repo) => repo.externalId);
-  await prisma.$transaction([
-    prisma.repository.updateMany({
+  await prisma.$transaction(async (tx) => {
+    const lost = await tx.repository.findMany({
       where: { connectionId: connection.id, enabled: true, externalId: { notIn: visible } },
+      select: { id: true },
+    });
+    const ids = lost.map((repo) => repo.id);
+    await tx.repository.updateMany({
+      where: { id: { in: ids } },
       data: { enabled: false, accessLostAt: new Date() },
-    }),
-    prisma.repository.updateMany({
+    });
+    await cancelForDisabledRepositories(ids, ACCESS_LOST_REASON, tx);
+    await tx.repository.updateMany({
       where: { connectionId: connection.id, accessLostAt: { not: null }, externalId: { in: visible } },
       data: { enabled: true, accessLostAt: null },
-    }),
-  ]);
+    });
+  });
 }
 
 export const githubProvider: ProviderDefinition = {

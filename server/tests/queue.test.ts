@@ -1,6 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "../src/lib/prisma.ts";
 import {
+  ACCESS_LOST_REASON,
+  cancelForDisabledRepositories,
   cancelJob,
   claimNext,
   claimState,
@@ -8,6 +10,7 @@ import {
   enqueue,
   enqueueFromWebhook,
   fail,
+  DISABLED_REASON,
   heartbeat,
   recoverStale,
 } from "../src/worker/queue.ts";
@@ -134,6 +137,39 @@ describe("complete and fail", () => {
   });
 });
 
+describe("cancelForDisabledRepositories", () => {
+  it("cancels the repository's queued and running jobs and leaves finished ones", async () => {
+    const running = await job("aaa", 1);
+    await claimNext();
+    const queued = await job("bbb", 2);
+    const done = await job("ccc", 3);
+    await prisma.reviewJob.update({ where: { id: done.id }, data: { status: "completed", finishedAt: new Date() } });
+
+    expect(await cancelForDisabledRepositories([repositoryId], DISABLED_REASON)).toBe(2);
+
+    for (const id of [running.id, queued.id]) {
+      const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id } });
+      expect(stored).toMatchObject({ status: "cancelled", error: "Reviews were turned off for this repository", lockedAt: null });
+      expect(stored.finishedAt).toBeInstanceOf(Date);
+    }
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: done.id } })).toMatchObject({ status: "completed", error: null });
+    // The worker cannot overwrite the reason when it finishes.
+    expect(await complete(running.id, { status: "completed", verdict: "pass" })).toBe(false);
+  });
+
+  it("records the reason it was given and does nothing for no repositories", async () => {
+    const queued = await job("aaa");
+
+    expect(await cancelForDisabledRepositories([], ACCESS_LOST_REASON)).toBe(0);
+    expect(await cancelForDisabledRepositories([repositoryId], ACCESS_LOST_REASON)).toBe(1);
+
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: queued.id } })).toMatchObject({
+      status: "cancelled",
+      error: "Sentryward lost access to this repository",
+    });
+  });
+});
+
 describe("recoverStale", () => {
   it("requeues a stale job with attempts left and fails one without", async () => {
     const retry = await job("aaa", 1);
@@ -213,6 +249,14 @@ describe("claimState", () => {
     expect(await claimState(claimed.id, claimed.attempts)).toBe("cancelled");
   });
 
+  it("tells a cancel for a repository turned off apart from a dashboard cancel", async () => {
+    await job("aaa");
+    const claimed = (await claimNext())!;
+    await cancelForDisabledRepositories([repositoryId], DISABLED_REASON);
+
+    expect(await claimState(claimed.id, claimed.attempts)).toBe("disabled");
+  });
+
   it("is lost once the job was failed", async () => {
     await job("aaa");
     const claimed = (await claimNext())!;
@@ -275,6 +319,25 @@ describe("enqueueFromWebhook", () => {
   it("refuses a head it has seen in any state but superseded", async () => {
     const done = await job("aaa");
     await prisma.reviewJob.update({ where: { id: done.id }, data: { status: "failed" } });
+    expect(await enqueueFromWebhook({ repositoryId, number: 7, headSha: "aaa", trigger: "webhook" })).toEqual({
+      queued: false,
+      reason: "duplicate",
+    });
+  });
+
+  it("queues a head again once its job was cancelled only because the repository was off", async () => {
+    await job("aaa");
+    await cancelForDisabledRepositories([repositoryId], DISABLED_REASON);
+
+    const result = await enqueueFromWebhook({ repositoryId, number: 7, headSha: "aaa", trigger: "webhook" });
+    expect(result).toMatchObject({ queued: true, job: { status: "queued", headSha: "aaa" } });
+  });
+
+  it("still refuses a head whose job was cancelled from the dashboard", async () => {
+    const queued = await job("aaa");
+    const { workspaceId } = await prisma.forgeConnection.findFirstOrThrow();
+    await cancelJob(queued.id, workspaceId, "Cancelled by Dev");
+
     expect(await enqueueFromWebhook({ repositoryId, number: 7, headSha: "aaa", trigger: "webhook" })).toEqual({
       queued: false,
       reason: "duplicate",

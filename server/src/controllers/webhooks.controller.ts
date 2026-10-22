@@ -11,6 +11,7 @@ import {
 } from "../services/providers/github.ts";
 import { providerFor } from "../services/providers/index.ts";
 import { webhookSecret } from "../services/webhooks.ts";
+import { ACCESS_LOST_REASON, cancelForDisabledRepositories } from "../worker/queue.ts";
 
 function rawBody(req: Request): Buffer {
   if (!Buffer.isBuffer(req.body)) throw new HttpError(400, "Expected a raw request body");
@@ -46,16 +47,26 @@ export async function githubWebhook(req: Request, res: Response) {
   // The app lost access to these repositories, so no more events will arrive
   // for them. Disabling keeps their settings and history; accessLostAt marks
   // them to come back if access is granted again. One a user already disabled
-  // is left alone.
+  // is left alone. Their in-flight reviews are cancelled with the same commit.
   if (event === "installation_repositories" && payload.action === "removed" && payload.installation) {
-    const { count } = await prisma.repository.updateMany({
-      where: {
-        provider: "github",
-        enabled: true,
-        externalId: { in: (payload.repositories_removed ?? []).map((repo) => String(repo.id)) },
-        connection: { installationId: String(payload.installation.id) },
-      },
-      data: { enabled: false, accessLostAt: new Date() },
+    const installationId = String(payload.installation.id);
+    const count = await prisma.$transaction(async (tx) => {
+      const lost = await tx.repository.findMany({
+        where: {
+          provider: "github",
+          enabled: true,
+          externalId: { in: (payload.repositories_removed ?? []).map((repo) => String(repo.id)) },
+          connection: { installationId },
+        },
+        select: { id: true },
+      });
+      const ids = lost.map((repo) => repo.id);
+      const { count } = await tx.repository.updateMany({
+        where: { id: { in: ids } },
+        data: { enabled: false, accessLostAt: new Date() },
+      });
+      await cancelForDisabledRepositories(ids, ACCESS_LOST_REASON, tx);
+      return count;
     });
     return res.status(202).json({ outcome: "repositories_removed", repositories: count });
   }

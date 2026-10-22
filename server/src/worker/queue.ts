@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma.ts";
-import type { Repository, ReviewJob, ReviewTrigger } from "../generated/prisma/client.ts";
+import type { Prisma, Repository, ReviewJob, ReviewTrigger } from "../generated/prisma/client.ts";
 import { loadDashboardConfig } from "../review/config/load.ts";
 
 export interface EnqueueInput {
@@ -61,6 +61,9 @@ export async function enqueueFromWebhook(input: EnqueueInput): Promise<WebhookEn
       // A skipped job does not count: a draft marked ready for review keeps its
       // head, and must still be reviewed.
       status: { notIn: ["superseded", "skipped"] },
+      // Nor does one cancelled only because reviews were off: that head was
+      // never reviewed, and turning the repository back on should pick it up.
+      NOT: { status: "cancelled", error: { in: OFF_REASONS } },
     },
     select: { id: true },
   });
@@ -147,6 +150,10 @@ export async function fail(id: string, error: string): Promise<void> {
 }
 
 export const CLOSED_REASON = "The pull or merge request was closed or merged";
+export const DISABLED_REASON = "Reviews were turned off for this repository";
+export const ACCESS_LOST_REASON = "Sentryward lost access to this repository";
+// Reasons that mean the repository is off, not that the review was unwanted.
+const OFF_REASONS = [DISABLED_REASON, ACCESS_LOST_REASON];
 
 // A closed or merged change needs no review, so its queued jobs are
 // cancelled when the forge reports the close, unless the dashboard settings
@@ -177,8 +184,30 @@ export async function cancelQueuedForClosedChange(
 // worker: claimNext only takes queued jobs, and complete() and fail() only
 // finish running ones, so the reason given here is the one that stays.
 export async function cancelJob(id: string, workspaceId: string, reason: string): Promise<number> {
-  const { count } = await prisma.reviewJob.updateMany({
-    where: { id, repository: { connection: { workspaceId } }, status: { in: ["queued", "running"] } },
+  return cancelWhere({ id, repository: { connection: { workspaceId } } }, reason);
+}
+
+// Turning repositories off (by hand, or because access was lost) stops
+// everything they still have in flight, so nothing is published to them
+// afterwards. A running job sees the cancel through claimState; complete() and
+// fail() only finish running jobs, so this reason is the one that stays. Takes
+// a transaction client so the cancel commits with the repository update.
+export async function cancelForDisabledRepositories(
+  repositoryIds: string[],
+  reason: typeof DISABLED_REASON | typeof ACCESS_LOST_REASON,
+  client: Prisma.TransactionClient = prisma,
+): Promise<number> {
+  if (repositoryIds.length === 0) return 0;
+  return cancelWhere({ repositoryId: { in: repositoryIds } }, reason, client);
+}
+
+async function cancelWhere(
+  where: Prisma.ReviewJobWhereInput,
+  reason: string,
+  client: Prisma.TransactionClient = prisma,
+): Promise<number> {
+  const { count } = await client.reviewJob.updateMany({
+    where: { ...where, status: { in: ["queued", "running"] } },
     data: { status: "cancelled", error: reason, lockedAt: null, finishedAt: new Date() },
   });
   return count;
@@ -195,11 +224,15 @@ export async function heartbeat(id: string): Promise<void> {
 }
 
 // Whether a run still holds its claim. A job cancelled from the dashboard says
-// so; one failed on timeout, requeued by recovery or claimed again by another
+// so, and one cancelled because its repository was turned off says "disabled";
+// one failed on timeout, requeued by recovery or claimed again by another
 // worker (a later attempt) is lost, and the run must leave it alone.
-export async function claimState(id: string, attempts: number): Promise<"owned" | "cancelled" | "lost"> {
-  const job = await prisma.reviewJob.findUnique({ where: { id }, select: { status: true, attempts: true } });
-  if (job?.status === "cancelled") return "cancelled";
+export async function claimState(id: string, attempts: number): Promise<"owned" | "cancelled" | "disabled" | "lost"> {
+  const job = await prisma.reviewJob.findUnique({
+    where: { id },
+    select: { status: true, attempts: true, error: true },
+  });
+  if (job?.status === "cancelled") return job.error && OFF_REASONS.includes(job.error) ? "disabled" : "cancelled";
   return job?.status === "running" && job.attempts === attempts ? "owned" : "lost";
 }
 

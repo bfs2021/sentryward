@@ -244,6 +244,24 @@ describe("publishReview", () => {
     expect(publication.inlineSkipped).toBe(2);
   });
 
+  it("stops before the next step once proceed says the job was cancelled", async () => {
+    const { publisher, calls } = recordingPublisher();
+    // Lets the summary through, then reports the cancel.
+    let asked = 0;
+    const publication = await publishReview({
+      publisher,
+      changeSet: makeChangeSet(),
+      result: await sampleResult(),
+      config: config(),
+      postedFingerprints: new Set(),
+      proceed: async () => ++asked === 1,
+    });
+
+    expect(publication.stopped).toBe(true);
+    expect(calls.order).toEqual(["summary"]);
+    expect(calls.statuses).toEqual([]);
+  });
+
   it("keeps publishing the summary and status when inline comments fail", async () => {
     const { publisher, calls } = recordingPublisher({ failInline: true });
 

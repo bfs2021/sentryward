@@ -275,6 +275,10 @@ describe("POST /api/webhooks/github", () => {
         enabled: true,
       },
     });
+    const jobOf = (repositoryId: string) =>
+      prisma.reviewJob.create({ data: { repositoryId, number: 1, headSha: "h1", trigger: "webhook", status: "queued" } });
+    const lostJob = await jobOf(repo.id);
+    const keptJob = await jobOf(kept.id);
 
     const res = await sendGithub("installation_repositories", {
       action: "removed",
@@ -289,6 +293,12 @@ describe("POST /api/webhooks/github", () => {
       { id: kept.id, enabled: true, accessLostAt: null },
       { id: repo.id, enabled: false, accessLostAt: expect.any(Date) },
     ]);
+    // Their in-flight reviews are cancelled with the reason, others left alone.
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: lostJob.id } })).toMatchObject({
+      status: "cancelled",
+      error: "Sentryward lost access to this repository",
+    });
+    expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: keptJob.id } })).status).toBe("queued");
   });
 
   it("does not mark a repository the user disabled as having lost access", async () => {

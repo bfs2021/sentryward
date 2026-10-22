@@ -120,6 +120,16 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   connection. Requires a database migration. Closes #81.
 - Rerunning a review on a repository whose reviews are turned off is refused
   with a 409, like a new manual review, instead of queueing and publishing a run.
+- Turning reviews off for a repository cancels its queued and running reviews
+  ("Reviews were turned off for this repository"), and the worker skips any
+  job whose repository is off when it starts, so nothing more is published to
+  it. A running review also stops between publishing steps, and its pending
+  commit status is set to `success` so a required check is not left blocked.
+  The GitHub App losing access to a repository cancels its reviews the same
+  way ("Sentryward lost access to this repository"). After turning a
+  repository back on, automatic triggers review those heads again. Closes #80.
+- A cancelled review replaces its "Reviewing..." progress comment with a short
+  "Review cancelled" note instead of leaving it on the PR/MR.
 - **Download markdown** attaches its temporary link to the page while clicking
   it and frees the file's URL only after the click, so the download also works in
   browsers that ignore a detached link or start downloads asynchronously.
