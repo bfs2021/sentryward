@@ -208,8 +208,12 @@ export function ReviewDetailPage() {
               <History />
               <AlertTitle>The full result has expired</AlertTitle>
               <AlertDescription>
-                Cleared on {new Date(review.resultExpiredAt).toLocaleDateString()} under this server's retention
-                setting. The review's status and verdict are kept, and its findings are still on the Findings page.
+                <p>
+                  Cleared on {new Date(review.resultExpiredAt).toLocaleDateString()} under this server's retention
+                  setting. The review's status and verdict are kept
+                  {review.status === "failed" ? "." : ", and its findings are still listed on the Findings page."}
+                </p>
+                {review.error && <p>{review.error}</p>}
               </AlertDescription>
             </Alert>
           ) : (

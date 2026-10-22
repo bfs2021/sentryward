@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { Prisma } from "../src/generated/prisma/client.ts";
 import type { ReviewStatus } from "../src/generated/prisma/client.ts";
 import { prisma } from "../src/lib/prisma.ts";
 import { pruneReviews } from "../src/worker/retention.ts";
@@ -35,7 +36,7 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-async function job(status: ReviewStatus, finishedAt: Date | null) {
+async function job(status: ReviewStatus, finishedAt: Date | null, overrides: Partial<Prisma.ReviewJobUncheckedCreateInput> = {}) {
   return prisma.reviewJob.create({
     data: {
       repositoryId: repoId,
@@ -48,9 +49,13 @@ async function job(status: ReviewStatus, finishedAt: Date | null) {
       resolvedConfig: { config: {} },
       publication: { inlinePosted: [] },
       summary: { title: "T" },
+      ...overrides,
     },
   });
 }
+
+// A newer run of the same change, so older ones are not its latest.
+const newerRun = () => job("completed", RECENT);
 
 const load = (id: string) => prisma.reviewJob.findUnique({ where: { id } });
 
@@ -68,6 +73,7 @@ describe("pruneReviews", () => {
 
   it("clears the large columns of old finished runs but keeps the row, summary and finding links", async () => {
     const old = await Promise.all((["completed", "partial", "failed"] as const).map((s) => job(s, OLD)));
+    await newerRun();
     const finding = await prisma.finding.create({
       data: {
         repositoryId: repoId,
@@ -117,9 +123,37 @@ describe("pruneReviews", () => {
   it("works through more rows than one batch, and a second pass finds nothing left", async () => {
     for (let i = 0; i < 5; i++) await job("superseded", OLD);
     for (let i = 0; i < 5; i++) await job("completed", OLD);
+    await newerRun();
 
     expect(await pruneReviews(30, { now: NOW, batchSize: 2 })).toEqual({ deleted: 5, trimmed: 5 });
     expect(await pruneReviews(30, { now: NOW, batchSize: 2 })).toEqual({ deleted: 0, trimmed: 0 });
-    expect(await prisma.reviewJob.count({ where: { repositoryId: repoId } })).toBe(5);
+    expect(await prisma.reviewJob.count({ where: { repositoryId: repoId } })).toBe(6);
+  });
+
+  it("keeps the newest run that reviewed each change, even when it is old", async () => {
+    const older = await job("completed", new Date("2026-03-01T00:00:00Z"));
+    const newest = await job("partial", OLD);
+    // A later failure is not a review the change's findings were synced from.
+    const failed = await job("failed", new Date("2026-04-15T00:00:00Z"));
+    const otherChange = await job("completed", OLD, { number: 8 });
+
+    expect(await pruneReviews(30, { now: NOW })).toEqual({ deleted: 0, trimmed: 2 });
+    expect(await load(older.id)).toMatchObject({ result: null, resultExpiredAt: NOW });
+    expect(await load(failed.id)).toMatchObject({ result: null, resultExpiredAt: NOW });
+    for (const { id } of [newest, otherChange]) {
+      expect(await load(id)).toMatchObject({ result: { big: true }, resultExpiredAt: null });
+    }
+  });
+
+  it("leaves old runs that stored nothing unmarked", async () => {
+    const failed = await job("failed", OLD, {
+      result: Prisma.DbNull,
+      resolvedConfig: Prisma.DbNull,
+      publication: Prisma.DbNull,
+      error: "Could not fetch the change",
+    });
+
+    expect(await pruneReviews(30, { now: NOW })).toEqual({ deleted: 0, trimmed: 0 });
+    expect(await load(failed.id)).toMatchObject({ resultExpiredAt: null, error: "Could not fetch the change" });
   });
 });

@@ -10,7 +10,7 @@ import { pruneReviews } from "./retention.ts";
 let stopping = false;
 const running = new Set<Promise<void>>();
 
-// Retention is about days, so an hourly pass is plenty. The first tick after
+// Retention is about days, so an hourly pass is plenty. The first poll after
 // start runs it.
 const RETENTION_INTERVAL_MS = 60 * 60 * 1000;
 let lastPruneAt = 0;
@@ -27,15 +27,6 @@ async function tick(): Promise<void> {
   // Jobs failed here never return to an execute() that would notify for them.
   for (const id of stale.failedIds) {
     await notifyJob(id);
-  }
-  if (env.REVIEW_RETENTION_DAYS && Date.now() - lastPruneAt >= RETENTION_INTERVAL_MS) {
-    // Set first so a failing prune waits for the next interval instead of
-    // retrying every poll.
-    lastPruneAt = Date.now();
-    const pruned = await pruneReviews(env.REVIEW_RETENTION_DAYS);
-    if (pruned.deleted || pruned.trimmed) {
-      console.log(`[worker] retention: deleted ${pruned.deleted} job(s), expired ${pruned.trimmed} result(s)`);
-    }
   }
   while (!stopping && running.size < env.WORKER_CONCURRENCY) {
     const job = await claimNext(env.WORKER_USER_CONCURRENCY);
@@ -55,6 +46,19 @@ async function tick(): Promise<void> {
   }
 }
 
+// Runs after the claims so a long first pass or a failing prune never holds
+// up reviews.
+async function prune(): Promise<void> {
+  if (!env.REVIEW_RETENTION_DAYS || Date.now() - lastPruneAt < RETENTION_INTERVAL_MS) return;
+  // Set first so a failing prune waits for the next interval instead of
+  // retrying every poll.
+  lastPruneAt = Date.now();
+  const pruned = await pruneReviews(env.REVIEW_RETENTION_DAYS);
+  if (pruned.deleted || pruned.trimmed) {
+    console.log(`[worker] retention: deleted ${pruned.deleted} job(s), expired ${pruned.trimmed} result(s)`);
+  }
+}
+
 async function loop(): Promise<void> {
   console.log(
     `[worker] polling every ${env.WORKER_POLL_INTERVAL_MS}ms, concurrency ${env.WORKER_CONCURRENCY}`,
@@ -64,6 +68,11 @@ async function loop(): Promise<void> {
       await tick();
     } catch (err) {
       console.error("[worker] poll failed", err);
+    }
+    try {
+      await prune();
+    } catch (err) {
+      console.error("[worker] retention failed", err);
     }
     await new Promise((resolve) => setTimeout(resolve, env.WORKER_POLL_INTERVAL_MS));
   }

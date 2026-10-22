@@ -6,7 +6,9 @@ import type { ReviewStatus } from "../generated/prisma/client.ts";
 const DELETED: ReviewStatus[] = ["superseded", "skipped", "cancelled"];
 // Runs that reviewed something keep their row and summary digest, so lists,
 // stats and findings (whose lastJobId points here) stay intact; only the large
-// JSON columns are cleared.
+// JSON columns are cleared. The newest completed or partial run of each change
+// keeps them too: finding details, inline-thread answers and incremental
+// reviews read its result.
 const TRIMMED: ReviewStatus[] = ["completed", "partial", "failed"];
 
 export interface PruneResult {
@@ -35,7 +37,7 @@ export async function pruneReviews(
   let trimmed = 0;
   for (;;) {
     const where = { status: { in: TRIMMED }, finishedAt: { lt: cutoff }, resultExpiredAt: null };
-    const ids = await batchIds(where, batchSize);
+    const ids = await trimmableIds(cutoff, batchSize);
     if (ids.length) {
       // The filter is repeated so a row trimmed by another worker in between
       // keeps its first expiry time.
@@ -49,6 +51,31 @@ export async function pruneReviews(
   }
 
   return { deleted, trimmed };
+}
+
+// Raw because Prisma cannot express "not the newest run of its change". Rows
+// with nothing stored (a run that failed before reviewing) are skipped, so they
+// still read as "did not run" rather than as an expired result.
+async function trimmableIds(cutoff: Date, batchSize: number): Promise<string[]> {
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT j.id FROM review_jobs j
+    WHERE j.status IN ('completed', 'partial', 'failed')
+      AND j.finished_at < ${cutoff}
+      AND j.result_expired_at IS NULL
+      AND (j.result IS NOT NULL OR j.resolved_config IS NOT NULL OR j.publication IS NOT NULL)
+      AND NOT (
+        j.status IN ('completed', 'partial')
+        AND NOT EXISTS (
+          SELECT 1 FROM review_jobs n
+          WHERE n.repository_id = j.repository_id
+            AND n.number = j.number
+            AND n.status IN ('completed', 'partial')
+            AND n.finished_at > j.finished_at
+        )
+      )
+    LIMIT ${batchSize}
+  `;
+  return rows.map((row) => row.id);
 }
 
 async function batchIds(where: Prisma.ReviewJobWhereInput, batchSize: number): Promise<string[]> {
