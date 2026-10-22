@@ -19,8 +19,10 @@ import {
   ReconnectRequiredError,
   storedTokens,
 } from "../services/gitlabOAuth.ts";
+import { AppUninstalledError, reconcileRepoAccess } from "../services/providers/github.ts";
 import { isForgeProvider, PROVIDERS, providerFor } from "../services/providers/index.ts";
 import { UnreadableTokenError } from "../services/providers/token.ts";
+import { isUniqueViolation } from "../services/users.ts";
 import { removeWebhook } from "../services/webhooks.ts";
 import { loadMembership, requireRole } from "../services/workspaces.ts";
 import { GitLabAdapter } from "../review/forge/gitlab.ts";
@@ -131,6 +133,7 @@ export async function connectionStatus(req: Request, res: Response) {
     const refused =
       err instanceof UnreadableTokenError ||
       err instanceof ReconnectRequiredError ||
+      err instanceof AppUninstalledError ||
       (err instanceof ForgeError && [401, 403, 404].includes(err.status));
     status = refused ? "revoked" : "unreachable";
   }
@@ -242,29 +245,41 @@ export async function githubCallback(req: Request, res: Response) {
     }
     const installation = await app.installation(installationId);
     const workspaceId = access.workspaceId;
-    // A reinstall gets a new installation id. The connection the uninstall
-    // webhook detached for the same account is reused, so its repositories and
-    // review history come back with it.
-    const existing =
-      (await prisma.forgeConnection.findFirst({
-        where: { workspaceId, provider: "github", installationId },
-      })) ??
-      (await prisma.forgeConnection.findFirst({
-        where: {
-          workspaceId,
-          provider: "github",
-          kind: "github_app",
-          installationId: null,
-          accountLogin: installation.account.login,
-        },
-        orderBy: { createdAt: "asc" },
-      }));
-    const data = { accountLogin: installation.account.login, host: env.GITHUB_HOST };
+    const accountId = String(installation.account.id);
+    const accountLogin = installation.account.login;
+    // GitHub allows one installation of an app per account, so a new one for
+    // an account this workspace already has replaces it, whether or not the
+    // uninstall webhook arrived. Reusing that row brings its repositories and
+    // review history back. Rows from before accountId was stored match by login.
+    const candidates = await prisma.forgeConnection.findMany({
+      where: {
+        workspaceId,
+        provider: "github",
+        kind: "github_app",
+        OR: [{ installationId }, { accountId }, { accountId: null, accountLogin }],
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    const existing = candidates.find((row) => row.installationId === installationId) ?? candidates[0];
+    const data = { accountLogin, accountId, host: env.GITHUB_HOST, installationId };
+    let connection;
     if (existing) {
-      await prisma.forgeConnection.update({ where: { id: existing.id }, data: { ...data, installationId } });
+      connection = await prisma.forgeConnection.update({ where: { id: existing.id }, data });
     } else {
-      await prisma.forgeConnection.create({
-        data: { ...data, workspaceId, createdById: req.userId, provider: "github", kind: "github_app", installationId },
+      try {
+        connection = await prisma.forgeConnection.create({
+          data: { ...data, workspaceId, createdById: req.userId, provider: "github", kind: "github_app" },
+        });
+      } catch (err) {
+        // A concurrent callback for the same installation saved it first.
+        if (!isUniqueViolation(err)) throw err;
+      }
+    }
+    // The connection is saved either way; repository access catches up on the
+    // next installation_repositories event if this fails.
+    if (connection) {
+      await reconcileRepoAccess(connection).catch((err: unknown) => {
+        console.error("GitHub repository access reconcile failed", err);
       });
     }
   } catch (err) {

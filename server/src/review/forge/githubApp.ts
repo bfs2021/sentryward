@@ -99,7 +99,7 @@ export class GitHubApp {
 
   async installation(
     installationId: string,
-  ): Promise<{ id: number; account: { login: string }; suspended_at?: string | null }> {
+  ): Promise<{ id: number; account: { id: number; login: string }; suspended_at?: string | null }> {
     return this.http.json(`/app/installations/${encodeURIComponent(installationId)}`);
   }
 }

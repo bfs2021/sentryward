@@ -1,9 +1,11 @@
 import { createHmac } from "node:crypto";
 import { env } from "../../config/env.ts";
 import { HttpError } from "../../lib/httpError.ts";
+import { prisma } from "../../lib/prisma.ts";
 import { parseJson, REVIEW_COMMAND, safeEqual } from "../../lib/webhook.ts";
 import type { ForgeConnection } from "../../generated/prisma/client.ts";
 import { GitHubAdapter } from "../../review/forge/github.ts";
+import type { GitHubApp } from "../../review/forge/githubApp.ts";
 import { ForgeError } from "../../review/forge/http.ts";
 import { githubConnectSchema } from "../../schemas/connections.schema.ts";
 import { cancelQueuedForClosedChange, enqueue, enqueueFromWebhook } from "../../worker/queue.ts";
@@ -17,13 +19,22 @@ const PR_ACTIONS = new Set(["opened", "synchronize", "reopened", "ready_for_revi
 // Who may ask for a review in a comment, or act on a finding by replying to
 // it: people who can already push.
 const TRUSTED = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-const UNINSTALLED = "GitHub App is no longer installed";
+
+// The uninstall webhook cleared the installation id; the connection is kept
+// for its history until a reinstall reattaches it. An HttpError, so it reaches
+// the client as is whether thrown before or inside a forge call.
+export class AppUninstalledError extends HttpError {
+  constructor() {
+    super(409, "The GitHub App is no longer installed for this account; install it again to reattach it");
+  }
+}
 
 export interface GitHubPayload {
   action?: string;
   installation?: { id: number };
   repository?: { id: number };
   // installation_repositories events only.
+  repositories_added?: { id: number }[];
   repositories_removed?: { id: number }[];
   pull_request?: { number: number; head: { sha: string } };
   issue?: { number: number; pull_request?: unknown };
@@ -36,6 +47,17 @@ export interface GitHubPayload {
     in_reply_to_id?: number;
   };
   sender?: { login: string };
+}
+
+function requireInstallation(connection: ForgeConnection): { app: GitHubApp; installationId: string } {
+  const app = getGitHubApp();
+  if (!app) {
+    throw new HttpError(503, "GitHub is not configured on this server");
+  }
+  if (!connection.installationId) {
+    throw new AppUninstalledError();
+  }
+  return { app, installationId: connection.installationId };
 }
 
 function adapterFor(connection: ForgeConnection): GitHubAdapter {
@@ -52,14 +74,7 @@ function adapterFor(connection: ForgeConnection): GitHubAdapter {
     });
   }
 
-  const app = getGitHubApp();
-  const installationId = connection.installationId;
-  if (!app) {
-    throw new HttpError(503, "GitHub is not configured on this server");
-  }
-  if (!installationId) {
-    throw new ForgeError(404, UNINSTALLED);
-  }
+  const { app, installationId } = requireInstallation(connection);
   return new GitHubAdapter({
     host: connection.host,
     token: () => app.installationToken(installationId),
@@ -167,6 +182,23 @@ export async function handleGithubEvent(
   return { body: { outcome: "queued", reviewId: job.id } };
 }
 
+// Brings the stored repositories in line with what a (re)attached installation
+// can reach. Only repositories the app lost access to come back; one a user
+// disabled stays disabled.
+export async function reconcileRepoAccess(connection: ForgeConnection): Promise<void> {
+  const visible = (await adapterFor(connection).listRepos()).map((repo) => repo.externalId);
+  await prisma.$transaction([
+    prisma.repository.updateMany({
+      where: { connectionId: connection.id, enabled: true, externalId: { notIn: visible } },
+      data: { enabled: false, accessLostAt: new Date() },
+    }),
+    prisma.repository.updateMany({
+      where: { connectionId: connection.id, accessLostAt: { not: null }, externalId: { in: visible } },
+      data: { enabled: true, accessLostAt: null },
+    }),
+  ]);
+}
+
 export const githubProvider: ProviderDefinition = {
   adapterFor,
 
@@ -177,15 +209,8 @@ export const githubProvider: ProviderDefinition = {
     }
     // Not installationToken(): it caches tokens for up to an hour, so it would
     // miss an uninstall. The installation lookup 404s as soon as it is gone.
-    const app = getGitHubApp();
-    if (!app) {
-      throw new HttpError(503, "GitHub is not configured on this server");
-    }
-    // Cleared by the uninstall webhook; reported like a revoked token.
-    if (!connection.installationId) {
-      throw new ForgeError(404, UNINSTALLED);
-    }
-    const installation = await app.installation(connection.installationId);
+    const { app, installationId } = requireInstallation(connection);
+    const installation = await app.installation(installationId);
     if (installation.suspended_at) {
       throw new ForgeError(403, "GitHub App installation is suspended");
     }

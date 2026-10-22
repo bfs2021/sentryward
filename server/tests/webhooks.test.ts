@@ -283,9 +283,54 @@ describe("POST /api/webhooks/github", () => {
     });
 
     expect(res.body).toEqual({ outcome: "repositories_removed", repositories: 1 });
-    expect(await prisma.repository.findMany({ select: { id: true, enabled: true }, orderBy: { fullPath: "asc" } })).toEqual([
-      { id: kept.id, enabled: true },
-      { id: repo.id, enabled: false },
+    expect(
+      await prisma.repository.findMany({ select: { id: true, enabled: true, accessLostAt: true }, orderBy: { fullPath: "asc" } }),
+    ).toEqual([
+      { id: kept.id, enabled: true, accessLostAt: null },
+      { id: repo.id, enabled: false, accessLostAt: expect.any(Date) },
+    ]);
+  });
+
+  it("does not mark a repository the user disabled as having lost access", async () => {
+    await githubRepo(workspaceId, false);
+
+    const res = await sendGithub("installation_repositories", {
+      action: "removed",
+      installation: { id: 55 },
+      repositories_removed: [{ id: 900 }],
+    });
+
+    expect(res.body).toEqual({ outcome: "repositories_removed", repositories: 0 });
+    expect(await prisma.repository.findFirstOrThrow()).toMatchObject({ enabled: false, accessLostAt: null });
+  });
+
+  it("re-enables only the repositories that lost access when they are added back", async () => {
+    const lost = await githubRepo(workspaceId, false);
+    await prisma.repository.update({ where: { id: lost.id }, data: { accessLostAt: new Date() } });
+    const userDisabled = await prisma.repository.create({
+      data: {
+        connectionId: lost.connectionId,
+        provider: "github",
+        host: "github.com",
+        fullPath: "acme/api",
+        externalId: "901",
+        defaultBranch: "main",
+        enabled: false,
+      },
+    });
+
+    const res = await sendGithub("installation_repositories", {
+      action: "added",
+      installation: { id: 55 },
+      repositories_added: [{ id: 900 }, { id: 901 }],
+    });
+
+    expect(res.body).toEqual({ outcome: "repositories_added", repositories: 1 });
+    expect(
+      await prisma.repository.findMany({ select: { id: true, enabled: true, accessLostAt: true }, orderBy: { fullPath: "asc" } }),
+    ).toEqual([
+      { id: userDisabled.id, enabled: false, accessLostAt: null },
+      { id: lost.id, enabled: true, accessLostAt: null },
     ]);
   });
 });

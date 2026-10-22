@@ -89,7 +89,7 @@ export async function enableRepo(req: Request, res: Response) {
     .catch((err: unknown) => {
       throw toHttpError(err, connection.provider);
     });
-  const details = { fullPath: forgeRepo.fullPath, defaultBranch: forgeRepo.defaultBranch, enabled: true };
+  const details = { fullPath: forgeRepo.fullPath, defaultBranch: forgeRepo.defaultBranch, enabled: true, accessLostAt: null };
   const saved = await prisma.repository.upsert({
     where: { connectionId_externalId: { connectionId, externalId: forgeRepo.externalId } },
     update: details,
@@ -130,7 +130,13 @@ export async function updateRepo(req: Request, res: Response) {
     await requireStoredLlmConnection(req.workspaceId!, settings.llm.connection);
   }
 
-  const updated = await prisma.repository.update({ where: { id }, data: { enabled, settings, followGlobal } });
+  // Turning a repository on or off by hand overrides any access-loss marker,
+  // so a reinstall no longer flips it back.
+  const accessLostAt = enabled === undefined ? undefined : null;
+  const updated = await prisma.repository.update({
+    where: { id },
+    data: { enabled, settings, followGlobal, accessLostAt },
+  });
   let webhook;
   if (enabled === true) webhook = await ensureWebhook(updated, existing.connection);
   if (enabled === false) await removeWebhook(updated, existing.connection);
