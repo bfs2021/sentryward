@@ -249,11 +249,44 @@ describe("POST /api/webhooks/github", () => {
     expect(await prisma.reviewJob.count()).toBe(0);
   });
 
-  it("forgets an installation when the app is uninstalled", async () => {
-    await githubRepo();
+  it("detaches an uninstalled installation but keeps its review history", async () => {
+    const repo = await githubRepo();
+    await prisma.reviewJob.create({ data: { repositoryId: repo.id, number: 42, headSha: "sha1", trigger: "manual" } });
+
     const res = await sendGithub("installation", { action: "deleted", installation: { id: 55 } });
+
     expect(res.body).toEqual({ outcome: "uninstalled", connections: 1 });
-    expect(await prisma.repository.count()).toBe(0);
+    expect(await prisma.forgeConnection.findFirstOrThrow()).toMatchObject({ installationId: null });
+    expect(await prisma.repository.count()).toBe(1);
+    expect(await prisma.reviewJob.count()).toBe(1);
+    expect((await sendGithub("pull_request", prEvent("opened"))).body.outcome).toBe("not_enabled");
+  });
+
+  it("disables the repositories removed from an installation", async () => {
+    const repo = await githubRepo();
+    const kept = await prisma.repository.create({
+      data: {
+        connectionId: repo.connectionId,
+        provider: "github",
+        host: "github.com",
+        fullPath: "acme/api",
+        externalId: "901",
+        defaultBranch: "main",
+        enabled: true,
+      },
+    });
+
+    const res = await sendGithub("installation_repositories", {
+      action: "removed",
+      installation: { id: 55 },
+      repositories_removed: [{ id: 900 }],
+    });
+
+    expect(res.body).toEqual({ outcome: "repositories_removed", repositories: 1 });
+    expect(await prisma.repository.findMany({ select: { id: true, enabled: true }, orderBy: { fullPath: "asc" } })).toEqual([
+      { id: kept.id, enabled: true },
+      { id: repo.id, enabled: false },
+    ]);
   });
 });
 

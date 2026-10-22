@@ -242,12 +242,26 @@ export async function githubCallback(req: Request, res: Response) {
     }
     const installation = await app.installation(installationId);
     const workspaceId = access.workspaceId;
-    const existing = await prisma.forgeConnection.findFirst({
-      where: { workspaceId, provider: "github", installationId },
-    });
+    // A reinstall gets a new installation id. The connection the uninstall
+    // webhook detached for the same account is reused, so its repositories and
+    // review history come back with it.
+    const existing =
+      (await prisma.forgeConnection.findFirst({
+        where: { workspaceId, provider: "github", installationId },
+      })) ??
+      (await prisma.forgeConnection.findFirst({
+        where: {
+          workspaceId,
+          provider: "github",
+          kind: "github_app",
+          installationId: null,
+          accountLogin: installation.account.login,
+        },
+        orderBy: { createdAt: "asc" },
+      }));
     const data = { accountLogin: installation.account.login, host: env.GITHUB_HOST };
     if (existing) {
-      await prisma.forgeConnection.update({ where: { id: existing.id }, data });
+      await prisma.forgeConnection.update({ where: { id: existing.id }, data: { ...data, installationId } });
     } else {
       await prisma.forgeConnection.create({
         data: { ...data, workspaceId, createdById: req.userId, provider: "github", kind: "github_app", installationId },

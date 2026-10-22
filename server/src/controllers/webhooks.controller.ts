@@ -32,11 +32,29 @@ export async function githubWebhook(req: Request, res: Response) {
 
   if (event === "ping") return res.json({ outcome: "pong" });
 
+  // Keep the connection rather than deleting it: repositories, reviews and
+  // findings cascade from it, and a reinstall reattaches it (githubCallback).
+  // Without an installation id it no longer matches any event below.
   if (event === "installation" && payload.action === "deleted" && payload.installation) {
-    const { count } = await prisma.forgeConnection.deleteMany({
+    const { count } = await prisma.forgeConnection.updateMany({
       where: { provider: "github", installationId: String(payload.installation.id) },
+      data: { installationId: null },
     });
     return res.status(202).json({ outcome: "uninstalled", connections: count });
+  }
+
+  // The app lost access to these repositories, so no more events will arrive
+  // for them. Disabling keeps their settings and history.
+  if (event === "installation_repositories" && payload.action === "removed" && payload.installation) {
+    const { count } = await prisma.repository.updateMany({
+      where: {
+        provider: "github",
+        externalId: { in: (payload.repositories_removed ?? []).map((repo) => String(repo.id)) },
+        connection: { installationId: String(payload.installation.id) },
+      },
+      data: { enabled: false },
+    });
+    return res.status(202).json({ outcome: "repositories_removed", repositories: count });
   }
 
   if (!isGithubReviewEvent(event, payload)) return res.status(202).json({ outcome: "ignored" });

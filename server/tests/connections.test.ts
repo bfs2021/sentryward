@@ -243,6 +243,15 @@ describe("GET /api/connections/:id/status", () => {
     expect(await statusFor(connection.id)).toBe("revoked");
   });
 
+  it("reports an app connection detached by the uninstall webhook as revoked", async () => {
+    const connection = await prisma.forgeConnection.create({
+      data: { workspaceId, provider: "github", host: "github.com", kind: "github_app", accountLogin: "acme" },
+    });
+    vi.stubGlobal("fetch", fetchStub([]).fetch);
+
+    expect(await statusFor(connection.id)).toBe("revoked");
+  });
+
   it("404s on someone else's connection and requires authentication", async () => {
     const other = await createUser("other@example.com");
     const theirs = await gitlabConnection(other.workspace.id);
@@ -373,6 +382,33 @@ describe("GitHub App installation", () => {
       installationId: "55",
       accountLogin: "acme",
     });
+  });
+
+  it("reattaches the connection an uninstall detached, with its repositories", async () => {
+    const detached = await prisma.forgeConnection.create({
+      data: { workspaceId, provider: "github", host: "github.com", kind: "github_app", accountLogin: "acme" },
+    });
+    await prisma.repository.create({
+      data: {
+        connectionId: detached.id,
+        provider: "github",
+        host: "github.com",
+        fullPath: "acme/web",
+        externalId: "900",
+        defaultBranch: "main",
+        enabled: true,
+      },
+    });
+    vi.stubGlobal("fetch", fetchStub(githubRoutes([55])).fetch);
+
+    await request(app)
+      .get(`/api/connections/github/callback?installation_id=55&setup_action=install&code=c&state=${state(userId)}`)
+      .set("Cookie", cookie);
+
+    expect(await prisma.forgeConnection.findMany({ select: { id: true, installationId: true } })).toEqual([
+      { id: detached.id, installationId: "55" },
+    ]);
+    expect(await prisma.repository.count({ where: { connectionId: detached.id } })).toBe(1);
   });
 
   it("refuses the callback when the user is no longer an admin of the workspace in the state", async () => {

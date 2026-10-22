@@ -17,11 +17,14 @@ const PR_ACTIONS = new Set(["opened", "synchronize", "reopened", "ready_for_revi
 // Who may ask for a review in a comment, or act on a finding by replying to
 // it: people who can already push.
 const TRUSTED = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+const UNINSTALLED = "GitHub App is no longer installed";
 
 export interface GitHubPayload {
   action?: string;
   installation?: { id: number };
   repository?: { id: number };
+  // installation_repositories events only.
+  repositories_removed?: { id: number }[];
   pull_request?: { number: number; head: { sha: string } };
   issue?: { number: number; pull_request?: unknown };
   comment?: {
@@ -51,8 +54,11 @@ function adapterFor(connection: ForgeConnection): GitHubAdapter {
 
   const app = getGitHubApp();
   const installationId = connection.installationId;
-  if (!app || !installationId) {
+  if (!app) {
     throw new HttpError(503, "GitHub is not configured on this server");
+  }
+  if (!installationId) {
+    throw new ForgeError(404, UNINSTALLED);
   }
   return new GitHubAdapter({
     host: connection.host,
@@ -172,8 +178,12 @@ export const githubProvider: ProviderDefinition = {
     // Not installationToken(): it caches tokens for up to an hour, so it would
     // miss an uninstall. The installation lookup 404s as soon as it is gone.
     const app = getGitHubApp();
-    if (!app || !connection.installationId) {
+    if (!app) {
       throw new HttpError(503, "GitHub is not configured on this server");
+    }
+    // Cleared by the uninstall webhook; reported like a revoked token.
+    if (!connection.installationId) {
+      throw new ForgeError(404, UNINSTALLED);
     }
     const installation = await app.installation(connection.installationId);
     if (installation.suspended_at) {
