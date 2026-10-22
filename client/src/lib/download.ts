@@ -5,6 +5,11 @@ export function downloadText(text: string, filename: string, type = "text/plain"
   const a = document.createElement("a")
   a.href = url
   a.download = filename
+  // Attached for the click: older Firefox and some webviews ignore a click on a detached anchor.
+  a.style.display = "none"
+  document.body.append(a)
   a.click()
-  URL.revokeObjectURL(url)
+  a.remove()
+  // Revoked after the click has been handled: Safari starts reading the blob asynchronously.
+  setTimeout(() => URL.revokeObjectURL(url), 0)
 }
