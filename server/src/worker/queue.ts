@@ -2,6 +2,7 @@ import { lockChange } from "../lib/changeLock.ts";
 import { prisma } from "../lib/prisma.ts";
 import type { Prisma, Repository, ReviewJob, ReviewTrigger } from "../generated/prisma/client.ts";
 import { loadDashboardConfig } from "../review/config/load.ts";
+import type { ResultSummary } from "../review/render/json.ts";
 
 export interface EnqueueInput {
   repositoryId: string;
@@ -140,7 +141,7 @@ export interface CompleteInput {
   status: "completed" | "partial" | "failed" | "skipped" | "cancelled";
   verdict: ReviewJob["verdict"];
   result?: unknown;
-  summary?: unknown;
+  summary?: ResultSummary;
   publication?: unknown;
   resolvedConfig?: unknown;
   error?: string | null;
@@ -161,7 +162,6 @@ export async function complete(
       verdict: input.verdict,
       result: input.result as object | undefined,
       summary: input.summary as object | undefined,
-      title: (input.summary as { title?: string } | undefined)?.title,
       publication: input.publication as object | undefined,
       resolvedConfig: input.resolvedConfig as object | undefined,
       error: input.error ?? null,
@@ -170,6 +170,14 @@ export async function complete(
     },
   });
   return count > 0;
+}
+
+// The change's title, stored as soon as the worker has fetched the change so
+// every run that got that far is searchable by it, skipped and cancelled ones
+// included. No status guard: the title describes the change, not the run, so
+// writing it after a cancel changes nothing that run reports.
+export async function recordTitle(id: string, title: string): Promise<void> {
+  await prisma.reviewJob.updateMany({ where: { id }, data: { title } });
 }
 
 export async function fail(id: string, error: string): Promise<void> {

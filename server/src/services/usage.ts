@@ -8,6 +8,8 @@ export interface UsageJob {
   id: string;
   number: number;
   createdAt: Date;
+  // Absent on callers that only read the digest; the digest's title is the fallback.
+  title?: string | null;
   summary: unknown;
   repository: { id: string; fullPath: string };
 }
@@ -44,7 +46,7 @@ function next(date: Date, unit: Unit): Date {
 
 function digestOf(job: UsageJob) {
   const summary = job.summary as { title?: string; usageByModel?: UsageByModel } | null;
-  return { title: summary?.title ?? null, byModel: summary?.usageByModel ?? null };
+  return { title: job.title ?? summary?.title ?? null, byModel: summary?.usageByModel ?? null };
 }
 
 const providerOf = (model: string) => model.split("/")[0]!;

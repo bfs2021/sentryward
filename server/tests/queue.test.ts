@@ -14,6 +14,7 @@ import {
   fail,
   DISABLED_REASON,
   heartbeat,
+  recordTitle,
   recoverStale,
 } from "../src/worker/queue.ts";
 
@@ -136,11 +137,10 @@ describe("complete and fail", () => {
       status: "completed",
       verdict: "blocked",
       result: { findings: [{ title: "x" }] },
-      summary: { title: "Fix login redirect", total: 1 },
     });
 
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: claimed.id } });
-    expect(stored).toMatchObject({ status: "completed", verdict: "blocked", lockedAt: null, title: "Fix login redirect" });
+    expect(stored).toMatchObject({ status: "completed", verdict: "blocked", lockedAt: null });
     expect(stored.result).toEqual({ findings: [{ title: "x" }] });
     expect(stored.finishedAt).toBeInstanceOf(Date);
   });
@@ -153,6 +153,18 @@ describe("complete and fail", () => {
 
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: claimed.id } });
     expect(stored).toMatchObject({ status: "failed", verdict: "error", error: "boom" });
+  });
+
+  it("records the change's title whatever the run's status, a cancel included", async () => {
+    await job("aaa");
+    const claimed = (await claimNext())!;
+    const { workspaceId } = await prisma.forgeConnection.findFirstOrThrow();
+    await cancelJob(claimed.id, workspaceId, "Review cancelled");
+
+    await recordTitle(claimed.id, "Fix login redirect");
+
+    const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: claimed.id } });
+    expect(stored).toMatchObject({ status: "cancelled", title: "Fix login redirect" });
   });
 });
 

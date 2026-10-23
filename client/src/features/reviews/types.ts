@@ -140,6 +140,10 @@ export interface ReviewListItem {
   trigger: Trigger
   status: JobStatus
   verdict: Verdict | null
+  // The change's title, stored once the worker fetched the change (so skipped
+  // runs have it too). Null on runs that never got that far; older rows may
+  // only have it in the summary.
+  title: string | null
   summary: ReviewSummary | null
   error: string | null
   createdAt: string

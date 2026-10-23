@@ -26,6 +26,7 @@ const listFields = {
   trigger: true,
   status: true,
   verdict: true,
+  title: true,
   summary: true,
   error: true,
   createdAt: true,

@@ -25,7 +25,7 @@ export function RecentReviewsTimeline() {
                   to={`/reviews/${review.id}`}
                   className="group inline-flex items-center gap-1.5 text-sm font-medium hover:underline"
                 >
-                  <span className="line-clamp-1">{review.summary?.title ?? `#${review.number}`}</span>
+                  <span className="line-clamp-1">{review.title ?? review.summary?.title ?? `#${review.number}`}</span>
                   <ArrowRight className="size-3.5 shrink-0 transition-transform group-hover:translate-x-0.5" aria-hidden />
                 </Link>
                 <p className="truncate text-xs text-muted-foreground">

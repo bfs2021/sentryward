@@ -6,7 +6,7 @@ import { encrypt } from "../src/lib/crypto.ts";
 import { prisma } from "../src/lib/prisma.ts";
 import { summarize } from "../src/review/render/json.ts";
 import { toMarkdown } from "../src/review/render/markdown.ts";
-import { claimNext } from "../src/worker/queue.ts";
+import { claimNext, recordTitle } from "../src/worker/queue.ts";
 import { fetchStub } from "./helpers/fetchStub.ts";
 import { sampleResult } from "./helpers/result.ts";
 import { createUser } from "./helpers/users.ts";
@@ -59,7 +59,7 @@ afterAll(async () => {
 
 async function completedJob(number = 7) {
   const result = await sampleResult();
-  return prisma.reviewJob.create({
+  const job = await prisma.reviewJob.create({
     data: {
       repositoryId: repoId,
       number,
@@ -69,9 +69,11 @@ async function completedJob(number = 7) {
       verdict: "blocked",
       result,
       summary: summarize(result) as object,
-      title: result.change.title,
     },
   });
+  // Written the way the worker writes it, so search tests cover that path.
+  await recordTitle(job.id, result.change.title);
+  return prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
 }
 
 describe("POST /api/reviews", () => {
@@ -222,6 +224,15 @@ describe("GET /api/reviews filters", () => {
       expect(numbers(await get(`q=${q}`))).toEqual([12]);
       expect(numbers(await get(`q=${q}&view=changes`))).toEqual([12]);
     }
+  });
+
+  it("finds a skipped run by title, though it has no summary", async () => {
+    const skipped = await job({ number: 5, status: "skipped" });
+    await recordTitle(skipped.id, "Fix login redirect");
+
+    expect(numbers(await get("q=fix%20login"))).toEqual([5]);
+    expect(numbers(await get("q=fix%20login&view=changes"))).toEqual([5]);
+    expect((await get("q=fix%20login")).body.reviews[0]).toMatchObject({ title: "Fix login redirect", summary: null });
   });
 
   it("hides superseded runs unless asked for", async () => {

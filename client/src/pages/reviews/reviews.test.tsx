@@ -20,7 +20,7 @@ describe("Reviews page", () => {
   })
 
   it("pages through reviews on the server", async () => {
-    const reviewsPage = (n: number) => ({ ...listItem, id: `review-${n}`, summary: { ...listItem.summary!, title: `Review ${n}` } })
+    const reviewsPage = (n: number) => ({ ...listItem, id: `review-${n}`, title: `Review ${n}` })
     mockApi({
       "GET /api/reviews?view=changes&page=1&limit=10": { reviews: [reviewsPage(1)], total: 12, page: 1, limit: 10 },
       "GET /api/reviews?view=changes&page=2&limit=10": { reviews: [reviewsPage(11)], total: 12, page: 2, limit: 10 },
@@ -242,7 +242,7 @@ describe("Reviews page rows, filters and stats", () => {
   it("searches after typing stops", async () => {
     mockApi({
       "GET /api/reviews?view=changes&page=1&limit=10": firstPage([listItem]),
-      "GET /api/reviews?q=%2342&view=changes&page=1&limit=10": firstPage([{ ...listItem, id: "found", summary: { ...listItem.summary!, title: "Found it" } }]),
+      "GET /api/reviews?q=%2342&view=changes&page=1&limit=10": firstPage([{ ...listItem, id: "found", title: "Found it" }]),
     })
     renderWithProviders(<App />, { route: "/reviews" })
 
@@ -270,7 +270,7 @@ describe("Reviews page rows, filters and stats", () => {
   it("switches to every run", async () => {
     mockApi({
       "GET /api/reviews?view=changes&page=1&limit=10": firstPage([listItem]),
-      "GET /api/reviews?view=runs&page=1&limit=10": firstPage([{ ...listItem, id: "run", summary: { ...listItem.summary!, title: "A run" } }]),
+      "GET /api/reviews?view=runs&page=1&limit=10": firstPage([{ ...listItem, id: "run", title: "A run" }]),
     })
     renderWithProviders(<App />, { route: "/reviews" })
 

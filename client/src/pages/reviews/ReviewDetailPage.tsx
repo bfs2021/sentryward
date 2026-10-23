@@ -92,7 +92,7 @@ export function ReviewDetailPage() {
 
   const { review } = data
   const result = review.result?.schemaVersion === 1 ? review.result : null
-  const title = review.summary?.title ?? result?.change.title ?? review.repository.fullPath
+  const title = review.title ?? review.summary?.title ?? result?.change.title ?? review.repository.fullPath
   const webUrl = review.summary?.webUrl ?? result?.change.webUrl
 
   async function runAgain() {

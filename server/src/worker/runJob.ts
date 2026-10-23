@@ -36,7 +36,7 @@ import { llmCredentialsFor } from "../services/llm.ts";
 import { CLOSE_CHECK_INTERVAL_MS, watchForClose } from "./closeWatch.ts";
 import { resolveLlm, type LlmCredentials } from "./llmEndpoint.ts";
 import { incrementFor } from "./incremental.ts";
-import { ACCESS_LOST_REASON, claimState, CLOSED_REASON, complete, DISABLED_REASON } from "./queue.ts";
+import { ACCESS_LOST_REASON, claimState, CLOSED_REASON, complete, DISABLED_REASON, recordTitle } from "./queue.ts";
 import { findingTransitions, syncFindings, threadOperations, type ThreadOutcome } from "./syncFindings.ts";
 
 // How many recent dismissals to feed into the review prompt; bounded so a noisy
@@ -201,6 +201,9 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
     throw new Error(CREDENTIALS_REJECTED_REASON);
   }
   if (repo.connection.credentialsRejectedAt) await recordCredentials(repo.connection, true);
+  // Stored now, not with the result, so a run that is skipped, cancelled or
+  // fails from here on can still be found by the change's title.
+  await recordTitle(job.id, changeSet.title);
   const loaded = await loadReviewConfig({
     adapter: forge,
     project: repo.fullPath,
@@ -213,6 +216,7 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
   // The repository file asked for fresh reads after a cached one was used.
   if (config.review.disableCache && !savedDisablesCache && deps.cache) {
     changeSet = await forge.getChange(repo.fullPath, job.number);
+    await recordTitle(job.id, changeSet.title);
   }
   const skip = skipReason(job, config, changeSet);
   if (skip) {

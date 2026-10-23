@@ -6,7 +6,7 @@ generator client {
 
 datasource db {
   provider   = "postgresql"
-  extensions = [citext]
+  extensions = [citext, pg_trgm]
 }
 
 // Instance-wide role. Admins manage who can use this Sentryward install; it grants
@@ -322,6 +322,9 @@ model Repository {
   threadReplies  ThreadReply[]
 
   @@unique([connectionId, externalId])
+  // Trigram index for the reviews search, which matches the path anywhere and
+  // ignores case (ILIKE '%q%'), so a btree index cannot serve it.
+  @@index([fullPath(ops: raw("gin_trgm_ops"))], type: Gin)
   @@map("repositories")
 }
 
@@ -343,8 +346,11 @@ model ReviewJob {
   result          Json?
   // Small digest of the result (title, counts) so lists never load results.
   summary         Json?
-  // The digest's title, copied out because JSON string matching cannot ignore
-  // case and the reviews search must.
+  // The change's title, copied out because JSON string matching cannot ignore
+  // case and the reviews search must. Written when the worker fetches the
+  // change, so skipped and cancelled runs have it too. The migration that added
+  // it backfills in one UPDATE: a migration cannot commit between batches, and
+  // retention keeps the table small enough for one pass at startup.
   title           String?
   // What was posted to the forge: inline comments, summary, commit status.
   publication     Json?
@@ -368,6 +374,8 @@ model ReviewJob {
   @@index([status, createdAt])
   @@index([status, finishedAt])
   @@index([repositoryId, number])
+  // Same reason as the repository path index: the search is ILIKE '%q%'.
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin)
   @@map("review_jobs")
 }
 

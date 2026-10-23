@@ -24,6 +24,7 @@ export function changeLabel(provider: Provider, number: number) {
 // What a review is called in lists and dialogs: the change title, or "Pull request #42" before there is one.
 export function changeTitle(review: ReviewListItem) {
   return (
+    review.title ??
     review.summary?.title ??
     `${PROVIDERS[review.repository.provider].changeNoun} ${changeLabel(review.repository.provider, review.number)}`
   )

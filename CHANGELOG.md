@@ -97,7 +97,11 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 - Searching reviews by title ignores case, like the repository path search,
   in both the runs and changes views: `fix login` now finds "Fix login
   redirect". Includes a migration that adds a `title` column to review jobs
-  and backfills it from each review's summary. Closes #88.
+  and backfills it from each review's summary. The worker stores the title as
+  soon as it fetches the change, so skipped, cancelled and failed runs are
+  found by title and show it in lists too. A second migration adds trigram
+  indexes (`pg_trgm`) on review titles and repository paths so the search
+  does not scan the whole table. Closes #88.
 
 ## [0.2.0] - 2026-10-22
 
