@@ -65,6 +65,7 @@ export const listItem: ReviewListItem = {
   trigger: "manual",
   status: "completed",
   verdict: "blocked",
+  title: result.summary.title,
   summary: result.summary,
   error: null,
   createdAt: new Date().toISOString(),

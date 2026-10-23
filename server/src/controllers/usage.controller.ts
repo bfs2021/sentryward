@@ -21,6 +21,7 @@ export async function getUsage(req: Request, res: Response) {
       id: true,
       number: true,
       createdAt: true,
+      title: true,
       summary: true,
       repository: { select: { id: true, fullPath: true } },
     },

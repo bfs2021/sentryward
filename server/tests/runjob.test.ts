@@ -226,7 +226,7 @@ describe("runJob", () => {
     await runJob(job, runDeps);
 
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
-    expect(stored).toMatchObject({ status: "completed", verdict: "blocked", headSha: "newhead", baseSha: "base", error: null });
+    expect(stored).toMatchObject({ status: "completed", verdict: "blocked", headSha: "newhead", baseSha: "base", error: null, title: "Add b and c" });
     expect(stored.lockedAt).toBeNull();
     const result = stored.result as { findings: unknown[]; verdict: { blockOn: string } };
     expect(result.findings).toHaveLength(1);
@@ -607,7 +607,7 @@ describe("runJob when the change closes", () => {
     await runJob(job, runDeps);
 
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
-    expect(stored).toMatchObject({ status: "cancelled", verdict: null, error: "The pull or merge request was closed or merged" });
+    expect(stored).toMatchObject({ status: "cancelled", verdict: null, error: "The pull or merge request was closed or merged", title: "Add b and c" });
     expect(stored.resolvedConfig).toMatchObject({ config: { triggers: { abortOnClose: true } } });
     expect(model.requests).toHaveLength(0);
     expect(published).toEqual({ inline: [], summaries: [], statuses: [], descriptions: [], labels: [], threads: [] });
@@ -1127,7 +1127,8 @@ describe("runJob with automatic triggers", () => {
     await runJob(job, runDeps);
 
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
-    expect(stored).toMatchObject({ status: "skipped", verdict: null, result: null });
+    // No summary, but the title is stored so the run can be searched for.
+    expect(stored).toMatchObject({ status: "skipped", verdict: null, result: null, summary: null, title: "Add b and c" });
     expect(stored.error).toMatch(/turned off/);
     expect(model.requests).toHaveLength(0);
     expect(published).toEqual({ inline: [], summaries: [], statuses: [], descriptions: [], labels: [], threads: [] });

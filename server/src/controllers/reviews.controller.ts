@@ -26,6 +26,7 @@ const listFields = {
   trigger: true,
   status: true,
   verdict: true,
+  title: true,
   summary: true,
   error: true,
   createdAt: true,
@@ -111,8 +112,7 @@ function listWhere(workspaceId: string, query: ListQuery): Prisma.ReviewJobWhere
     const asNumber = NUMBER_QUERY.exec(q);
     where.OR = [
       { repository: { fullPath: { contains: q, mode: "insensitive" } } },
-      // JSON string matching has no case-insensitive mode.
-      { summary: { path: ["title"], string_contains: q } },
+      { title: { contains: q, mode: "insensitive" } },
       ...(asNumber ? [{ number: Number(asNumber[1]) }] : []),
     ];
   }

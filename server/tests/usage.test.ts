@@ -188,6 +188,15 @@ describe("buildUsageReport", () => {
     );
   });
 
+  it("titles a recent review from the stored column before the digest", () => {
+    const run = { ...job("2026-10-23T10:00:00Z", { [SONNET]: usage(1_000_000, 0, { input: 2, output: 0 }) }), title: "Fix login redirect" };
+    const older = job("2026-10-23T09:00:00Z", { [SONNET]: usage(1_000_000, 0, { input: 2, output: 0 }) });
+
+    const report = buildUsageReport([run, older], "7d", NOW);
+
+    expect(report.recent.map((r) => r.title)).toEqual(["Fix login redirect", `Change ${older.number}`]);
+  });
+
   it("is empty without runs", () => {
     const report = buildUsageReport([], "all", NOW);
     expect(report.totals).toMatchObject({ reviews: 0, calls: 0, cost: { usd: 0 } });
