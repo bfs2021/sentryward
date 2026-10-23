@@ -291,7 +291,7 @@ describe("GET /api/reviews/stats", () => {
 });
 
 describe("GET /api/reviews/stats cost", () => {
-  async function run(number: number, usageTotals: object) {
+  async function run(number: number, summary: object) {
     await prisma.reviewJob.create({
       data: {
         repositoryId: repoId,
@@ -300,16 +300,22 @@ describe("GET /api/reviews/stats cost", () => {
         trigger: "manual",
         status: "completed",
         verdict: "pass",
-        summary: { title: "T", total: 0, usageTotals },
+        summary: { title: "T", total: 0, ...summary },
       },
     });
   }
+  const cost = (total: number) => ({ input: total, cached: 0, cacheWrite: 0, output: 0, reasoning: 0, total });
 
-  it("sums the costs reviews recorded when they ran, counting older digests as nothing", async () => {
-    await run(1, { calls: 2, inputTokens: 100, outputTokens: 10, costUsd: 1.25 });
-    await run(2, { calls: 1, inputTokens: 50, outputTokens: 5, costUsd: 0.5 });
-    // A digest from before costs were recorded.
-    await run(3, { calls: 1, inputTokens: 1000, outputTokens: 100 });
+  it("sums the costs reviews recorded per model, counting older digests' tokens at no cost", async () => {
+    await run(1, {
+      usageByModel: {
+        "anthropic/a": { calls: 1, inputTokens: 60, outputTokens: 6, cost: cost(1) },
+        "openai/b": { calls: 1, inputTokens: 40, outputTokens: 4, cost: cost(0.25) },
+      },
+    });
+    await run(2, { usageByModel: { "anthropic/a": { calls: 1, inputTokens: 50, outputTokens: 5, cost: cost(0.5) } } });
+    // A digest from before per-model usage and costs were recorded.
+    await run(3, { usageTotals: { calls: 1, inputTokens: 1000, outputTokens: 100 } });
 
     const res = await request(app).get("/api/reviews/stats").set("Cookie", cookie);
     expect(res.body.tokens).toEqual({ calls: 4, inputTokens: 1150, outputTokens: 115 });

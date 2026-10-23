@@ -63,6 +63,25 @@ function totalsOf(byModel: UsageByModel) {
   return { ...totals, usd: roundUsd(totals.usd) };
 }
 
+// One review's totals, summed the way the usage page sums them so the Reviews
+// stats tile and the Usage page agree. Digests from before per-model usage
+// have only usageTotals: their tokens count, at no cost.
+export function digestTotals(summary: unknown) {
+  const digest = summary as {
+    usageByModel?: UsageByModel;
+    usageTotals?: { calls?: number; inputTokens?: number; outputTokens?: number };
+  } | null;
+  if (digest?.usageByModel) return totalsOf(digest.usageByModel);
+  const old = digest?.usageTotals;
+  return {
+    calls: old?.calls ?? 0,
+    inputTokens: old?.inputTokens ?? 0,
+    cachedInputTokens: 0,
+    outputTokens: old?.outputTokens ?? 0,
+    usd: 0,
+  };
+}
+
 const later = (a: Date | null, b: Date) => (a && a > b ? a : b);
 
 // The parts the usage table shows: cache writes are input and reasoning is

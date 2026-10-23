@@ -177,6 +177,8 @@ export const llmUsageSchema = z.object({
   reasoningTokens: z.number().int().min(0).optional(),
   latencyMs: z.number().int().min(0),
   chunk: z.number().int().positive().optional(),
+  // A call whose reply could not be used, kept because its tokens were billed.
+  failed: z.literal(true).optional(),
   // USD at the prices in effect when the call was made (core/pricing). Absent
   // on results stored before costs were recorded.
   cost: z

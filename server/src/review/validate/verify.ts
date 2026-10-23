@@ -9,7 +9,7 @@ import type { ContextBlock } from "../context/fileContext.ts";
 import { fillContext } from "../context/gather.ts";
 import { renderFileDiff } from "../context/diffText.ts";
 import { VERIFY_SYSTEM_PROMPT } from "../llm/prompt.ts";
-import type { Generate } from "../llm/providers.ts";
+import { failedUsage, spentBy, type Generate } from "../llm/providers.ts";
 import { verifyFinding, type FindingVerification } from "../llm/verify.ts";
 import { compareFindings, demoteFinding, stronger, type DropReason } from "./validator.ts";
 
@@ -94,7 +94,7 @@ export async function verifyFindings(input: VerifyInput): Promise<VerifyResult> 
     mode === "off" ? [] : findings.filter((finding) => mode === "all" || isBlocking(finding, config.review.blockOn));
   if (!candidates.length) return result;
 
-  const outcomes = new Map<Finding, FindingVerification | { error: string }>();
+  const outcomes = new Map<Finding, FindingVerification | { error: string; failedUsage: LlmUsage[] }>();
   await mapLimit(candidates, input.concurrency, async (finding) => {
     try {
       outcomes.set(
@@ -102,7 +102,7 @@ export async function verifyFindings(input: VerifyInput): Promise<VerifyResult> 
         await verifyFinding(input.generate, input.changeSet, finding, codeFor(finding, input.chunks, config), config),
       );
     } catch (err) {
-      outcomes.set(finding, { error: errorMessage(err) });
+      outcomes.set(finding, { error: errorMessage(err), failedUsage: failedUsage(spentBy(err), "verify") });
     }
   });
 
@@ -114,6 +114,7 @@ export async function verifyFindings(input: VerifyInput): Promise<VerifyResult> 
   for (const finding of findings) {
     const outcome = outcomes.get(finding);
     let next = finding;
+    if (outcome) result.usage.push(...outcome.failedUsage);
     if (outcome && "error" in outcome) {
       failures.push(outcome.error);
     } else if (outcome) {

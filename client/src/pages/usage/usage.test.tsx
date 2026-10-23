@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { App } from "@/App"
 import { renderWithProviders } from "@/test/renderWithProviders"
 import { mockApi } from "@/test/apiRoutes"
+import { bucketLabel } from "@/features/usage/format"
 import type { UsageReport } from "@/features/usage/types"
 
 const SONNET = "anthropic/claude-sonnet-5-5"
@@ -166,5 +167,16 @@ describe("Usage page", () => {
 
     await screen.findByRole("region", { name: "Usage totals" })
     await waitFor(() => expect(container.querySelectorAll('[data-slot="chart"]')).toHaveLength(3))
+  })
+})
+
+describe("bucketLabel", () => {
+  it("labels hours in UTC, as the buckets are, whatever the viewer's time zone", () => {
+    vi.stubEnv("TZ", "America/New_York")
+    try {
+      expect(bucketLabel("2026-01-15T14:00:00.000Z", "hour")).toMatch(/^(14:00|02:00\sPM)$/)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

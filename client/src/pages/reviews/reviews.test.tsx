@@ -305,6 +305,11 @@ describe("Reviews page rows, filters and stats", () => {
     expect(within(stats).getByText("slowest 4m 05s")).toBeInTheDocument()
     expect(within(stats).getByText("61.4K")).toBeInTheDocument()
     expect(within(stats).getByText("~$0.34 est.")).toBeInTheDocument()
+    // The tile opens the Usage page on the window it sums.
+    expect(within(stats).getByRole("link", { name: "Tokens, last 7 days: open usage" })).toHaveAttribute(
+      "href",
+      "/usage?period=7d",
+    )
   })
 })
 

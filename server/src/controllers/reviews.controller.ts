@@ -9,6 +9,7 @@ import { parseChangeUrl } from "../review/forge/url.ts";
 import { toJson } from "../review/render/json.ts";
 import { toMarkdown, walkthroughOptions } from "../review/render/markdown.ts";
 import { adapterForConnection, toHttpError } from "../services/forge.ts";
+import { digestTotals } from "../services/usage.ts";
 import { cancelJob, enqueue } from "../worker/queue.ts";
 import {
   createReviewByRepoSchema,
@@ -206,13 +207,11 @@ export async function getReviewStats(req: Request, res: Response) {
   const tokens = { calls: 0, inputTokens: 0, outputTokens: 0 };
   let usd = 0;
   for (const job of jobs) {
-    const usage = (job.summary as {
-      usageTotals?: { calls?: number; inputTokens?: number; outputTokens?: number; costUsd?: number };
-    } | null)?.usageTotals;
-    tokens.calls += usage?.calls ?? 0;
-    tokens.inputTokens += usage?.inputTokens ?? 0;
-    tokens.outputTokens += usage?.outputTokens ?? 0;
-    usd += usage?.costUsd ?? 0;
+    const totals = digestTotals(job.summary);
+    tokens.calls += totals.calls;
+    tokens.inputTokens += totals.inputTokens;
+    tokens.outputTokens += totals.outputTokens;
+    usd += totals.usd;
   }
   const cost = { usd: roundUsd(usd) };
   res.json({

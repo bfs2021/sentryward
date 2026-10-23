@@ -14,7 +14,10 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   cache reads and writes and reasoning tokens alongside input and output, and
   its cost, computed when the call is made from a built-in price table (exact
   model, then the id without its provider prefix or router effort suffix, then
-  wildcard patterns; a model nothing matches costs $0). Costs are stored with
+  wildcard patterns; a model nothing matches costs $0, as do Ollama models,
+  which run on the user's own hardware). A model attempt whose reply could
+  not be used still counts its billed tokens, recorded as a failed call, so
+  the estimate includes spend a fallback model was needed for. Costs are stored with
   the review, so a later price change leaves past reviews as they were, and
   reviews from before this record none. `GET /api/reviews/stats` sums them into `cost`, review
   summaries carry `usageTotals.costUsd` and per-model costs, the stats strip

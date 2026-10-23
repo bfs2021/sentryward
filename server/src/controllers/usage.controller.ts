@@ -8,6 +8,8 @@ export async function getUsage(req: Request, res: Response) {
   const now = new Date();
   const since = periodStart(period, now);
   // The same runs review stats count, reading the small digest column only.
+  // "all" scans every run kept; REVIEW_RETENTION_DAYS bounds that. Should it
+  // get slow, aggregate usageByModel in SQL (jsonb_each, date_trunc) instead.
   const jobs = await prisma.reviewJob.findMany({
     where: {
       repository: { connection: { workspaceId: req.workspaceId! } },

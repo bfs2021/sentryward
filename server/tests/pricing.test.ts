@@ -20,6 +20,21 @@ describe("priceFor", () => {
     expect(priceFor("anthropic/claude-opus-9")).toEqual({ input: 5, output: 25, cached: 0.5, cacheWrite: 6.25, reasoning: 25 });
   });
 
+  it("never prices an Ollama model, even one named like a hosted model", () => {
+    for (const model of ["ollama/qwen3-coder:30b", "ollama/deepseek-r1:14b", "ollama/glm-4.6", "ollama/auto"]) {
+      expect(priceFor(model)).toBeNull();
+    }
+  });
+
+  it("prices common models without an exact entry by their own family", () => {
+    expect(priceFor("openai/o3-mini-2025-01-31")).toMatchObject({ input: 1.1, output: 4.4 });
+    expect(priceFor("openai/gpt-4o-2024-08-06")).toEqual(priceFor("openai/gpt-4o"));
+    expect(priceFor("openai/gpt-4o-mini-2024-07-18")).toMatchObject({ input: 0.15, output: 0.6 });
+    expect(priceFor("anthropic/claude-3-5-haiku-latest")).toMatchObject({ input: 0.8, output: 4 });
+    expect(priceFor("anthropic/claude-3-haiku-x")).toMatchObject({ input: 0.25, output: 1.25 });
+    expect(priceFor("openai/gpt-4.1-2025-04-14")).toMatchObject({ input: 2, output: 8 });
+  });
+
   it("has no price for a model nothing matches", () => {
     expect(priceFor("ollama/llama3")).toBeNull();
     // Never an Object.prototype member.

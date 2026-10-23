@@ -39,22 +39,26 @@ export function roundUsd(usd: number): number {
   return Math.round(usd * 1_000_000) / 1_000_000;
 }
 
-function matchPattern(pattern: string, model: string): boolean {
+// Compiled once at load: priceFor runs on every model call.
+const PATTERNS = PATTERN_PRICING.map(({ pattern, price }) => {
   const escaped = pattern.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  return new RegExp(`^${escaped.join(".*")}$`, "i").test(model);
-}
+  return { re: new RegExp(`^${escaped.join(".*")}$`, "i"), price };
+});
 
 // The exact id, the id without its provider prefix, then the first matching
-// pattern. A router
-// effort suffix such as "(medium)" in "openai/cx/gpt-5.6-sol(medium)" names
-// the same model, so it is dropped first. No match is null, which costs 0.
+// pattern. A router effort suffix such as "(medium)" in
+// "openai/cx/gpt-5.6-sol(medium)" names the same model, so it is dropped
+// first. Ollama models run on the user's own hardware, so they cost nothing
+// even when their name matches a hosted model's ("ollama/qwen3-coder:30b").
+// No match is null, which costs 0.
 export function priceFor(model: string): ModelPrice | null {
-  const own = (key: string) => (Object.hasOwn(MODEL_PRICING, key) ? MODEL_PRICING[key]! : null);
   const id = model.replace(/\([^()]*\)$/, "");
+  if (id.split("/")[0] === "ollama") return null;
+  const own = (key: string) => (Object.hasOwn(MODEL_PRICING, key) ? MODEL_PRICING[key]! : null);
   const base = id.split("/").pop()!;
   const exact = own(id) ?? own(base);
   if (exact) return exact;
-  return PATTERN_PRICING.find(({ pattern }) => matchPattern(pattern, base) || matchPattern(pattern, id))?.price ?? null;
+  return PATTERNS.find(({ re }) => re.test(base) || re.test(id))?.price ?? null;
 }
 
 // Each part at its own rate. The AI SDK counts reasoning inside outputTokens,

@@ -4,6 +4,7 @@ import { CircleX, Coins, GitPullRequest, ShieldX, Timer, type LucideIcon } from 
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { formatDuration } from "@/lib/time"
+import { USAGE_PERIODS, type UsagePeriod } from "@/features/usage/types"
 import { useReviewStats } from "./api"
 import { formatCost, formatTokens } from "./cost"
 
@@ -50,6 +51,9 @@ export function ReviewStatsStrip() {
   const period = `last ${data.days} days`
   const { median, max } = data.duration
   const { tokens, cost } = data
+  // The Usage page opens on the same window when it offers one.
+  const usagePeriod = `${data.days}d`
+  const usageLink = USAGE_PERIODS.includes(usagePeriod as UsagePeriod) ? `/usage?period=${usagePeriod}` : "/usage"
 
   return (
     <section aria-label="Review stats" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
@@ -71,7 +75,7 @@ export function ReviewStatsStrip() {
           <span className="ml-2 text-xs font-normal text-muted-foreground">slowest {formatDuration(max)}</span>
         )}
       </Stat>
-      <Stat label="Tokens" icon={Coins} to="/usage">
+      <Stat label={`Tokens, ${period}`} icon={Coins} to={usageLink}>
         {formatTokens(tokens.inputTokens + tokens.outputTokens)}
         <span className="ml-2 text-xs font-normal text-muted-foreground">{formatCost(cost.usd)}</span>
       </Stat>
