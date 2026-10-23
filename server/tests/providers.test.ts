@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { createGenerate, missingKeys } from "../src/review/llm/providers.ts";
+import { callUsage, createGenerate, missingKeys } from "../src/review/llm/providers.ts";
 import { fetchStub } from "./helpers/fetchStub.ts";
 
 afterEach(() => {
@@ -167,7 +167,12 @@ describe("createGenerate against an official API", () => {
               content: [{ type: "output_text", text: '{"ok":true}', annotations: [] }],
             },
           ],
-          usage: { input_tokens: 10, output_tokens: 2 },
+          usage: {
+            input_tokens: 10,
+            output_tokens: 2,
+            input_tokens_details: { cached_tokens: 4 },
+            output_tokens_details: { reasoning_tokens: 1 },
+          },
         },
       },
     ]);
@@ -176,6 +181,8 @@ describe("createGenerate against an official API", () => {
     const response = await createGenerate({ openai: "sk-real" })(request("openai/gpt-5.5"));
 
     expect(response.object).toEqual({ ok: true });
+    // Cache reads are reported inside the input total, not on top of it.
+    expect(response).toMatchObject({ inputTokens: 10, cachedInputTokens: 4, outputTokens: 2, reasoningTokens: 1 });
     expect(JSON.parse(calls[0]!.body!).text.format).toMatchObject({ type: "json_schema", name: "result" });
   });
 });
@@ -186,5 +193,37 @@ describe("missingKeys", () => {
     expect(missingKeys(models, {}, { baseUrl: "http://router.test/v1" })).toEqual([]);
     expect(missingKeys(models, { openai: "k" })).toEqual(["anthropic"]);
     expect(missingKeys(["ollama/qwen3"], {}, undefined, { ollama: "http://ollama.test/v1" })).toEqual([]);
+  });
+});
+
+describe("callUsage", () => {
+  it("records detail counts only when there were some, with the call's cost", () => {
+    const usage = callUsage({
+      model: "anthropic/claude-sonnet-5-5",
+      inputTokens: 1_000_000,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 100_000,
+      reasoningTokens: 0,
+    });
+    expect(usage).toEqual({
+      inputTokens: 1_000_000,
+      outputTokens: 100_000,
+      // claude-sonnet-5-5 at $2 / $10 per million.
+      cost: { input: 2, cached: 0, cacheWrite: 0, output: 1, reasoning: 0, total: 3 },
+    });
+  });
+
+  it("records cache and reasoning tokens, and a $0 cost for an unknown model", () => {
+    expect(
+      callUsage({ model: "ollama/llama3", inputTokens: 10, cachedInputTokens: 4, cacheWriteTokens: 2, outputTokens: 5, reasoningTokens: 3 }),
+    ).toEqual({
+      inputTokens: 10,
+      cachedInputTokens: 4,
+      cacheWriteTokens: 2,
+      outputTokens: 5,
+      reasoningTokens: 3,
+      cost: { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 0 },
+    });
   });
 });

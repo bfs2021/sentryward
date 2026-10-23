@@ -8,7 +8,7 @@ import {
   walkthroughUserPrompt,
   type WalkthroughExtras,
 } from "./prompt.ts";
-import { generateWithFallback, modelChain, type Generate } from "./providers.ts";
+import { callUsage, type Generate, generateWithFallback, modelChain } from "./providers.ts";
 import { repairWalkthroughOutput, walkthroughSchemaFor, type FullWalkthroughOutput } from "./schemas.ts";
 
 // The overview needs breadth, not every line: files are included whole until
@@ -128,8 +128,7 @@ export async function generateWalkthrough(
     usage: {
       purpose: "walkthrough",
       model: response.model,
-      inputTokens: response.inputTokens,
-      outputTokens: response.outputTokens,
+      ...callUsage(response),
       latencyMs: response.latencyMs,
     },
   };

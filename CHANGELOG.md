@@ -10,6 +10,22 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- Estimated model cost for reviews. Each model call now records its prompt
+  cache reads and writes and reasoning tokens alongside input and output, and
+  its cost, computed when the call is made from a built-in price table (exact
+  model, then the id without its provider prefix or router effort suffix, then
+  wildcard patterns; a model nothing matches costs $0). Costs are stored with
+  the review, so a later price change leaves past reviews as they were, and
+  reviews from before this record none. `GET /api/reviews/stats` sums them into `cost`, review
+  summaries carry `usageTotals.costUsd` and per-model costs, the stats strip
+  gains a Tokens tile and the review sidebar an Estimated cost row. Closes #87.
+- A Usage page (`GET /api/usage`) for code-review model spend: totals with
+  input, cached and output tokens and the estimated cost, a tokens / calls /
+  cost chart over 24 hours to all time, usage by provider and top models, the
+  latest reviews that called a model, and a table by model or by repository
+  showing costs (input, cached, output) or tokens. The Reviews page's Tokens
+  tile links to it. Charts use recharts, and the chart colour tokens are now a
+  colour-blind-checked palette in both themes.
 - Notifications for finished reviews. Workspace admins add targets under
   Notifications: an outgoing webhook signed with an HMAC-SHA256
   `X-Sentryward-Signature` header (the secret is shown once), a Slack

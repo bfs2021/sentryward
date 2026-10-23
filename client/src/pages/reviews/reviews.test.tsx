@@ -290,6 +290,7 @@ describe("Reviews page rows, filters and stats", () => {
         failed: 1,
         duration: { median: 102_000, max: 245_000 },
         tokens: { calls: 18, inputTokens: 52_000, outputTokens: 9_400 },
+        cost: { usd: 0.342 },
       },
     })
     renderWithProviders(<App />, { route: "/reviews" })
@@ -302,10 +303,28 @@ describe("Reviews page rows, filters and stats", () => {
     expect(within(stats).getByText("Median review time")).toBeInTheDocument()
     expect(within(stats).getByText("1m 42s")).toBeInTheDocument()
     expect(within(stats).getByText("slowest 4m 05s")).toBeInTheDocument()
+    expect(within(stats).getByText("61.4K")).toBeInTheDocument()
+    expect(within(stats).getByText("~$0.34 est.")).toBeInTheDocument()
   })
 })
 
 describe("Review detail page", () => {
+  it("shows the run's recorded cost, or a dash for a run from before costs were recorded", async () => {
+    mockApi({ [`GET /api/reviews/${detail.id}`]: { review: detail } })
+    const { unmount } = renderWithProviders(<App />, { route: `/reviews/${detail.id}` })
+
+    const usage = await screen.findByText("Estimated cost")
+    expect(usage.nextElementSibling).toHaveTextContent("<$0.01 est.")
+    unmount()
+
+    const { costUsd: _, ...older } = detail.result!.usageTotals
+    mockApi({ [`GET /api/reviews/${detail.id}`]: { review: { ...detail, result: { ...detail.result!, usageTotals: older } } } })
+    renderWithProviders(<App />, { route: `/reviews/${detail.id}` })
+
+    expect((await screen.findByText("Estimated cost")).nextElementSibling).toHaveTextContent("-")
+    expect(screen.getByTitle("Not recorded for this run")).toBeInTheDocument()
+  })
+
   it("groups findings by bucket and shows walkthrough, notes and coverage", async () => {
     mockApi({ [`GET /api/reviews/${detail.id}`]: { review: detail } })
     renderWithProviders(<App />, { route: `/reviews/${detail.id}` })

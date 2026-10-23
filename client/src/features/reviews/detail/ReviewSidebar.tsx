@@ -7,6 +7,7 @@ import { PROVIDERS } from "@/features/forge/providers"
 import { copyToClipboard } from "@/lib/clipboard"
 import { formatDuration, timeAgo } from "@/lib/time"
 import { TriggerIcon } from "../badges"
+import { formatCost } from "../cost"
 import { TRIGGER_LABEL } from "../options"
 import type { DropReason, Publication, ReviewDetail, ReviewResult } from "../types"
 
@@ -210,6 +211,15 @@ function UsageCard({ result }: { result: ReviewResult }) {
         <Row label="Model calls">{usageTotals.calls}</Row>
         <Row label="Input tokens">{usageTotals.inputTokens.toLocaleString()}</Row>
         <Row label="Output tokens">{usageTotals.outputTokens.toLocaleString()}</Row>
+        <Row label="Estimated cost">
+          {usageTotals.costUsd === undefined ? (
+            <span className="text-muted-foreground" title="Not recorded for this run">
+              -
+            </span>
+          ) : (
+            formatCost(usageTotals.costUsd)
+          )}
+        </Row>
       </dl>
       {usage.length > 0 && (
         <details className="text-xs">

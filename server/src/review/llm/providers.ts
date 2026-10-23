@@ -4,6 +4,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateText, NoObjectGeneratedError, Output, streamText, type LanguageModel } from "ai";
 import type { z } from "zod";
 import type { Config } from "../config/schema.ts";
+import { callCost, priceFor } from "../core/pricing/pricing.ts";
 import { excerpt, formatInstruction, parseLenient } from "./format.ts";
 
 export const PROVIDERS = ["anthropic", "openai", "google", "ollama"] as const;
@@ -99,9 +100,34 @@ export interface GenerateRequest<T> {
 export interface GenerateResponse<T> {
   object: T;
   model: string;
+  // Includes the cache reads and writes; outputTokens includes reasoning.
   inputTokens: number;
+  cachedInputTokens?: number;
+  cacheWriteTokens?: number;
   outputTokens: number;
+  reasoningTokens?: number;
   latencyMs: number;
+}
+
+type ResponseTokens = Pick<
+  GenerateResponse<unknown>,
+  "model" | "inputTokens" | "cachedInputTokens" | "cacheWriteTokens" | "outputTokens" | "reasoningTokens"
+>;
+
+// What an LlmUsage records about one call: its tokens, the detail counts only
+// when there were any (so usage from providers without caching looks as it
+// always did), and its cost at today's prices, kept with the call.
+export function callUsage(response: ResponseTokens) {
+  const detail = (key: "cachedInputTokens" | "cacheWriteTokens" | "reasoningTokens") =>
+    response[key] ? { [key]: response[key] } : {};
+  const tokens = {
+    inputTokens: response.inputTokens,
+    ...detail("cachedInputTokens"),
+    ...detail("cacheWriteTokens"),
+    outputTokens: response.outputTokens,
+    ...detail("reasoningTokens"),
+  };
+  return { ...tokens, cost: callCost(tokens, priceFor(response.model)) };
 }
 
 // The one seam between the engine and a model provider. Tests pass their own.
@@ -125,11 +151,24 @@ export function createGenerate(keys: ApiKeys, endpoint?: Endpoint, baseUrls: Pro
       maxOutputTokens: request.maxOutputTokens,
       abortSignal: request.abortSignal,
     };
-    const respond = (object: T, usage: { inputTokens?: number; outputTokens?: number } | undefined) => ({
+    const respond = (
+      object: T,
+      usage:
+        | {
+            inputTokens?: number;
+            outputTokens?: number;
+            inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number };
+            outputTokenDetails?: { reasoningTokens?: number };
+          }
+        | undefined,
+    ) => ({
       object,
       model: request.model,
       inputTokens: usage?.inputTokens ?? 0,
+      cachedInputTokens: usage?.inputTokenDetails?.cacheReadTokens ?? 0,
+      cacheWriteTokens: usage?.inputTokenDetails?.cacheWriteTokens ?? 0,
       outputTokens: usage?.outputTokens ?? 0,
+      reasoningTokens: usage?.outputTokenDetails?.reasoningTokens ?? 0,
       latencyMs: Date.now() - started,
     });
     const lenient = (text: string | undefined) => {

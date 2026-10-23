@@ -1,7 +1,7 @@
 import type { Config } from "../config/schema.ts";
 import type { ChangeSet, Finding, LlmUsage } from "../core/models.ts";
 import { VERIFY_SYSTEM_PROMPT, verifyUserPrompt } from "./prompt.ts";
-import { generateWithFallback, modelChain, type Generate } from "./providers.ts";
+import { callUsage, type Generate, generateWithFallback, modelChain } from "./providers.ts";
 import { repairVerificationOutput, verificationOutputSchema, type VerificationOutput } from "./schemas.ts";
 
 // A verdict and a sentence need little room.
@@ -33,8 +33,7 @@ export async function verifyFinding(
     usage: {
       purpose: "verify",
       model: response.model,
-      inputTokens: response.inputTokens,
-      outputTokens: response.outputTokens,
+      ...callUsage(response),
       latencyMs: response.latencyMs,
     },
   };

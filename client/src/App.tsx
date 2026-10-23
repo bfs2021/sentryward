@@ -24,6 +24,7 @@ const ResetPasswordPage = lazy(() => import("@/pages/auth/ResetPasswordPage").th
 const ReviewDetailPage = lazy(() => import("@/pages/reviews/ReviewDetailPage").then((m) => ({ default: m.ReviewDetailPage })))
 const ReviewsPage = lazy(() => import("@/pages/reviews/ReviewsPage").then((m) => ({ default: m.ReviewsPage })))
 const SettingsPage = lazy(() => import("@/pages/settings/SettingsPage").then((m) => ({ default: m.SettingsPage })))
+const UsagePage = lazy(() => import("@/pages/usage/UsagePage").then((m) => ({ default: m.UsagePage })))
 const WorkspacePage = lazy(() => import("@/pages/workspace/WorkspacePage").then((m) => ({ default: m.WorkspacePage })))
 
 // Connections now live on the Repositories page. Keep the old path working for
@@ -57,6 +58,7 @@ export function App() {
               <Route path="/reviews" element={<ReviewsPage />} />
               <Route path="/reviews/:id" element={<ReviewDetailPage />} />
               <Route path="/findings" element={<FindingsPage />} />
+              <Route path="/usage" element={<UsagePage />} />
               <Route path="/repositories" element={<RepositoriesPage />} />
               <Route path="/connections" element={<ConnectionsRedirect />} />
               <Route path="/configuration" element={<ConfigurationPage />} />

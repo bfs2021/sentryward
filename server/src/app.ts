@@ -12,6 +12,7 @@ import { notificationsRouter } from "./routes/notifications.routes.ts";
 import { reposRouter } from "./routes/repos.routes.ts";
 import { reviewsRouter } from "./routes/reviews.routes.ts";
 import { settingsRouter } from "./routes/settings.routes.ts";
+import { usageRouter } from "./routes/usage.routes.ts";
 import { usersRouter } from "./routes/users.routes.ts";
 import { webhooksRouter } from "./routes/webhooks.routes.ts";
 import { workspacesRouter } from "./routes/workspaces.routes.ts";
@@ -53,6 +54,7 @@ app.use("/api/reviews", reviewsRouter);
 app.use("/api/findings", findingsRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/settings", settingsRouter);
+app.use("/api/usage", usageRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/workspaces", workspacesRouter);
 

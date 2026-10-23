@@ -18,7 +18,18 @@ describe("summarize and toJson", () => {
       bySeverity: { critical: 1, major: 1, minor: 2 },
       byBucket: { actionable: 2, outside_diff: 1, nitpick: 1 },
       hasBlocking: true,
-      usageTotals: { calls: 2, inputTokens: 200, outputTokens: 40 },
+      usageTotals: { calls: 2, inputTokens: 200, outputTokens: 40, costUsd: 0.0008 },
+      usageByModel: {
+        "anthropic/claude-sonnet-5-5": {
+          calls: 2,
+          inputTokens: 200,
+          cachedInputTokens: 0,
+          cacheWriteTokens: 0,
+          outputTokens: 40,
+          reasoningTokens: 0,
+          cost: { input: 0.0004, cached: 0, cacheWrite: 0, output: 0.0004, reasoning: 0, total: 0.0008 },
+        },
+      },
     });
   });
 
@@ -26,7 +37,7 @@ describe("summarize and toJson", () => {
     const result = await sampleResult();
     const json = toJson(result);
     expect(json.findings).toEqual(result.findings);
-    expect(json.usageTotals).toEqual({ calls: 2, inputTokens: 200, outputTokens: 40 });
+    expect(json.usageTotals).toEqual({ calls: 2, inputTokens: 200, outputTokens: 40, costUsd: 0.0008 });
   });
 });
 

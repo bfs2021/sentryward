@@ -1,0 +1,43 @@
+import { Link } from "react-router"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { formatCost, formatTokens } from "@/features/reviews/cost"
+import { timeAgo } from "@/lib/time"
+import type { RecentReviewUsage } from "./types"
+
+// The latest reviews that called a model, in place of a live request feed.
+export function RecentReviews({ reviews }: { reviews: RecentReviewUsage[] }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Recent reviews</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {!reviews.length ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">No reviews with model usage in this period.</p>
+        ) : (
+          <ul aria-label="Recent reviews" className="flex flex-col divide-y">
+            {reviews.map((review) => (
+              <li key={review.id} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 text-sm">
+                <div className="flex min-w-0 flex-col">
+                  <Link to={`/reviews/${review.id}`} className="truncate font-medium hover:underline">
+                    {review.title ?? `#${review.number}`}
+                  </Link>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {review.fullPath} #{review.number} · <span className="font-mono">{review.models.join(", ")}</span>
+                  </span>
+                </div>
+                <div className="flex shrink-0 items-baseline gap-3 text-xs text-muted-foreground tabular-nums">
+                  <span>
+                    {formatTokens(review.inputTokens)} in · {formatTokens(review.outputTokens)} out
+                  </span>
+                  <span className="text-foreground">{formatCost(review.usd)}</span>
+                  <span>{timeAgo(review.createdAt)}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  )
+}

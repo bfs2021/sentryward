@@ -2,7 +2,7 @@ import type { Config } from "../config/schema.ts";
 import type { ChangeSet, LlmUsage, RejectedFinding } from "../core/models.ts";
 import type { Chunk } from "../context/chunk.ts";
 import { reviewSystemPrompt, reviewUserPrompt, type ManifestEntry } from "./prompt.ts";
-import { generateWithFallback, modelChain, type Generate } from "./providers.ts";
+import { callUsage, type Generate, generateWithFallback, modelChain } from "./providers.ts";
 import { repairReviewOutput, reviewOutputSchema, type ModelFinding } from "./schemas.ts";
 
 export interface ChunkReview {
@@ -33,8 +33,7 @@ export async function reviewChunk(
     usage: {
       purpose: "review",
       model: response.model,
-      inputTokens: response.inputTokens,
-      outputTokens: response.outputTokens,
+      ...callUsage(response),
       latencyMs: response.latencyMs,
       chunk: chunk.index,
     },
