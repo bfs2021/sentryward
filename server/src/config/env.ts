@@ -60,6 +60,10 @@ const envSchema = z.object({
   // and its slot freed, so a hung forge fetch cannot stall the worker. Raise it
   // for repositories whose reviews run longer.
   WORKER_MAX_RUN_MS: z.coerce.number().int().positive().default(30 * 60 * 1000),
+  // Days a finished review keeps its full result. Older superseded, skipped and
+  // cancelled jobs are deleted, and other finished jobs keep only their summary.
+  // Unset keeps everything.
+  REVIEW_RETENTION_DAYS: optionalString(z.coerce.number().int().positive()),
   // Who may create an account: anyone, only holders of an invite link, or
   // nobody. The first account on an empty install is always allowed.
   REGISTRATION_MODE: z.enum(["open", "invite", "closed"]).default("open"),

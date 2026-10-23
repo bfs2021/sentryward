@@ -73,4 +73,4 @@ export const listItem: ReviewListItem = {
   repository: { id: "r1", provider: "github", host: "github.com", fullPath: "acme/web" },
 }
 
-export const detail: ReviewDetail = { ...listItem, baseSha: "base", attempts: 1, result, publication: null }
+export const detail: ReviewDetail = { ...listItem, baseSha: "base", attempts: 1, result, publication: null, resultExpiredAt: null }

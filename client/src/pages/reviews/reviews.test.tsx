@@ -666,6 +666,41 @@ describe("Review detail page", () => {
     expect(await screen.findByRole("button", { name: "Download markdown" })).toBeDisabled()
   })
 
+  it("says when the full result has expired under retention", async () => {
+    mockApi({
+      [`GET /api/reviews/${detail.id}`]: {
+        review: { ...detail, result: null, publication: null, resultExpiredAt: "2026-01-01T00:00:00.000Z" },
+      },
+    })
+    renderWithProviders(<App />, { route: `/reviews/${detail.id}` })
+
+    expect(await screen.findByText("The full result has expired")).toBeInTheDocument()
+    expect(screen.queryByText("The review did not run")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Copy markdown" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Download markdown" })).toBeDisabled()
+  })
+
+  it("keeps the error of an expired failed review", async () => {
+    mockApi({
+      [`GET /api/reviews/${detail.id}`]: {
+        review: {
+          ...detail,
+          status: "failed",
+          verdict: "error",
+          error: "Model call timed out",
+          result: null,
+          publication: null,
+          resultExpiredAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+    })
+    renderWithProviders(<App />, { route: `/reviews/${detail.id}` })
+
+    expect(await screen.findByText("The full result has expired")).toBeInTheDocument()
+    expect(screen.getByText("Model call timed out")).toBeInTheDocument()
+    expect(screen.queryByText(/Findings page/)).not.toBeInTheDocument()
+  })
+
   it("reports a failed markdown download without saving a file", async () => {
     mockApi({
       [`GET /api/reviews/${detail.id}`]: { review: detail },

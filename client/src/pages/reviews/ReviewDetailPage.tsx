@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { Link, useNavigate, useParams } from "react-router"
-import { AlertTriangle, ArrowLeft, Bot, Copy, Download, ExternalLink, Loader2, OctagonX, RotateCw } from "lucide-react"
+import { AlertTriangle, ArrowLeft, Bot, Copy, Download, ExternalLink, History, Loader2, OctagonX, RotateCw } from "lucide-react"
 import { toast } from "sonner"
 import { PageHeader } from "@/components/PageHeader"
 import { PageShell } from "@/components/PageShell"
@@ -203,6 +203,19 @@ export function ReviewDetailPage() {
           ) : result ? (
             // Keyed so a re-run navigating here starts with fresh collapse state.
             <ResultView key={review.id} result={result} />
+          ) : review.resultExpiredAt ? (
+            <Alert>
+              <History />
+              <AlertTitle>The full result has expired</AlertTitle>
+              <AlertDescription>
+                <p>
+                  Cleared on {new Date(review.resultExpiredAt).toLocaleDateString()} under this server's retention
+                  setting. The review's status and verdict are kept
+                  {review.status === "failed" ? "." : ", and its findings are still listed on the Findings page."}
+                </p>
+                {review.error && <p>{review.error}</p>}
+              </AlertDescription>
+            </Alert>
           ) : (
             <Alert variant="destructive">
               <AlertTriangle />

@@ -230,7 +230,15 @@ export async function getReviewStats(req: Request, res: Response) {
 async function loadOwnedReview(workspaceId: string, id: string) {
   const review = await prisma.reviewJob.findFirst({
     where: { id, ...ownedBy(workspaceId) },
-    select: { ...listFields, baseSha: true, attempts: true, result: true, publication: true, resolvedConfig: true },
+    select: {
+      ...listFields,
+      baseSha: true,
+      attempts: true,
+      result: true,
+      publication: true,
+      resolvedConfig: true,
+      resultExpiredAt: true,
+    },
   });
   if (!review) {
     throw new HttpError(404, "Review not found");
@@ -255,6 +263,9 @@ export async function getReview(req: Request, res: Response) {
 export async function getReviewMarkdown(req: Request, res: Response) {
   const { id } = reviewIdParamSchema.parse(req.params);
   const review = await loadOwnedReview(req.workspaceId!, id);
+  if (review.resultExpiredAt) {
+    throw new HttpError(410, "This review's full result has expired under the retention setting");
+  }
   const result = review.result === null ? null : parseResult(review.result);
   if (!result) {
     throw new HttpError(409, review.result === null ? "This review has no result yet" : "This result can no longer be rendered");

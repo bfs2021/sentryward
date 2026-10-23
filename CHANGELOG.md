@@ -26,6 +26,17 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   showing costs (input, cached, output) or tokens. The Reviews page's Tokens
   tile links to it. Charts use recharts, and the chart colour tokens are now a
   colour-blind-checked palette in both themes.
+- `REVIEW_RETENTION_DAYS` to stop review data growing without bound. When set,
+  the worker hourly deletes superseded, skipped and cancelled reviews older
+  than the window and clears the stored result, resolved configuration and
+  publication of older finished ones, keeping their row, verdict and summary so
+  lists, stats and the findings list are unaffected. The newest completed or
+  partial review of each change is never cleared, so its findings' details,
+  inline-thread answers and incremental reviews keep working. Pruning runs in
+  batches. The review page says when a result has expired and its markdown
+  export returns 410.
+  Unset keeps everything. Includes a migration (a `result_expired_at` column
+  and an index on review jobs). Closes #86.
 - Notifications for finished reviews. Workspace admins add targets under
   Notifications: an outgoing webhook signed with an HMAC-SHA256
   `X-Sentryward-Signature` header (the secret is shown once), a Slack
