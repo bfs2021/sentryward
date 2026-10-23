@@ -94,6 +94,10 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   signing in again) resumes reviews and keeps the history, as does a status
   check that passes. Manual reviews still run. Includes a migration (one
   nullable column). Closes #103.
+- Searching reviews by title ignores case, like the repository path search,
+  in both the runs and changes views: `fix login` now finds "Fix login
+  redirect". Includes a migration that adds a `title` column to review jobs
+  and backfills it from each review's summary. Closes #88.
 
 ## [0.2.0] - 2026-10-22
 

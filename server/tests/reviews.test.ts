@@ -69,6 +69,7 @@ async function completedJob(number = 7) {
       verdict: "blocked",
       result,
       summary: summarize(result) as object,
+      title: result.change.title,
     },
   });
 }
@@ -211,6 +212,16 @@ describe("GET /api/reviews filters", () => {
     expect(numbers(await get("q=%2312"))).toEqual([12]);
     expect(numbers(await get("q=!3"))).toEqual([3]);
     expect((await get("q=nothing")).body.total).toBe(0);
+  });
+
+  it("searches titles in any case, in both views", async () => {
+    await completedJob(12);
+    await job({ number: 3, title: "Unrelated" });
+
+    for (const q of ["add%20b%20and", "ADD%20B", "aDd%20B%20aNd%20C"]) {
+      expect(numbers(await get(`q=${q}`))).toEqual([12]);
+      expect(numbers(await get(`q=${q}&view=changes`))).toEqual([12]);
+    }
   });
 
   it("hides superseded runs unless asked for", async () => {

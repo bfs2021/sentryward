@@ -161,6 +161,7 @@ export async function complete(
       verdict: input.verdict,
       result: input.result as object | undefined,
       summary: input.summary as object | undefined,
+      title: (input.summary as { title?: string } | undefined)?.title,
       publication: input.publication as object | undefined,
       resolvedConfig: input.resolvedConfig as object | undefined,
       error: input.error ?? null,

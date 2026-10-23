@@ -343,6 +343,9 @@ model ReviewJob {
   result          Json?
   // Small digest of the result (title, counts) so lists never load results.
   summary         Json?
+  // The digest's title, copied out because JSON string matching cannot ignore
+  // case and the reviews search must.
+  title           String?
   // What was posted to the forge: inline comments, summary, commit status.
   publication     Json?
   error           String?

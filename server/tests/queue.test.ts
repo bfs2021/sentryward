@@ -136,10 +136,11 @@ describe("complete and fail", () => {
       status: "completed",
       verdict: "blocked",
       result: { findings: [{ title: "x" }] },
+      summary: { title: "Fix login redirect", total: 1 },
     });
 
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: claimed.id } });
-    expect(stored).toMatchObject({ status: "completed", verdict: "blocked", lockedAt: null });
+    expect(stored).toMatchObject({ status: "completed", verdict: "blocked", lockedAt: null, title: "Fix login redirect" });
     expect(stored.result).toEqual({ findings: [{ title: "x" }] });
     expect(stored.finishedAt).toBeInstanceOf(Date);
   });
