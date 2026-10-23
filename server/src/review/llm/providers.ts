@@ -4,6 +4,8 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateText, NoObjectGeneratedError, Output, streamText, type LanguageModel } from "ai";
 import type { z } from "zod";
 import type { Config } from "../config/schema.ts";
+import type { LlmUsage } from "../core/models.ts";
+import { callCost, priceFor } from "../core/pricing/pricing.ts";
 import { excerpt, formatInstruction, parseLenient } from "./format.ts";
 
 export const PROVIDERS = ["anthropic", "openai", "google", "ollama"] as const;
@@ -99,16 +101,70 @@ export interface GenerateRequest<T> {
 export interface GenerateResponse<T> {
   object: T;
   model: string;
+  // Includes the cache reads and writes; outputTokens includes reasoning.
   inputTokens: number;
+  cachedInputTokens?: number;
+  cacheWriteTokens?: number;
   outputTokens: number;
+  reasoningTokens?: number;
   latencyMs: number;
+  // Tokens spent by models tried before this one whose replies were unusable.
+  failedAttempts?: SpentTokens[];
+}
+
+type ResponseTokens = Pick<
+  GenerateResponse<unknown>,
+  "model" | "inputTokens" | "cachedInputTokens" | "cacheWriteTokens" | "outputTokens" | "reasoningTokens"
+>;
+
+// What an LlmUsage records about one call: its tokens, the detail counts only
+// when there were any (so usage from providers without caching looks as it
+// always did), and its cost at today's prices, kept with the call.
+export function callUsage(response: ResponseTokens) {
+  const detail = (key: "cachedInputTokens" | "cacheWriteTokens" | "reasoningTokens") =>
+    response[key] ? { [key]: response[key] } : {};
+  const tokens = {
+    inputTokens: response.inputTokens,
+    ...detail("cachedInputTokens"),
+    ...detail("cacheWriteTokens"),
+    outputTokens: response.outputTokens,
+    ...detail("reasoningTokens"),
+  };
+  return { ...tokens, cost: callCost(tokens, priceFor(response.model)) };
 }
 
 // The one seam between the engine and a model provider. Tests pass their own.
 export type Generate = <T>(request: GenerateRequest<T>) => Promise<GenerateResponse<T>>;
 
-function failure(reason: string, text: string | undefined): Error {
-  return new Error(`No object generated: ${reason}. Reply: ${excerpt(text)}`);
+export type SpentTokens = ResponseTokens & { latencyMs: number };
+
+// A failed call that still cost tokens: a reply the provider billed for but
+// that could not be parsed. `spent` lets the review count that spend.
+export class ModelCallError extends Error {
+  constructor(
+    message: string,
+    readonly spent: SpentTokens[],
+  ) {
+    super(message);
+    this.name = "ModelCallError";
+  }
+}
+
+export function spentBy(err: unknown): SpentTokens[] {
+  return err instanceof ModelCallError ? err.spent : [];
+}
+
+// Spent tokens as usage records, flagged so a reader can tell them from the
+// calls whose replies were used.
+export function failedUsage(spent: SpentTokens[], purpose: LlmUsage["purpose"], chunk?: number): LlmUsage[] {
+  return spent.map((tokens) => ({
+    purpose,
+    model: tokens.model,
+    ...callUsage(tokens),
+    latencyMs: tokens.latencyMs,
+    ...(chunk === undefined ? {} : { chunk }),
+    failed: true,
+  }));
 }
 
 export function createGenerate(keys: ApiKeys, endpoint?: Endpoint, baseUrls: ProviderBaseUrls = {}): Generate {
@@ -125,18 +181,32 @@ export function createGenerate(keys: ApiKeys, endpoint?: Endpoint, baseUrls: Pro
       maxOutputTokens: request.maxOutputTokens,
       abortSignal: request.abortSignal,
     };
-    const respond = (object: T, usage: { inputTokens?: number; outputTokens?: number } | undefined) => ({
-      object,
+    type Usage =
+      | {
+          inputTokens?: number;
+          outputTokens?: number;
+          inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number };
+          outputTokenDetails?: { reasoningTokens?: number };
+        }
+      | undefined;
+    const spent = (usage: Usage): SpentTokens => ({
       model: request.model,
       inputTokens: usage?.inputTokens ?? 0,
+      cachedInputTokens: usage?.inputTokenDetails?.cacheReadTokens ?? 0,
+      cacheWriteTokens: usage?.inputTokenDetails?.cacheWriteTokens ?? 0,
       outputTokens: usage?.outputTokens ?? 0,
+      reasoningTokens: usage?.outputTokenDetails?.reasoningTokens ?? 0,
       latencyMs: Date.now() - started,
     });
-    const lenient = (text: string | undefined) => {
+    const respond = (object: T, usage: Usage) => ({ object, ...spent(usage) });
+    // The reply was billed even when it cannot be used, so the error carries
+    // its tokens.
+    const lenient = (text: string | undefined, usage: Usage) => {
       try {
         return parseLenient(text ?? "", request.schema, request.repair);
       } catch (err) {
-        throw failure(err instanceof Error ? err.message : String(err), text);
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new ModelCallError(`No object generated: ${reason}. Reply: ${excerpt(text)}`, [spent(usage)]);
       }
     };
 
@@ -150,7 +220,8 @@ export function createGenerate(keys: ApiKeys, endpoint?: Endpoint, baseUrls: Pro
       for await (const part of result.fullStream) {
         if (part.type === "error") throw part.error;
       }
-      return respond(lenient(await result.text), await result.usage);
+      const usage = await result.usage;
+      return respond(lenient(await result.text, usage), usage);
     }
     try {
       const result = await generateText({
@@ -160,7 +231,7 @@ export function createGenerate(keys: ApiKeys, endpoint?: Endpoint, baseUrls: Pro
       return respond(result.output as T, result.usage);
     } catch (err) {
       // A near-miss the provider let through is repaired rather than lost.
-      if (NoObjectGeneratedError.isInstance(err)) return respond(lenient(err.text), err.usage);
+      if (NoObjectGeneratedError.isInstance(err)) return respond(lenient(err.text, err.usage), err.usage);
       throw err;
     }
   };
@@ -170,8 +241,6 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// Tries the primary model, then each fallback in order. Every model's error is
-// kept so the primary's failure is not hidden behind the last fallback's.
 export type ModelPurpose = "review" | "walkthrough" | "verify";
 
 // The models a call tries, in order: the purpose's own model when one is set,
@@ -182,23 +251,30 @@ export function modelChain(llm: Config["llm"], purpose: ModelPurpose): string[] 
   return [...new Set([primary, ...llm.fallbackModels])];
 }
 
+// Tries the primary model, then each fallback in order. Every model's error is
+// kept so the primary's failure is not hidden behind the last fallback's, and
+// so is what each failed model spent: on success in `failedAttempts`, when all
+// fail on the ModelCallError thrown.
 export async function generateWithFallback<T>(
   generate: Generate,
   models: string[],
   request: Omit<GenerateRequest<T>, "model">,
 ): Promise<GenerateResponse<T>> {
   const errors: unknown[] = [];
+  const failedAttempts: SpentTokens[] = [];
   for (const model of models) {
     try {
-      return await generate({ ...request, model });
+      const response = await generate({ ...request, model });
+      return failedAttempts.length ? { ...response, failedAttempts } : response;
     } catch (err) {
       // A cancelled review has no use for the fallbacks either.
       if (request.abortSignal?.aborted) throw err;
       errors.push(err);
+      failedAttempts.push(...spentBy(err));
     }
   }
   if (errors.length === 1) throw errors[0] instanceof Error ? errors[0] : new Error(message(errors[0]));
-  throw new Error(errors.map((err, i) => `${models[i]}: ${message(err)}`).join(" | "));
+  throw new ModelCallError(errors.map((err, i) => `${models[i]}: ${message(err)}`).join(" | "), failedAttempts);
 }
 
 // Every request made through the result carries the signal, and none starts

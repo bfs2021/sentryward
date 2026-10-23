@@ -1,13 +1,27 @@
 import type { ReactNode } from "react"
-import { CircleX, GitPullRequest, ShieldX, Timer, type LucideIcon } from "lucide-react"
+import { Link } from "react-router"
+import { CircleX, Coins, GitPullRequest, ShieldX, Timer, type LucideIcon } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { formatDuration } from "@/lib/time"
+import { USAGE_PERIODS, type UsagePeriod } from "@/features/usage/types"
 import { useReviewStats } from "./api"
+import { formatCost, formatTokens } from "./cost"
 
-export function Stat({ label, icon: Icon, children }: { label: string; icon?: LucideIcon; children: ReactNode }) {
-  return (
-    <Card size="sm">
+// With `to`, the whole tile links to the page that breaks the figure down.
+export function Stat({
+  label,
+  icon: Icon,
+  to,
+  children,
+}: {
+  label: string
+  icon?: LucideIcon
+  to?: string
+  children: ReactNode
+}) {
+  const card = (
+    <Card size="sm" className={to ? "h-full transition-colors hover:bg-muted/50" : undefined}>
       <CardContent className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{label}</span>
@@ -16,6 +30,13 @@ export function Stat({ label, icon: Icon, children }: { label: string; icon?: Lu
         <div className="text-2xl font-semibold tabular-nums">{children}</div>
       </CardContent>
     </Card>
+  )
+  return to ? (
+    <Link to={to} aria-label={`${label}: open usage`} className="rounded-xl focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+      {card}
+    </Link>
+  ) : (
+    card
   )
 }
 
@@ -29,9 +50,13 @@ export function ReviewStatsStrip() {
   const blockedRate = finished ? Math.round((data.blocked / finished) * 100) : 0
   const period = `last ${data.days} days`
   const { median, max } = data.duration
+  const { tokens, cost } = data
+  // The Usage page opens on the same window when it offers one.
+  const usagePeriod = `${data.days}d`
+  const usageLink = USAGE_PERIODS.includes(usagePeriod as UsagePeriod) ? `/usage?period=${usagePeriod}` : "/usage"
 
   return (
-    <section aria-label="Review stats" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <section aria-label="Review stats" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
       <Stat label={`Reviews, ${period}`} icon={GitPullRequest}>
         {data.runs}
       </Stat>
@@ -49,6 +74,10 @@ export function ReviewStatsStrip() {
         {max !== null && (
           <span className="ml-2 text-xs font-normal text-muted-foreground">slowest {formatDuration(max)}</span>
         )}
+      </Stat>
+      <Stat label={`Tokens, ${period}`} icon={Coins} to={usageLink}>
+        {formatTokens(tokens.inputTokens + tokens.outputTokens)}
+        <span className="ml-2 text-xs font-normal text-muted-foreground">{formatCost(cost.usd)}</span>
       </Stat>
     </section>
   )

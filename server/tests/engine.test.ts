@@ -10,7 +10,7 @@ import { planChunks } from "../src/review/context/chunk.ts";
 import { renderHunk } from "../src/review/context/diffText.ts";
 import { classifyFiles } from "../src/review/context/ignore.ts";
 import { MAX_MANIFEST_CHARS, reviewUserPrompt } from "../src/review/llm/prompt.ts";
-import { generateWithFallback } from "../src/review/llm/providers.ts";
+import { generateWithFallback, ModelCallError } from "../src/review/llm/providers.ts";
 import { runReview } from "../src/review/pipeline.ts";
 import { validateFindings } from "../src/review/validate/validator.ts";
 import { APP_PATCH, makeChangeSet } from "./helpers/changeSet.ts";
@@ -380,6 +380,23 @@ describe("generateWithFallback", () => {
     );
     expect(tried).toEqual(["anthropic/a", "openai/b", "anthropic/a", "google/c"]);
   });
+
+  it("keeps the tokens failed models spent, on success and when every model fails", async () => {
+    const spent = (model: string) => ({ model, inputTokens: 50, outputTokens: 7, latencyMs: 3 });
+    const generate = (async (request: { model: string }) => {
+      if (request.model === "openai/b") return { object: {}, model: request.model, inputTokens: 1, outputTokens: 1, latencyMs: 0 };
+      if (request.model === "google/c") throw new Error("down");
+      throw new ModelCallError(`${request.model} unparseable`, [spent(request.model)]);
+    }) as never;
+
+    const ok = await generateWithFallback(generate, ["anthropic/a", "openai/b"], {} as never);
+    expect(ok.failedAttempts).toEqual([spent("anthropic/a")]);
+
+    const failure = await generateWithFallback(generate, ["anthropic/a", "google/c"], {} as never).catch((err) => err);
+    expect(failure).toBeInstanceOf(ModelCallError);
+    expect(failure.message).toBe("anthropic/a: anthropic/a unparseable | google/c: down");
+    expect(failure.spent).toEqual([spent("anthropic/a")]);
+  });
 });
 
 describe("runReview", () => {
@@ -480,6 +497,20 @@ describe("runReview", () => {
     expect(result.errors).toEqual(["Review pass 2 failed: rate limited"]);
     expect(result.findings).toHaveLength(1);
     expect(result.verdict.verdict).toBe("error");
+  });
+
+  it("records what a failed pass's model spent, flagged as failed", async () => {
+    const { generate } = fakeModel({
+      code_review: () => new ModelCallError("unparseable", [{ model: "anthropic/x", inputTokens: 900, outputTokens: 80, latencyMs: 4 }]),
+      walkthrough: WALKTHROUGH,
+    });
+
+    const result = await runReview({ changeSet: makeChangeSet(), config: config() }, { generate, now });
+
+    expect(result.status).toBe("failed");
+    expect(result.usage.filter((call) => call.failed)).toEqual([
+      expect.objectContaining({ purpose: "review", model: "anthropic/x", inputTokens: 900, outputTokens: 80, chunk: 1, failed: true }),
+    ]);
   });
 
   // other.ts alone nearly fills the 2,000-token minimum pass, so the two files

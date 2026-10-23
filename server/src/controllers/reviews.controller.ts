@@ -4,10 +4,12 @@ import { prisma } from "../lib/prisma.ts";
 import { median } from "../lib/stats.ts";
 import type { Prisma, Repository } from "../generated/prisma/client.ts";
 import { reviewResultSchema } from "../review/core/models.ts";
+import { roundUsd } from "../review/core/pricing/pricing.ts";
 import { parseChangeUrl } from "../review/forge/url.ts";
 import { toJson } from "../review/render/json.ts";
 import { toMarkdown, walkthroughOptions } from "../review/render/markdown.ts";
 import { adapterForConnection, toHttpError } from "../services/forge.ts";
+import { digestTotals } from "../services/usage.ts";
 import { cancelJob, enqueue } from "../worker/queue.ts";
 import {
   createReviewByRepoSchema,
@@ -199,20 +201,19 @@ export async function getReviewStats(req: Request, res: Response) {
   const durations = jobs
     .filter((j) => (j.status === "completed" || j.status === "partial") && j.startedAt && j.finishedAt)
     .map((j) => j.finishedAt!.getTime() - j.startedAt!.getTime());
-  // Token totals come from each job's summary digest. Jobs reviewed before the
-  // digest carried usageTotals contribute nothing until they are re-run.
-  const tokens = jobs.reduce(
-    (total, job) => {
-      const usage = (job.summary as { usageTotals?: { calls?: number; inputTokens?: number; outputTokens?: number } } | null)
-        ?.usageTotals;
-      return {
-        calls: total.calls + (usage?.calls ?? 0),
-        inputTokens: total.inputTokens + (usage?.inputTokens ?? 0),
-        outputTokens: total.outputTokens + (usage?.outputTokens ?? 0),
-      };
-    },
-    { calls: 0, inputTokens: 0, outputTokens: 0 },
-  );
+  // Token totals and costs come from each job's summary digest. Costs were
+  // fixed when each review ran; jobs reviewed before the digest carried them
+  // contribute nothing until they are re-run.
+  const tokens = { calls: 0, inputTokens: 0, outputTokens: 0 };
+  let usd = 0;
+  for (const job of jobs) {
+    const totals = digestTotals(job.summary);
+    tokens.calls += totals.calls;
+    tokens.inputTokens += totals.inputTokens;
+    tokens.outputTokens += totals.outputTokens;
+    usd += totals.usd;
+  }
+  const cost = { usd: roundUsd(usd) };
   res.json({
     days,
     runs: jobs.length,
@@ -221,6 +222,7 @@ export async function getReviewStats(req: Request, res: Response) {
     failed: jobs.filter((j) => j.status === "failed").length,
     duration: { median: median(durations), max: durations.length ? Math.max(...durations) : null },
     tokens,
+    cost,
   });
 }
 

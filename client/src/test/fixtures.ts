@@ -46,7 +46,7 @@ export const result: ReviewResult = {
   coverage: { reviewedFiles: ["src/app.ts"], omissions: [{ path: "yarn.lock", reason: "ignored" }], passes: 1 },
   validation: { dropped: {}, demoted: 0 },
   usage: [],
-  usageTotals: { calls: 2, inputTokens: 1200, outputTokens: 300 },
+  usageTotals: { calls: 2, inputTokens: 1200, outputTokens: 300, costUsd: 0.0054 },
   verdict: { verdict: "blocked", blockOn: "critical", blocking: [] },
   summary: {
     title: "Add b and c",

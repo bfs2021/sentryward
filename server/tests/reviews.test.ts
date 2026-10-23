@@ -278,12 +278,48 @@ describe("GET /api/reviews/stats", () => {
       duration: { median: 90_000, max: 120_000 },
       // Only the completed job carries a summary digest; the bare rows add nothing.
       tokens: { calls: 2, inputTokens: 200, outputTokens: 40 },
+      // 200 input and 40 output tokens of claude-sonnet-5-5 at $2 / $10 per million,
+      // recorded when the sample review ran.
+      cost: { usd: 0.0008 },
     });
 
     expect((await request(app).get("/api/reviews/stats?days=30").set("Cookie", cookie)).body.runs).toBe(5);
 
     const other = await createUser("other@example.com");
     expect((await request(app).get("/api/reviews/stats").set("Cookie", other.cookie)).body.runs).toBe(0);
+  });
+});
+
+describe("GET /api/reviews/stats cost", () => {
+  async function run(number: number, summary: object) {
+    await prisma.reviewJob.create({
+      data: {
+        repositoryId: repoId,
+        number,
+        headSha: "h",
+        trigger: "manual",
+        status: "completed",
+        verdict: "pass",
+        summary: { title: "T", total: 0, ...summary },
+      },
+    });
+  }
+  const cost = (total: number) => ({ input: total, cached: 0, cacheWrite: 0, output: 0, reasoning: 0, total });
+
+  it("sums the costs reviews recorded per model, counting older digests' tokens at no cost", async () => {
+    await run(1, {
+      usageByModel: {
+        "anthropic/a": { calls: 1, inputTokens: 60, outputTokens: 6, cost: cost(1) },
+        "openai/b": { calls: 1, inputTokens: 40, outputTokens: 4, cost: cost(0.25) },
+      },
+    });
+    await run(2, { usageByModel: { "anthropic/a": { calls: 1, inputTokens: 50, outputTokens: 5, cost: cost(0.5) } } });
+    // A digest from before per-model usage and costs were recorded.
+    await run(3, { usageTotals: { calls: 1, inputTokens: 1000, outputTokens: 100 } });
+
+    const res = await request(app).get("/api/reviews/stats").set("Cookie", cookie);
+    expect(res.body.tokens).toEqual({ calls: 4, inputTokens: 1150, outputTokens: 115 });
+    expect(res.body.cost).toEqual({ usd: 1.75 });
   });
 });
 
@@ -297,6 +333,8 @@ describe("GET /api/reviews/:id and /markdown", () => {
     expect(res.body.review.result.findings).toHaveLength(4);
     expect(res.body.review.result.summary.total).toBe(4);
     expect(res.body.review.result.usageTotals.calls).toBe(2);
+    expect(res.body.review.result.usageTotals.costUsd).toBe(0.0008);
+    expect(res.body.review.result.usage[0].cost.total).toBe(0.0004);
   });
 
   it("serves exactly the document toMarkdown renders", async () => {

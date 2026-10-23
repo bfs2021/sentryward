@@ -19,7 +19,7 @@ import { planChunks, type Chunk } from "./context/chunk.ts";
 import { gatherContext, type ContextSource } from "./context/gather.ts";
 import { classifyFiles } from "./context/ignore.ts";
 import { MAX_MANIFEST_CHARS, MAX_REJECTED_CHARS, reviewSystemPrompt, type ManifestEntry } from "./llm/prompt.ts";
-import type { Generate } from "./llm/providers.ts";
+import { failedUsage, spentBy, type Generate } from "./llm/providers.ts";
 import { reviewChunk } from "./llm/review.ts";
 import { generateWalkthrough, type WalkthroughIssues } from "./llm/walkthrough.ts";
 import { compareFindings, validateFindings, validateToolFindings, type DropReason, type TaggedFinding } from "./validate/validator.ts";
@@ -152,11 +152,13 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
   const walkthroughTask: Promise<Walkthrough | undefined> =
     config.output.walkthrough && reviewable.length > 0
       ? generateWalkthrough(deps.generate, changeSet, reviewable, config, input.issues).then(
-          ({ walkthrough, usage: callUsage }) => {
-            usage.push(callUsage);
+          ({ walkthrough, usage: callUsage, failedUsage: failed }) => {
+            usage.push(...failed, callUsage);
             return walkthrough;
           },
           (err: unknown) => {
+            // A failed walkthrough still spent what its models billed.
+            usage.push(...failedUsage(spentBy(err), "walkthrough"));
             warnings.push(`Walkthrough failed: ${errorMessage(err)}`);
             return undefined;
           },
@@ -206,16 +208,17 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
         review: await reviewChunk(deps.generate, changeSet, chunk, chunks.length, config, input.rejectedFindings, manifest),
       };
     } catch (err) {
-      return { chunk, error: errorMessage(err) };
+      return { chunk, error: errorMessage(err), spent: failedUsage(spentBy(err), "review", chunk.index) };
     }
   });
   for (const outcome of outcomes) {
     if (outcome.review) {
       const { model } = outcome.review.usage;
       raw.push(...outcome.review.findings.map((finding) => ({ ...finding, model })));
-      usage.push(outcome.review.usage);
+      usage.push(...outcome.review.failedUsage, outcome.review.usage);
       continue;
     }
+    usage.push(...outcome.spent);
     failedPasses += 1;
     errors.push(`Review pass ${outcome.chunk.index} failed: ${outcome.error}`);
     for (const part of outcome.chunk.parts) {

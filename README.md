@@ -583,7 +583,9 @@ so scripts written before workspaces keep working. Routes under
 | GET    | `/api/repos/:id/config` | The effective review config for the default branch, where each value came from, and any repository-file warnings |
 | POST   | `/api/reviews`       | `{ url }` of a pull or merge request on an enabled repository; queues a review of its current head |
 | GET    | `/api/reviews?repoId=&status=&page=&limit=` | The workspace's reviews, newest first, with a summary but not the full result; returns `{ reviews, total, page, limit }` (`limit` 1-100, default 20) |
-| GET    | `/api/reviews/:id`   | One review with its full result |
+| GET    | `/api/reviews/stats?repoId=&days=` | Runs, verdicts, review time and token totals over the last `days` (default 7), with `cost: { usd }`: the summed costs reviews recorded when they ran. Reviews from before costs were recorded add nothing |
+| GET    | `/api/reviews/:id`   | One review with its full result; each model call carries the `cost` it recorded and `usageTotals.costUsd` sums them |
+| GET    | `/api/usage?period=&repoId=` | Model usage of the workspace's reviews over `24h`, `7d` (default), `30d`, `90d` or `all`: totals with input, cached and output tokens and the cost, a UTC time series (hourly for `24h`, monthly for a long `all`), and breakdowns by model (input, cached and output cost each), provider and repository, plus the latest reviews that called a model |
 | GET    | `/api/reviews/:id/markdown` | The review as the markdown document that is posted to the forge |
 | POST   | `/api/reviews/:id/rerun` | Queues a fresh review of the PR's latest head |
 | POST   | `/api/reviews/:id/cancel` | Cancels a queued or running review; a running one stops within one check interval (about 15s) and posts nothing more. `409` once it has finished |

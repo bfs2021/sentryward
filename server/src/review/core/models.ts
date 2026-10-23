@@ -166,10 +166,31 @@ export type Omission = z.infer<typeof omissionSchema>;
 export const llmUsageSchema = z.object({
   purpose: z.enum(["review", "walkthrough", "verify"]),
   model: z.string(),
+  // Total input, cache reads included.
   inputTokens: z.number().int().min(0),
+  // Input read from and written to the provider's prompt cache, and output
+  // spent reasoning (part of outputTokens). Each is absent when there was none,
+  // and on results stored before it was recorded.
+  cachedInputTokens: z.number().int().min(0).optional(),
+  cacheWriteTokens: z.number().int().min(0).optional(),
   outputTokens: z.number().int().min(0),
+  reasoningTokens: z.number().int().min(0).optional(),
   latencyMs: z.number().int().min(0),
   chunk: z.number().int().positive().optional(),
+  // A call whose reply could not be used, kept because its tokens were billed.
+  failed: z.literal(true).optional(),
+  // USD at the prices in effect when the call was made (core/pricing). Absent
+  // on results stored before costs were recorded.
+  cost: z
+    .object({
+      input: z.number().min(0),
+      cached: z.number().min(0),
+      cacheWrite: z.number().min(0),
+      output: z.number().min(0),
+      reasoning: z.number().min(0),
+      total: z.number().min(0),
+    })
+    .optional(),
 });
 export type LlmUsage = z.infer<typeof llmUsageSchema>;
 

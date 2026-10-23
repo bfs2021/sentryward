@@ -8,7 +8,7 @@ import {
   walkthroughUserPrompt,
   type WalkthroughExtras,
 } from "./prompt.ts";
-import { generateWithFallback, modelChain, type Generate } from "./providers.ts";
+import { callUsage, failedUsage, type Generate, generateWithFallback, modelChain } from "./providers.ts";
 import { repairWalkthroughOutput, walkthroughSchemaFor, type FullWalkthroughOutput } from "./schemas.ts";
 
 // The overview needs breadth, not every line: files are included whole until
@@ -57,7 +57,7 @@ export async function generateWalkthrough(
   files: ChangedFile[],
   config: Config,
   issues: WalkthroughIssues = {},
-): Promise<{ walkthrough: Walkthrough; usage: LlmUsage }> {
+): Promise<{ walkthrough: Walkthrough; usage: LlmUsage; failedUsage: LlmUsage[] }> {
   const { output: settings } = config;
   // Nothing to assess or pick from means nothing to ask for.
   const linked = settings.assessLinkedIssues && issues.linked?.length ? issues.linked : undefined;
@@ -128,9 +128,9 @@ export async function generateWalkthrough(
     usage: {
       purpose: "walkthrough",
       model: response.model,
-      inputTokens: response.inputTokens,
-      outputTokens: response.outputTokens,
+      ...callUsage(response),
       latencyMs: response.latencyMs,
     },
+    failedUsage: failedUsage(response.failedAttempts ?? [], "walkthrough"),
   };
 }

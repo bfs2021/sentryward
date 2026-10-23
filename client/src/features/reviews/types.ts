@@ -76,6 +76,12 @@ export interface UsageTotals {
   outputTokens: number
 }
 
+// Summed from the costs reviews recorded when they ran, at that day's prices;
+// a model without a price counted as $0.
+export interface CostEstimate {
+  usd: number
+}
+
 export interface ReviewSummary {
   title: string
   webUrl?: string
@@ -121,7 +127,8 @@ export interface ReviewResult {
   coverage: { reviewedFiles: string[]; omissions: Omission[]; passes: number }
   validation: { dropped: Record<string, number>; demoted: number }
   usage: { purpose: string; model: string; inputTokens: number; outputTokens: number; latencyMs: number }[]
-  usageTotals: { calls: number; inputTokens: number; outputTokens: number }
+  // costUsd is absent on results stored before costs were recorded.
+  usageTotals: { calls: number; inputTokens: number; outputTokens: number; costUsd?: number }
   verdict: { verdict: Verdict; blockOn: Severity; blocking: string[] }
   summary: ReviewSummary
 }
@@ -184,6 +191,7 @@ export interface ReviewStats {
   duration: { median: number | null; max: number | null }
   // Summed over the period; runs stored before token digests count as zero.
   tokens: UsageTotals
+  cost: CostEstimate
 }
 
 export function isActive(status: JobStatus) {

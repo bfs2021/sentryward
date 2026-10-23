@@ -2,12 +2,14 @@ import type { Config } from "../config/schema.ts";
 import type { ChangeSet, LlmUsage, RejectedFinding } from "../core/models.ts";
 import type { Chunk } from "../context/chunk.ts";
 import { reviewSystemPrompt, reviewUserPrompt, type ManifestEntry } from "./prompt.ts";
-import { generateWithFallback, modelChain, type Generate } from "./providers.ts";
+import { callUsage, failedUsage, type Generate, generateWithFallback, modelChain } from "./providers.ts";
 import { repairReviewOutput, reviewOutputSchema, type ModelFinding } from "./schemas.ts";
 
 export interface ChunkReview {
   findings: ModelFinding[];
   usage: LlmUsage;
+  // Models tried first whose replies were unusable.
+  failedUsage: LlmUsage[];
 }
 
 export async function reviewChunk(
@@ -33,10 +35,10 @@ export async function reviewChunk(
     usage: {
       purpose: "review",
       model: response.model,
-      inputTokens: response.inputTokens,
-      outputTokens: response.outputTokens,
+      ...callUsage(response),
       latencyMs: response.latencyMs,
       chunk: chunk.index,
     },
+    failedUsage: failedUsage(response.failedAttempts ?? [], "review", chunk.index),
   };
 }

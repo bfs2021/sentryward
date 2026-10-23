@@ -1,11 +1,14 @@
 import { BUCKET_ORDER } from "../core/buckets.ts";
 import type { Bucket, ReviewResult } from "../core/models.ts";
+import { roundUsd, usageByModel, type UsageByModel } from "../core/pricing/pricing.ts";
 import { SEVERITIES, type Severity } from "../core/severity.ts";
 
 export interface UsageTotals {
   calls: number;
   inputTokens: number;
   outputTokens: number;
+  // The calls' recorded costs, fixed when the review ran.
+  costUsd: number;
 }
 
 export interface ResultSummary {
@@ -17,6 +20,8 @@ export interface ResultSummary {
   hasBlocking: boolean;
   // Token totals kept in the digest so stats can sum them without loading results.
   usageTotals: UsageTotals;
+  // The same tokens per model, with each model's recorded cost.
+  usageByModel: UsageByModel;
 }
 
 // Sum the per-call token usage into one total.
@@ -28,7 +33,8 @@ function usageTotals(result: ReviewResult): UsageTotals {
     }),
     { inputTokens: 0, outputTokens: 0 },
   );
-  return { calls: result.usage.length, ...tokens };
+  const costUsd = roundUsd(result.usage.reduce((total, call) => total + (call.cost?.total ?? 0), 0));
+  return { calls: result.usage.length, ...tokens, costUsd };
 }
 
 // The digest stored beside the result, for lists that must not load results.
@@ -47,6 +53,7 @@ export function summarize(result: ReviewResult): ResultSummary {
     byBucket: Object.fromEntries(BUCKET_ORDER.filter((b) => byBucket[b]).map((b) => [b, byBucket[b]])),
     hasBlocking: result.verdict.blocking.length > 0,
     usageTotals: usageTotals(result),
+    usageByModel: usageByModel(result.usage),
   };
 }
 
