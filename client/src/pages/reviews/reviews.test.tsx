@@ -633,14 +633,14 @@ describe("Review detail page", () => {
     expect(button.querySelector(".animate-spin")).not.toBeInTheDocument()
   })
 
-  // jsdom has no object URLs and would try to navigate on an anchor click.
+  // Keep downloads from creating real object URLs or navigating on the anchor click.
   function stubDownload() {
     const blobs: Blob[] = []
-    URL.createObjectURL = vi.fn((blob: Blob) => {
-      blobs.push(blob)
+    vi.spyOn(URL, "createObjectURL").mockImplementation((blob) => {
+      blobs.push(blob as Blob)
       return "blob:review"
     })
-    URL.revokeObjectURL = vi.fn()
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {})
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {})
     return { blobs, click }
   }
@@ -659,7 +659,7 @@ describe("Review detail page", () => {
     await waitFor(() => expect(click).toHaveBeenCalledOnce())
     expect((click.mock.contexts[0] as HTMLAnchorElement).download).toBe(`sentryward-review-${detail.id}.md`)
     expect(await blobs[0].text()).toBe(markdown)
-    expect(screen.getByRole("button", { name: "Copy markdown" })).toBeEnabled()
+    await waitFor(() => expect(screen.getByRole("button", { name: "Download markdown" })).toBeEnabled())
   })
 
   it("offers no markdown download without a result", async () => {
