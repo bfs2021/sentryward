@@ -2,7 +2,8 @@ import type { Request, Response } from "express";
 import { HttpError } from "../lib/httpError.ts";
 import { prisma } from "../lib/prisma.ts";
 import { median } from "../lib/stats.ts";
-import type { Prisma, Repository } from "../generated/prisma/client.ts";
+import { Prisma } from "../generated/prisma/client.ts";
+import type { Repository } from "../generated/prisma/client.ts";
 import { reviewResultSchema } from "../review/core/models.ts";
 import { roundUsd } from "../review/core/pricing/pricing.ts";
 import { parseChangeUrl } from "../review/forge/url.ts";
@@ -124,7 +125,7 @@ export async function listReviews(req: Request, res: Response) {
   const { page, limit } = query;
   const where = listWhere(req.workspaceId!, query);
   if (query.view === "changes") {
-    res.json({ ...(await listChanges(where, page, limit)), page, limit });
+    res.json({ ...(await listChanges(where, changesTotal(req.workspaceId!, query), page, limit)), page, limit });
     return;
   }
   // Offset paging so the dashboard can show page numbers and a total; the id
@@ -145,11 +146,15 @@ export async function listReviews(req: Request, res: Response) {
 // One row per pull/merge request: its latest run matching the filters, plus
 // how many matching runs it has. Filters apply before grouping, so filtering
 // by "failed" shows each change's latest failed run.
-async function listChanges(where: Prisma.ReviewJobWhereInput, page: number, limit: number) {
-  const by: ["repositoryId", "number"] = ["repositoryId", "number"];
-  const [groups, all] = await prisma.$transaction([
+async function listChanges(
+  where: Prisma.ReviewJobWhereInput,
+  totalQuery: Prisma.PrismaPromise<{ total: number }[]>,
+  page: number,
+  limit: number,
+) {
+  const [groups, [{ total }]] = await prisma.$transaction([
     prisma.reviewJob.groupBy({
-      by,
+      by: ["repositoryId", "number"],
       where,
       _max: { createdAt: true },
       _count: { _all: true },
@@ -157,10 +162,9 @@ async function listChanges(where: Prisma.ReviewJobWhereInput, page: number, limi
       skip: (page - 1) * limit,
       take: limit,
     }),
-    // Prisma has no count(distinct ...); the keys alone are small enough.
-    prisma.reviewJob.groupBy({ by, where, orderBy: [{ repositoryId: "asc" }, { number: "asc" }] }),
+    totalQuery,
   ]);
-  if (groups.length === 0) return { reviews: [], total: all.length };
+  if (groups.length === 0) return { reviews: [], total };
 
   const latest = await prisma.reviewJob.findMany({
     where: {
@@ -179,7 +183,39 @@ async function listChanges(where: Prisma.ReviewJobWhereInput, page: number, limi
     const { repositoryId: _, ...review } = job;
     return [{ ...review, runCount: (g._count as { _all: number })._all }];
   });
-  return { reviews, total: all.length };
+  return { reviews, total };
+}
+
+// Raw because Prisma has no count(distinct ...), and listing every change key
+// to count them grows with the workspace's whole history. The conditions must
+// stay in step with listWhere, or the total drifts from the rows shown.
+function changesTotal(workspaceId: string, query: ListQuery) {
+  const { repoId, status, verdict, trigger, number, q, includeSuperseded } = query;
+  const conditions = [Prisma.sql`c.workspace_id = ${workspaceId}::uuid`];
+  if (repoId) conditions.push(Prisma.sql`j.repository_id = ${repoId}::uuid`);
+  if (verdict) conditions.push(Prisma.sql`j.verdict = ${verdict}::review_verdict`);
+  if (trigger) conditions.push(Prisma.sql`j.trigger = ${trigger}::review_trigger`);
+  if (number) conditions.push(Prisma.sql`j.number = ${number}`);
+  if (status) conditions.push(Prisma.sql`j.status = ${status}::review_status`);
+  else if (!includeSuperseded) conditions.push(Prisma.sql`j.status <> 'superseded'`);
+  if (q) {
+    // Unescaped, as Prisma's `contains` sends it: "%" and "_" in a search act
+    // as wildcards on the page rows, so they must here too.
+    const pattern = `%${q}%`;
+    const asNumber = NUMBER_QUERY.exec(q);
+    const matches = [Prisma.sql`r.full_path ILIKE ${pattern}`, Prisma.sql`j.title ILIKE ${pattern}`];
+    if (asNumber) matches.push(Prisma.sql`j.number = ${Number(asNumber[1])}`);
+    conditions.push(Prisma.sql`(${Prisma.join(matches, " OR ")})`);
+  }
+  return prisma.$queryRaw<{ total: number }[]>`
+    SELECT count(*)::int AS total FROM (
+      SELECT DISTINCT j.repository_id, j.number
+      FROM review_jobs j
+      JOIN repositories r ON r.id = j.repository_id
+      JOIN forge_connections c ON c.id = r.connection_id
+      WHERE ${Prisma.join(conditions, " AND ")}
+    ) t
+  `;
 }
 
 export async function getReviewStats(req: Request, res: Response) {

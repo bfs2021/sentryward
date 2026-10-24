@@ -263,6 +263,54 @@ describe("GET /api/reviews filters", () => {
     const completed = await get("view=changes&status=completed");
     expect(completed.body.reviews.map((r: { headSha: string }) => r.headSha)).toEqual(["b", "a"]);
   });
+
+  it("counts changes the same way the runs view filters them", async () => {
+    const { connectionId } = await prisma.repository.findUniqueOrThrow({ where: { id: repoId } });
+    const other = await prisma.repository.create({
+      data: {
+        connectionId,
+        provider: "gitlab",
+        host: "gitlab.com",
+        fullPath: "team/api_v2",
+        externalId: "2",
+        defaultBranch: "main",
+        enabled: true,
+      },
+    });
+    await job({ number: 1, verdict: "pass", trigger: "webhook", title: "Fix login" });
+    await job({ number: 1, status: "failed", verdict: "error", title: "Fix login" });
+    await job({ number: 1, status: "superseded", title: "Fix login" });
+    await job({ number: 2, verdict: "blocked", trigger: "comment", title: "Add 100% coverage" });
+    await job({ number: 3, status: "superseded", title: "Drop cache" });
+    await job({ repositoryId: other.id, number: 1, verdict: "pass", trigger: "webhook", title: "Fix logout" });
+    await job({ repositoryId: other.id, number: 1, verdict: "pass", title: "Fix logout" });
+    await job({ repositoryId: other.id, number: 2, status: "failed", title: "Rename user_id" });
+
+    const queries = [
+      "",
+      "status=failed",
+      "status=superseded",
+      "includeSuperseded=true",
+      "verdict=pass",
+      "trigger=webhook",
+      `repoId=${other.id}`,
+      "number=1",
+      "q=fix%20log",
+      "q=API",
+      "q=%232",
+      "q=100%25",
+      "q=user_id",
+      // Wildcards in a search behave as they do for the page rows.
+      "q=u_er",
+      "q=1%25",
+      `verdict=pass&trigger=webhook&q=fix&repoId=${repoId}`,
+    ];
+    for (const query of queries) {
+      const runs = (await get(`${query}&limit=100`)).body.reviews as { number: number; repository: { id: string } }[];
+      const changes = new Set(runs.map((r) => `${r.repository.id}:${r.number}`));
+      expect((await get(`${query}&view=changes`)).body.total, query).toBe(changes.size);
+    }
+  });
 });
 
 describe("GET /api/reviews/stats", () => {
