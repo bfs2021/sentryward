@@ -68,6 +68,17 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   Setting a new password signs the user in and ends every other session.
   Includes a migration (a `password_resets` table and a `session_version`
   column on users). Closes #83.
+- Findings are classified across runs as new, still open, fixed or
+  invalidated. Each review after a change's first records this in its result
+  (`lifecycle`), and the summary comment opens its findings with a "Since the
+  last review" line and a list per group. A finding counts as invalidated
+  rather than fixed when its file was renamed, deleted or dropped from the
+  change, or the same problem is now reported in another file (that finding
+  is still open, not new). Findings carry a `lifecycle` column, `GET
+  /api/findings` filters by `lifecycle`, the findings page gains a "Last
+  review" filter, and invalidated findings no longer count as resolved in the
+  stats. Includes a migration (a `finding_lifecycle` enum and column,
+  backfilled from each finding's state). Closes #104.
 
 ### Changed
 
@@ -84,6 +95,10 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   goes through the same clipboard path as the review page. Closes #95.
 
 ### Fixed
+
+- An open finding in a file the change later deletes is now resolved (as
+  invalidated) instead of staying open forever: a deleted file is never
+  reviewed, so the run never got to say the finding was gone.
 
 - Webhook deliveries for one PR/MR that arrive at the same moment (two quick
   pushes, a push and a `/sentryward review` comment, or a redelivery) queue
