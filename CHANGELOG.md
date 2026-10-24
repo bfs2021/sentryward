@@ -102,6 +102,10 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   found by title and show it in lists too. A second migration adds trigram
   indexes (`pg_trgm`) on review titles and repository paths so the search
   does not scan the whole table. Closes #88.
+- Client tests for the markdown download: the success test now waits for
+  Download markdown to be enabled again, so a stuck spinner fails it, and the
+  object URL stubs are restored after each test instead of leaking into later
+  ones. Test-only, no behaviour change. Closes #90, closes #91.
 
 ## [0.2.0] - 2026-10-22
 
