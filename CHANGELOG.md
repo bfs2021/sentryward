@@ -74,6 +74,10 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 - Changing your password in Settings now signs you out on other devices,
   keeping only the current browser signed in. Existing sessions stay valid
   through the upgrade.
+- The Reviews page's changes view counts its total with one SQL query
+  instead of loading every pull/merge request key matching the filters, so
+  page loads and polls no longer grow with the whole review history. Totals
+  are unchanged for every filter. Closes #89.
 
 ### Fixed
 
