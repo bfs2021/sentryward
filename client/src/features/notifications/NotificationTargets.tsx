@@ -28,7 +28,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog"
 import {
   DropdownMenu,
@@ -37,7 +36,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import {
   Field,
   FieldContent,
@@ -218,8 +217,17 @@ function CreatedSecretView({ secret }: { secret: string }) {
   )
 }
 
-function AddTargetDialog({ mailConfigured, members }: { mailConfigured: boolean; members: Member[] | undefined }) {
-  const [open, setOpen] = useState(false)
+function AddTargetDialog({
+  open,
+  onOpenChange,
+  mailConfigured,
+  members,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  mailConfigured: boolean
+  members: Member[] | undefined
+}) {
   const [secret, setSecret] = useState<string | null>(null)
   const createTarget = useCreateNotificationTarget()
   const form = useForm<CreateInput>({
@@ -245,7 +253,7 @@ function AddTargetDialog({ mailConfigured, members }: { mailConfigured: boolean;
   }
 
   function handleOpenChange(next: boolean) {
-    setOpen(next)
+    onOpenChange(next)
     if (!next) {
       form.reset()
       setSecret(null)
@@ -254,12 +262,6 @@ function AddTargetDialog({ mailConfigured, members }: { mailConfigured: boolean;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        <Button size="sm">
-          <Plus />
-          Add target
-        </Button>
-      </DialogTrigger>
       <DialogContent>
         {secret ? (
           <CreatedSecretView secret={secret} />
@@ -613,6 +615,7 @@ function TargetList({
   const [query, setQuery] = useState("")
   const [kind, setKind] = useState(ALL)
   const [event, setEvent] = useState(ALL)
+  const [adding, setAdding] = useState(false)
   const hasTargets = targets.length > 0
   const filtering = kind !== ALL || event !== ALL
 
@@ -658,14 +661,19 @@ function TargetList({
     { label: "Event", value: selectedLabel(event, EVENT_OPTIONS), onRemove: () => filterBy(setEvent)(ALL) },
   ].filter((filter): filter is ActiveFilter => filter.value !== null)
 
+  const addButton = canManage && (
+    <Button size={hasTargets ? "sm" : "default"} onClick={() => setAdding(true)}>
+      <Plus />
+      Add target
+    </Button>
+  )
+
   return (
     <>
-      {/* The Add dialog keeps its slot whether or not there are targets, so
-          adding the first one does not remount it and lose the shown secret. */}
-      <FilterToolbar>
-        {hasTargets && <ActiveFilterChips filters={activeFilters} />}
-        {canManage && <AddTargetDialog mailConfigured={mailConfigured} members={members} />}
-        {hasTargets && (
+      {hasTargets && (
+        <FilterToolbar>
+          <ActiveFilterChips filters={activeFilters} />
+          {addButton}
           <FilterPopover active={filtering} onClear={clearFilters}>
             <FilterSelect
               id="notification-type-filter"
@@ -684,11 +692,9 @@ function TargetList({
               options={EVENT_OPTIONS}
             />
           </FilterPopover>
-        )}
-        {hasTargets && (
           <SearchInput label="Search notification targets" value={query} onChange={filterBy(setQuery)} />
-        )}
-      </FilterToolbar>
+        </FilterToolbar>
+      )}
       {targets.some((target) => target.undecryptable) && (
         <Alert variant="destructive">
           <AlertTriangle />
@@ -697,7 +703,7 @@ function TargetList({
         </Alert>
       )}
       {!hasTargets ? (
-        <Empty className="border border-dashed">
+        <Empty className="flex-1 border border-dashed">
           <EmptyHeader>
             <EmptyMedia variant="icon">
               <BellRing />
@@ -709,6 +715,7 @@ function TargetList({
                 : "A workspace admin can add a webhook, Slack channel or email for review notifications."}
             </EmptyDescription>
           </EmptyHeader>
+          {addButton && <EmptyContent>{addButton}</EmptyContent>}
         </Empty>
       ) : (
         <Card>
@@ -722,6 +729,11 @@ function TargetList({
             <TargetTable targets={filtered} members={members} memberNames={memberNames} canManage={canManage} />
           </CardContent>
         </Card>
+      )}
+      {/* One dialog outside the empty-state/table switch, so adding the first
+          target does not remount it and lose the shown secret. */}
+      {canManage && (
+        <AddTargetDialog open={adding} onOpenChange={setAdding} mailConfigured={mailConfigured} members={members} />
       )}
     </>
   )
@@ -747,7 +759,7 @@ export function NotificationTargets() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-1 flex-col gap-4">
       <TargetList
         targets={data.targets}
         mailConfigured={data.mailConfigured}
