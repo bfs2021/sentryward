@@ -78,6 +78,10 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   instead of loading every pull/merge request key matching the filters, so
   page loads and polls no longer grow with the whole review history. Totals
   are unchanged for every filter. Closes #89.
+- Copying and downloading a review's markdown share one helper on the
+  client, so the review page and the Reviews table row menu fetch it, report
+  failures and track pending state the same way. The row menu's copy now
+  goes through the same clipboard path as the review page. Closes #95.
 
 ### Fixed
 
