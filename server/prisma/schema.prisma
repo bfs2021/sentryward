@@ -221,6 +221,19 @@ enum FindingState {
   @@map("finding_state")
 }
 
+// How a finding stands against the change's latest run: first reported by it,
+// reported earlier and still there, or gone. A gone finding is either fixed or
+// invalidated (its code was renamed, moved or removed, so it no longer applies
+// but was not fixed); both have state resolved.
+enum FindingLifecycle {
+  new
+  still_open
+  fixed
+  invalidated
+
+  @@map("finding_lifecycle")
+}
+
 // Declared most severe first: Postgres orders an enum by declaration, so the
 // findings list can sort by rank.
 enum FindingSeverity {
@@ -403,6 +416,7 @@ model Finding {
   number       Int
   fingerprint  String
   state        FindingState    @default(open)
+  lifecycle    FindingLifecycle @default(new)
   // Snapshot from the latest run that reported it, so lists never load results.
   title        String
   file         String
@@ -435,6 +449,7 @@ model Finding {
 
   @@unique([repositoryId, number, fingerprint])
   @@index([repositoryId, state])
+  @@index([repositoryId, lifecycle])
   @@map("findings")
 }
 

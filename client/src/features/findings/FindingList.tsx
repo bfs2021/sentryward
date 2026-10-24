@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useFindings, type FindingQuery } from "./api"
 import { FindingsTable } from "./FindingsTable"
-import { CATEGORY_OPTIONS, KIND_OPTIONS, SEVERITY_OPTIONS, STATE_OPTIONS } from "./options"
+import { CATEGORY_OPTIONS, KIND_OPTIONS, LIFECYCLE_OPTIONS, SEVERITY_OPTIONS, STATE_OPTIONS } from "./options"
 import type { FindingRow } from "./types"
 import type { FindingFilters } from "./useFindingFilters"
 
@@ -48,14 +48,25 @@ export function FindingList({
         <ActiveFilterChips filters={filters.activeFilters} />
         <FilterPopover active={filters.filtering} onClear={filters.clearFilters}>
           {showState && (
-            <FilterSelect
-              id={`${id}-state`}
-              label="State"
-              allLabel="All states"
-              value={values.state}
-              onValueChange={filterBy(setters.setState)}
-              options={STATE_OPTIONS}
-            />
+            <>
+              <FilterSelect
+                id={`${id}-state`}
+                label="State"
+                allLabel="All states"
+                value={values.state}
+                onValueChange={filterBy(setters.setState)}
+                options={STATE_OPTIONS}
+              />
+              {/* Against the change's latest review: tells a fix from a refactor. */}
+              <FilterSelect
+                id={`${id}-lifecycle`}
+                label="Last review"
+                allLabel="Any outcome"
+                value={values.lifecycle}
+                onValueChange={filterBy(setters.setLifecycle)}
+                options={LIFECYCLE_OPTIONS}
+              />
+            </>
           )}
           <FilterSelect
             id={`${id}-severity`}

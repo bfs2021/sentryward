@@ -5,7 +5,7 @@ import { usePagination } from "@/hooks/use-pagination"
 import { useSort } from "@/hooks/use-sort"
 import { ALL, selectedLabel } from "@/lib/filters"
 import type { FindingQuery } from "./api"
-import { CATEGORY_OPTIONS, KIND_OPTIONS, SEVERITY_OPTIONS, STATE_OPTIONS } from "./options"
+import { CATEGORY_OPTIONS, KIND_OPTIONS, LIFECYCLE_OPTIONS, SEVERITY_OPTIONS, STATE_OPTIONS } from "./options"
 import type { FindingSortKey } from "./types"
 
 const only = <T extends string>(value: string) => (value === ALL ? undefined : (value as T))
@@ -17,6 +17,7 @@ type RepoOption = { value: string; label: string }
 export function useFindingFilters(repoOptions: RepoOption[], paginationPrefix?: string) {
   const pagination = usePagination(paginationPrefix)
   const [state, setState] = useState(ALL)
+  const [lifecycle, setLifecycle] = useState(ALL)
   const [severity, setSeverity] = useState(ALL)
   const [category, setCategory] = useState(ALL)
   const [kind, setKind] = useState(ALL)
@@ -27,6 +28,7 @@ export function useFindingFilters(repoOptions: RepoOption[], paginationPrefix?: 
 
   const params: FindingQuery = {
     state: only<NonNullable<FindingQuery["state"]>>(state),
+    lifecycle: only<NonNullable<FindingQuery["lifecycle"]>>(lifecycle),
     severity: only<NonNullable<FindingQuery["severity"]>>(severity),
     category: only<NonNullable<FindingQuery["category"]>>(category),
     kind: only<NonNullable<FindingQuery["kind"]>>(kind),
@@ -39,7 +41,7 @@ export function useFindingFilters(repoOptions: RepoOption[], paginationPrefix?: 
     limit: pagination.size,
   }
 
-  const filtering = state !== ALL || severity !== ALL || category !== ALL || kind !== ALL || repo !== ALL
+  const filtering = state !== ALL || lifecycle !== ALL || severity !== ALL || category !== ALL || kind !== ALL || repo !== ALL
   const narrowed = filtering || q !== ""
 
   // A new filter, search or sort starts over at the first page.
@@ -52,6 +54,7 @@ export function useFindingFilters(repoOptions: RepoOption[], paginationPrefix?: 
 
   function clearFilters() {
     setState(ALL)
+    setLifecycle(ALL)
     setSeverity(ALL)
     setCategory(ALL)
     setKind(ALL)
@@ -61,6 +64,7 @@ export function useFindingFilters(repoOptions: RepoOption[], paginationPrefix?: 
 
   const activeFilters = [
     { label: "State", value: selectedLabel(state, STATE_OPTIONS), onRemove: () => filterBy(setState)(ALL) },
+    { label: "Last review", value: selectedLabel(lifecycle, LIFECYCLE_OPTIONS), onRemove: () => filterBy(setLifecycle)(ALL) },
     { label: "Severity", value: selectedLabel(severity, SEVERITY_OPTIONS), onRemove: () => filterBy(setSeverity)(ALL) },
     { label: "Category", value: selectedLabel(category, CATEGORY_OPTIONS), onRemove: () => filterBy(setCategory)(ALL) },
     { label: "Type", value: selectedLabel(kind, KIND_OPTIONS), onRemove: () => filterBy(setKind)(ALL) },
@@ -68,8 +72,8 @@ export function useFindingFilters(repoOptions: RepoOption[], paginationPrefix?: 
   ].filter((filter): filter is ActiveFilter => filter.value !== null)
 
   return {
-    values: { state, severity, category, kind, repo, query },
-    setters: { setState, setSeverity, setCategory, setKind, setRepo, setQuery },
+    values: { state, lifecycle, severity, category, kind, repo, query },
+    setters: { setState, setLifecycle, setSeverity, setCategory, setKind, setRepo, setQuery },
     params,
     sort,
     onSort,

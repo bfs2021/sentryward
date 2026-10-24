@@ -12,7 +12,7 @@ import { changeLabel, findingLines } from "@/features/reviews/links"
 import { timeAgo } from "@/lib/time"
 import { useFinding } from "./api"
 import { IgnoreFindingDialog } from "./IgnoreFindingDialog"
-import { CATEGORY_LABEL, IGNORE_REASON_LABEL, KIND_LABEL } from "./options"
+import { CATEGORY_LABEL, IGNORE_REASON_LABEL, KIND_LABEL, LIFECYCLE_LABEL } from "./options"
 import { ReopenFindingDialog } from "./ReopenFindingDialog"
 import { StateBadge } from "./StateBadge"
 import type { FindingRow } from "./types"
@@ -106,6 +106,7 @@ export function FindingDetailsSheet({
                     {finding.file}:{data?.detail ? findingLines(data.detail) : finding.startLine}
                   </code>
                 </DetailRow>
+                <DetailRow label="Last review">{LIFECYCLE_LABEL[finding.lifecycle]}</DetailRow>
                 <DetailRow label="First seen">
                   <When iso={finding.firstSeenAt} />
                 </DetailRow>

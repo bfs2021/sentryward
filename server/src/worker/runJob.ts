@@ -37,7 +37,7 @@ import { CLOSE_CHECK_INTERVAL_MS, watchForClose } from "./closeWatch.ts";
 import { resolveLlm, type LlmCredentials } from "./llmEndpoint.ts";
 import { incrementFor } from "./incremental.ts";
 import { ACCESS_LOST_REASON, claimState, CLOSED_REASON, complete, DISABLED_REASON, recordTitle } from "./queue.ts";
-import { findingTransitions, syncFindings, threadOperations, type ThreadOutcome } from "./syncFindings.ts";
+import { findingLifecycle, findingTransitions, KNOWN_FINDING, syncFindings, threadOperations, type ThreadOutcome } from "./syncFindings.ts";
 
 // How many recent dismissals to feed into the review prompt; bounded so a noisy
 // repository cannot grow the prompt without limit.
@@ -412,19 +412,22 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
     return;
   }
 
+  // What became of the earlier findings goes into the result itself, so the
+  // summary comment and any later re-render of it show the same thing.
+  const findings = await prisma.finding.findMany({
+    where: { repositoryId: repo.id, number: job.number },
+    select: KNOWN_FINDING,
+  });
+  const lifecycle = findingLifecycle(findings, result);
+  if (lifecycle) result = { ...result, lifecycle };
+
   let publication = null;
   let threadOutcome: ThreadOutcome | null = null;
   if (publishes(config)) {
-    const [already, findings] = await Promise.all([
-      prisma.postedFinding.findMany({
-        where: { repositoryId: repo.id, number: job.number },
-        select: { fingerprint: true },
-      }),
-      prisma.finding.findMany({
-        where: { repositoryId: repo.id, number: job.number },
-        select: { fingerprint: true, state: true, file: true, threadPending: true },
-      }),
-    ]);
+    const already = await prisma.postedFinding.findMany({
+      where: { repositoryId: repo.id, number: job.number },
+      select: { fingerprint: true },
+    });
     // The same transitions syncFindings writes after the job is stored, plus
     // thread updates an earlier run could not make.
     const threads = threadOperations(findings, findingTransitions(findings, result));

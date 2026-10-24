@@ -1,5 +1,15 @@
 import { BUCKET_TITLE, SUMMARY_BUCKETS } from "../core/buckets.ts";
-import type { Bucket, Finding, IssueAssessment, IssueRef, Omission, ReviewResult, Walkthrough } from "../core/models.ts";
+import type {
+  Bucket,
+  Finding,
+  InvalidatedReason,
+  IssueAssessment,
+  IssueRef,
+  Lifecycle,
+  Omission,
+  ReviewResult,
+  Walkthrough,
+} from "../core/models.ts";
 import { SEVERITIES, type Severity } from "../core/severity.ts";
 import { DESCRIPTION_SUMMARY_END, DESCRIPTION_SUMMARY_START, SUMMARY_MARKER } from "../core/markers.ts";
 import { agentPromptBlock, allFindingsPrompt } from "./agentPrompt.ts";
@@ -304,6 +314,48 @@ function incrementalNote(result: ReviewResult): string[] {
   return ["", `> 🔁 Incremental review of ${range}: ${scope}${carried}.`];
 }
 
+const INVALIDATED_TEXT: Record<InvalidatedReason, string> = {
+  renamed: "file renamed",
+  deleted: "file deleted",
+  left_change: "file no longer in the change",
+  moved: "moved to another file",
+};
+
+function goneLine(gone: Lifecycle["gone"][number]): string {
+  const why = gone.reason ? ` (${INVALIDATED_TEXT[gone.reason]})` : "";
+  return `- ${SEVERITY_ICON[gone.severity]} **${gone.severity}** \`${gone.file}:${gone.startLine}\`: ${inline(gone.title)}${why}`;
+}
+
+// What this run changed against the earlier reviews of the change. New and
+// still open findings are also in the sections below; the lists here say
+// which is which, and name the gone ones, which are nowhere else. Invalidated
+// findings are kept apart from fixed ones: their code was moved or removed,
+// so they no longer apply, but nothing says they were fixed.
+function lifecycleSection(result: ReviewResult): string[] {
+  const { lifecycle } = result;
+  if (!lifecycle) return [];
+  const byPrint = new Map(result.findings.map((f) => [f.fingerprint, f]));
+  const listed = (prints: string[]) => prints.flatMap((print) => {
+    const finding = byPrint.get(print);
+    return finding ? [indexLine(finding)] : [];
+  });
+  const fixed = lifecycle.gone.filter((gone) => gone.outcome === "fixed");
+  const invalidated = lifecycle.gone.filter((gone) => gone.outcome === "invalidated");
+  const groups: [string, string, string[]][] = [
+    ["🆕", "New", listed(lifecycle.new)],
+    ["⏳", "Still open", listed(lifecycle.stillOpen)],
+    ["✅", "Fixed", fixed.map(goneLine)],
+    ["♻️", "Invalidated", invalidated.map(goneLine)],
+  ];
+  const counts = groups.filter(([, , items]) => items.length).map(([, label, items]) => `${items.length} ${label.toLowerCase()}`);
+  const lines = ["", `> 🔄 Since the last review: ${counts.length ? counts.join(", ") : "no findings before or now"}.`];
+  for (const [icon, label, items] of groups) {
+    if (!items.length) continue;
+    lines.push("", "<details>", `<summary>${icon} ${label} (${items.length})</summary>`, "", ...items, "", "</details>");
+  }
+  return lines;
+}
+
 function footer(result: ReviewResult): string {
   const models = [...new Set(result.usage.map((u) => u.model))].join(", ") || "no model call";
   const passes = plural(result.coverage.passes, "review pass");
@@ -334,6 +386,7 @@ export function toMarkdown(
   lines.push("", ...verdictSection(result));
   if (options.counts !== false) lines.push("", countsLine(result));
   lines.push(...incrementalNote(result));
+  lines.push(...lifecycleSection(result));
   lines.push(...bucketSections(result));
   if (options.agentPrompt !== false && result.findings.length) {
     lines.push("", ...agentPromptBlock(`Prompt for AI agents (${plural(result.findings.length, "finding")})`, allFindingsPrompt(result.findings)));

@@ -1,5 +1,7 @@
 import { prisma } from "../lib/prisma.ts";
-import type { ReviewResult } from "../review/core/models.ts";
+import { normaliseTitle } from "../review/core/fingerprint.ts";
+import type { Finding, InvalidatedReason, Lifecycle, ReviewResult } from "../review/core/models.ts";
+import type { Severity } from "../review/core/severity.ts";
 
 export interface SyncFindingsInput {
   repositoryId: string;
@@ -31,22 +33,94 @@ export interface FindingTransitions {
   reopened: string[];
 }
 
+// An earlier finding as its row last recorded it, enough to tell what became
+// of it and to list it once it is gone.
+export interface KnownFinding extends FindingRow {
+  title: string;
+  startLine: number;
+  severity: Severity;
+  category: string;
+  kind: string;
+}
+
 // Which findings one run moves between open and resolved. A finding is resolved
-// only when this run actually read its file (or the file left the change); a
-// partial run that skipped the file for budget says nothing about it. Ignoring
+// only when this run actually read its file (or the file left the change, or
+// the change deletes it); a partial run that skipped the file for budget says nothing about it. Ignoring
 // is the user's call, so no run undoes it. The publisher resolves forge threads
 // from the same answer before the rows are written, so the two cannot disagree.
 export function findingTransitions(existing: FindingRow[], result: ReviewResult): FindingTransitions {
   if (result.status === "failed") return { resolved: [], reopened: [] };
   const reviewed = new Set(result.coverage.reviewedFiles);
   const changed = new Set(result.files.map((file) => file.path));
+  const deleted = new Set(result.files.filter((file) => file.changeType === "deleted").map((file) => file.path));
   const reported = new Set(result.findings.map((finding) => finding.fingerprint));
   return {
     resolved: existing
       .filter((row) => row.state === "open" && !reported.has(row.fingerprint))
-      .filter((row) => reviewed.has(row.file) || !changed.has(row.file))
+      .filter((row) => reviewed.has(row.file) || !changed.has(row.file) || deleted.has(row.file))
       .map((row) => row.fingerprint),
     reopened: existing.filter((row) => row.state === "resolved" && reported.has(row.fingerprint)).map((row) => row.fingerprint),
+  };
+}
+
+// The same problem, wherever it is: the fingerprint without the file.
+function problem(finding: { category: string; kind: string; title: string }): string {
+  return [finding.category, finding.kind, normaliseTitle(finding.title)].join("|");
+}
+
+// Sorts one run's findings against the ones earlier runs left on the change:
+// new, still open, or gone, and a gone one into fixed or invalidated. Only the
+// file is known to have changed, not the lines, so a finding counts as
+// invalidated when its file was renamed, deleted or dropped from the change,
+// or when the same problem is now reported in another file (the fingerprint
+// includes the file, so a move otherwise reads as a fix plus a new finding).
+// That moved finding is still open, not new. Undefined for a change's first
+// review and for a failed run, which says nothing about earlier findings.
+export function findingLifecycle(existing: KnownFinding[], result: ReviewResult): Lifecycle | undefined {
+  if (result.status === "failed" || !existing.length) return undefined;
+  const known = new Set(existing.map((row) => row.fingerprint));
+  const renamed = new Set(result.files.flatMap((file) => (file.previousPath && file.previousPath !== file.path ? [file.previousPath] : [])));
+  const deleted = new Set(result.files.filter((file) => file.changeType === "deleted").map((file) => file.path));
+  const changed = new Set(result.files.map((file) => file.path));
+  // A run can report the same fingerprint twice (overlapping chunks).
+  const reported = [...new Map(result.findings.map((finding) => [finding.fingerprint, finding])).values()];
+  const unmatched = reported.filter((finding) => !known.has(finding.fingerprint));
+  const moved = new Set<string>();
+
+  const takeMatch = (row: KnownFinding): Finding | undefined => {
+    const index = unmatched.findIndex((finding) => finding.file !== row.file && problem(finding) === problem(row));
+    return index === -1 ? undefined : unmatched.splice(index, 1)[0];
+  };
+
+  const { resolved } = findingTransitions(existing, result);
+  const resolving = new Set(resolved);
+  const gone = existing
+    .filter((row) => resolving.has(row.fingerprint))
+    .map((row): Lifecycle["gone"][number] => {
+      let reason: InvalidatedReason | undefined;
+      if (renamed.has(row.file)) reason = "renamed";
+      else if (deleted.has(row.file)) reason = "deleted";
+      else if (!changed.has(row.file)) reason = "left_change";
+      const match = takeMatch(row);
+      if (match) {
+        moved.add(match.fingerprint);
+        reason ??= "moved";
+      }
+      return {
+        fingerprint: row.fingerprint,
+        title: row.title,
+        file: row.file,
+        startLine: row.startLine,
+        severity: row.severity,
+        outcome: reason ? "invalidated" : "fixed",
+        ...(reason ? { reason } : {}),
+      };
+    });
+
+  return {
+    new: reported.filter((finding) => !known.has(finding.fingerprint) && !moved.has(finding.fingerprint)).map((f) => f.fingerprint),
+    stillOpen: reported.filter((finding) => known.has(finding.fingerprint) || moved.has(finding.fingerprint)).map((f) => f.fingerprint),
+    gone,
   };
 }
 
@@ -83,9 +157,15 @@ export async function syncFindings({ repositoryId, number, jobId, author, result
   await prisma.$transaction(async (tx) => {
     const existing = await tx.finding.findMany({
       where: { repositoryId, number },
-      select: { id: true, fingerprint: true, state: true, file: true },
+      select: { id: true, ...KNOWN_FINDING },
     });
     const known = new Map(existing.map((row) => [row.fingerprint, row]));
+    const lifecycle = findingLifecycle(existing, result);
+    const stillOpen = new Set(lifecycle?.stillOpen);
+    // Open findings this run says nothing about (a file skipped for budget)
+    // were reported earlier and are not known to be gone; the rows below then
+    // set what this run did report or resolve.
+    await tx.finding.updateMany({ where: { repositoryId, number, state: "open", lifecycle: "new" }, data: { lifecycle: "still_open" } });
 
     for (const finding of reported.values()) {
       const snapshot = {
@@ -103,29 +183,57 @@ export async function syncFindings({ repositoryId, number, jobId, author, result
       const source = { model: finding.model ?? null, lastJobId: jobId };
       const row = known.get(finding.fingerprint);
       if (!row) {
-        await tx.finding.create({ data: { repositoryId, number, fingerprint: finding.fingerprint, ...snapshot, ...source } });
+        // A finding that moved here from another file is the same problem, still open.
+        await tx.finding.create({
+          data: {
+            repositoryId,
+            number,
+            fingerprint: finding.fingerprint,
+            ...snapshot,
+            ...source,
+            lifecycle: stillOpen.has(finding.fingerprint) ? "still_open" : "new",
+          },
+        });
       } else if (row.state === "resolved") {
-        await tx.finding.update({ where: { id: row.id }, data: { ...snapshot, ...source, state: "open", resolvedAt: null } });
+        await tx.finding.update({
+          where: { id: row.id },
+          data: { ...snapshot, ...source, state: "open", resolvedAt: null, lifecycle: "still_open" },
+        });
       } else if (row.state === "ignored") {
         // The dismissal belongs to the run (and model) the user dismissed: a
         // later model repeating the finding must not take the blame for it,
         // and the details sheet keeps showing what was dismissed.
-        await tx.finding.update({ where: { id: row.id }, data: snapshot });
+        await tx.finding.update({ where: { id: row.id }, data: { ...snapshot, lifecycle: "still_open" } });
       } else {
-        await tx.finding.update({ where: { id: row.id }, data: { ...snapshot, ...source } });
+        await tx.finding.update({ where: { id: row.id }, data: { ...snapshot, ...source, lifecycle: "still_open" } });
       }
     }
 
-    const { resolved } = findingTransitions(existing, result);
-    if (resolved.length) {
+    // The lifecycle's gone list is exactly findingTransitions' resolved list.
+    for (const outcome of ["fixed", "invalidated"] as const) {
+      const prints = (lifecycle?.gone ?? []).filter((gone) => gone.outcome === outcome).map((gone) => gone.fingerprint);
+      if (!prints.length) continue;
       await tx.finding.updateMany({
-        where: { repositoryId, number, fingerprint: { in: resolved } },
-        data: { state: "resolved", resolvedAt: now },
+        where: { repositoryId, number, fingerprint: { in: prints } },
+        data: { state: "resolved", resolvedAt: now, lifecycle: outcome },
       });
     }
     if (threads) await recordThreads(tx, repositoryId, number, threads);
   });
 }
+
+// The columns findingLifecycle reads, for the worker's query and this one.
+export const KNOWN_FINDING = {
+  fingerprint: true,
+  state: true,
+  file: true,
+  threadPending: true,
+  title: true,
+  startLine: true,
+  severity: true,
+  category: true,
+  kind: true,
+} as const;
 
 type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 

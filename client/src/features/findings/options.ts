@@ -1,7 +1,14 @@
 import { SEVERITIES, type Severity } from "@/features/reviews/types"
-import type { FindingCategory, FindingKind, FindingState, IgnoreReason } from "./types"
+import type { FindingCategory, FindingKind, FindingLifecycle, FindingState, IgnoreReason } from "./types"
 
 export const STATE_LABEL: Record<FindingState, string> = { open: "Open", resolved: "Resolved", ignored: "Ignored" }
+
+export const LIFECYCLE_LABEL: Record<FindingLifecycle, string> = {
+  new: "New",
+  still_open: "Still open",
+  fixed: "Fixed",
+  invalidated: "Invalidated",
+}
 
 export const CATEGORY_LABEL: Record<FindingCategory, string> = {
   security: "Security",
@@ -27,6 +34,7 @@ const options = <T extends string>(labels: Record<T, string>) =>
   (Object.keys(labels) as T[]).map((value) => ({ value, label: labels[value] }))
 
 export const STATE_OPTIONS = options(STATE_LABEL)
+export const LIFECYCLE_OPTIONS = options(LIFECYCLE_LABEL)
 export const CATEGORY_OPTIONS = options(CATEGORY_LABEL)
 export const KIND_OPTIONS = options(KIND_LABEL)
 export const SEVERITY_OPTIONS = SEVERITIES.map((value: Severity) => ({

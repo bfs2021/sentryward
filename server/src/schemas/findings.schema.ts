@@ -3,11 +3,14 @@ import { CATEGORIES, KINDS, SEVERITIES } from "../review/core/severity.ts";
 
 export const findingStateSchema = z.enum(["open", "resolved", "ignored"]);
 
+export const findingLifecycleSchema = z.enum(["new", "still_open", "fixed", "invalidated"]);
+
 export const ignoreReasonSchema = z.enum(["false_positive", "intentional", "fix_later", "not_specified"]);
 
 export const listFindingsQuerySchema = z.object({
   repoId: z.uuid().optional(),
   state: findingStateSchema.optional(),
+  lifecycle: findingLifecycleSchema.optional(),
   ignoreReason: ignoreReasonSchema.optional(),
   severity: z.enum(SEVERITIES).optional(),
   category: z.enum(CATEGORIES).optional(),
