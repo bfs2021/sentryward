@@ -178,6 +178,23 @@ describe("Reviews page rows, filters and stats", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
   })
 
+  it("copies the markdown from the row menu", async () => {
+    const markdown = "# Sentryward review\n"
+    mockApi({
+      "GET /api/reviews?view=changes&page=1&limit=10": firstPage([listItem]),
+      [`GET /api/reviews/${listItem.id}/markdown`]: () => new Response(markdown, { status: 200 }),
+    })
+    const user = userEvent.setup()
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue()
+    renderWithProviders(<App />, { route: "/reviews" })
+
+    await user.click(await screen.findByRole("button", { name: "Actions for Add b and c" }))
+    await user.click(await screen.findByRole("menuitem", { name: "Copy markdown" }))
+
+    expect(await screen.findByText("Markdown copied")).toBeInTheDocument()
+    expect(writeText).toHaveBeenCalledWith(markdown)
+  })
+
   it("does not re-run when the confirmation is cancelled", async () => {
     const rerun = vi.fn(() => jsonResponse(202, { review: { ...listItem, id: "new", status: "queued" } }))
     mockApi({

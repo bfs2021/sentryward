@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { allFindingsPrompt } from "@/features/reviews/agentPrompt"
-import { fetchReviewMarkdown, useCancelReview, useRerunReview, useReview } from "@/features/reviews/api"
+import { useCancelReview, useRerunReview, useReview } from "@/features/reviews/api"
 import { StatusBadge, VerdictBadge } from "@/features/reviews/badges"
 import { CancelReviewDialog } from "@/features/reviews/CancelReviewDialog"
 import { FindingsSection } from "@/features/reviews/detail/FindingsSection"
@@ -18,8 +18,8 @@ import { WalkthroughCard } from "@/features/reviews/detail/WalkthroughCard"
 import { PROVIDERS } from "@/features/forge/providers"
 import { changeLabel } from "@/features/reviews/links"
 import { copyToClipboard } from "@/lib/clipboard"
-import { downloadText } from "@/lib/download"
 import { isActive, type ReviewResult } from "@/features/reviews/types"
+import { useReviewMarkdown } from "@/features/reviews/useReviewMarkdown"
 
 function BackToReviews() {
   return (
@@ -64,8 +64,7 @@ export function ReviewDetailPage() {
   const rerun = useRerunReview()
   const cancel = useCancelReview()
   const [cancelling, setCancelling] = useState(false)
-  const [copying, setCopying] = useState(false)
-  const [downloading, setDownloading] = useState(false)
+  const markdown = useReviewMarkdown(id)
 
   if (isPending) {
     return (
@@ -101,28 +100,6 @@ export function ReviewDetailPage() {
       navigate(`/reviews/${next.id}`)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not start a new review")
-    }
-  }
-
-  async function copyMarkdown() {
-    setCopying(true)
-    try {
-      await copyToClipboard(fetchReviewMarkdown(review.id), "Markdown")
-    } finally {
-      setCopying(false)
-    }
-  }
-
-  async function downloadMarkdown() {
-    setDownloading(true)
-    try {
-      // fetchReviewMarkdown throws on a failed response, so no empty file is saved.
-      const markdown = await fetchReviewMarkdown(review.id)
-      downloadText(markdown, `sentryward-review-${review.id}.md`, "text/markdown;charset=utf-8")
-    } catch {
-      toast.error("Could not download the markdown")
-    } finally {
-      setDownloading(false)
     }
   }
 
@@ -164,12 +141,12 @@ export function ReviewDetailPage() {
               <Bot />
               Copy prompt for all findings
             </Button>
-            <Button variant="outline" onClick={copyMarkdown} disabled={!result || copying}>
-              {copying ? <Loader2 className="animate-spin" /> : <Copy />}
+            <Button variant="outline" onClick={markdown.copy} disabled={!result || markdown.copying}>
+              {markdown.copying ? <Loader2 className="animate-spin" /> : <Copy />}
               Copy markdown
             </Button>
-            <Button variant="outline" onClick={downloadMarkdown} disabled={!result || downloading}>
-              {downloading ? <Loader2 className="animate-spin" /> : <Download />}
+            <Button variant="outline" onClick={markdown.download} disabled={!result || markdown.downloading}>
+              {markdown.downloading ? <Loader2 className="animate-spin" /> : <Download />}
               Download markdown
             </Button>
             <Button variant="outline" onClick={runAgain} disabled={rerun.isPending || isActive(review.status)}>
