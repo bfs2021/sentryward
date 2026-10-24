@@ -4,6 +4,10 @@ import type { Finding, Provider, ReviewResult, Severity } from "@/features/revie
 // by GET /api/findings.
 
 export type FindingState = "open" | "resolved" | "ignored"
+// How the finding stands against its change's latest review. Fixed and
+// invalidated findings are both resolved; invalidated ones went away because
+// their code was renamed, moved or removed, not because they were fixed.
+export type FindingLifecycle = "new" | "still_open" | "reopened" | "fixed" | "invalidated"
 export type IgnoreReason = "false_positive" | "intentional" | "fix_later" | "not_specified"
 export type FindingCategory =
   | "security"
@@ -21,6 +25,7 @@ export interface FindingRow {
   id: string
   number: number
   state: FindingState
+  lifecycle: FindingLifecycle
   title: string
   file: string
   startLine: number

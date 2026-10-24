@@ -19,6 +19,44 @@ Adds b and c.
 
 4 findings (1 critical, 1 major, 2 minor): 2 actionable, 2 in the sections below.
 
+> 🔄 Since the last review: 1 new, 2 still open, 1 reopened, 1 fixed, 1 invalidated.
+
+<details>
+<summary>🆕 New (1)</summary>
+
+- 🔴 **critical** `src/app.ts:11`: SQL built from @​input
+
+</details>
+
+<details>
+<summary>⏳ Still open (2)</summary>
+
+- 🔵 **minor** `src/app.ts:12`: c is never negative
+- 🔵 **minor** `src/app.ts:12`: Name c more clearly
+
+</details>
+
+<details>
+<summary>↩️ Reopened (1)</summary>
+
+- 🟠 **major** `src/app.ts:40`: Caller ignores &lt;result&gt;
+
+</details>
+
+<details>
+<summary>✅ Fixed (1)</summary>
+
+- 🟠 **major** `src/app.ts:8-9`: Off-by-one in &lt;loop&gt;
+
+</details>
+
+<details>
+<summary>♻️ Invalidated (1)</summary>
+
+- ⚪ **info** `src/old.ts:3`: Unused helper (moved to another file)
+
+</details>
+
 <details>
 <summary>🛠️ Actionable comments (2)</summary>
 

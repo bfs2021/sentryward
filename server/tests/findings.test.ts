@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { app } from "../src/app.ts";
 import { prisma } from "../src/lib/prisma.ts";
 import type { ReviewResult } from "../src/review/core/models.ts";
-import { findingTransitions, syncFindings, threadOperations } from "../src/worker/syncFindings.ts";
+import { findingLifecycle, findingTransitions, syncFindings, threadOperations, type KnownFinding } from "../src/worker/syncFindings.ts";
 import { sampleResult } from "./helpers/result.ts";
 import { createUser } from "./helpers/users.ts";
 
@@ -126,7 +126,16 @@ describe("syncFindings", () => {
 });
 
 describe("findingTransitions", () => {
-  const row = (fingerprint: string, state: string, file: string) => ({ fingerprint, state, file });
+  const row = (fingerprint: string, state: string, file: string): KnownFinding => ({
+    fingerprint,
+    state,
+    file,
+    title: `Finding ${fingerprint}`,
+    startLine: 1,
+    severity: "minor",
+    category: "bug",
+    kind: "potential_issue",
+  });
 
   it("resolves open findings no longer reported in a reviewed file and reopens returning ones", () => {
     const [kept, back] = base.findings;
@@ -150,6 +159,233 @@ describe("findingTransitions", () => {
     const skipped = { ...base, coverage: { ...base.coverage, reviewedFiles: base.coverage.reviewedFiles.filter((f) => f !== file) } };
     expect(findingTransitions(existing, skipped).resolved).toEqual([]);
     expect(findingTransitions(existing, { ...base, status: "failed" })).toEqual({ resolved: [], reopened: [] });
+  });
+
+  it("resolves a finding in a skipped file once it moved to a file the change adds", () => {
+    const [target] = base.findings;
+    const existing: KnownFinding[] = [
+      { ...row(target!.fingerprint, "open", target!.file), title: target!.title, category: target!.category, kind: target!.kind },
+    ];
+    const moved = { ...target!, file: "src/extracted.ts", fingerprint: "abababababababab" };
+    const result: ReviewResult = {
+      ...base,
+      status: "partial",
+      findings: [moved],
+      files: [...base.files, { path: "src/extracted.ts", changeType: "added", additions: 10, deletions: 0 }],
+      coverage: { ...base.coverage, reviewedFiles: ["src/extracted.ts"] },
+    };
+    expect(findingTransitions(existing, result).resolved).toEqual([target!.fingerprint]);
+  });
+});
+
+describe("findingLifecycle", () => {
+  const known = (finding: ReviewResult["findings"][number], state = "open"): KnownFinding => ({
+    fingerprint: finding.fingerprint,
+    state,
+    file: finding.file,
+    title: finding.title,
+    startLine: finding.startLine,
+    severity: finding.severity,
+    category: finding.category,
+    kind: finding.kind,
+  });
+  // The same problem, in another file: what a move or rename looks like to the next run.
+  const elsewhere = (finding: ReviewResult["findings"][number], file: string) => ({
+    ...finding,
+    file,
+    fingerprint: `${finding.fingerprint.slice(0, 12)}0000`,
+  });
+
+  it("is undefined on a change's first review and for a failed run", () => {
+    expect(findingLifecycle([], base)).toBeUndefined();
+    expect(findingLifecycle([known(base.findings[0]!)], { ...base, status: "failed" })).toBeUndefined();
+  });
+
+  it("sorts reported findings into new, still open (ignored ones included) and reopened", () => {
+    const [kept, reopened, ignored, fresh] = base.findings;
+    const lifecycle = findingLifecycle([known(kept!), known(reopened!, "resolved"), known(ignored!, "ignored")], base)!;
+    expect(lifecycle.new).toEqual([fresh!.fingerprint]);
+    expect(lifecycle.stillOpen).toEqual([kept!.fingerprint, ignored!.fingerprint]);
+    expect(lifecycle.reopened).toEqual([reopened!.fingerprint]);
+    expect(lifecycle.gone).toEqual([]);
+  });
+
+  it("calls a finding fixed when its reviewed file no longer has it", () => {
+    const [gone, ...rest] = base.findings;
+    const lifecycle = findingLifecycle([known(gone!)], { ...base, findings: rest })!;
+    expect(lifecycle.gone).toEqual([
+      { fingerprint: gone!.fingerprint, title: gone!.title, file: gone!.file, startLine: gone!.startLine, severity: gone!.severity, outcome: "fixed" },
+    ]);
+  });
+
+  it("keeps the end line of a gone finding when its row has one", () => {
+    const [gone, ...rest] = base.findings;
+    const lifecycle = findingLifecycle([{ ...known(gone!), endLine: gone!.startLine + 3 }], { ...base, findings: rest })!;
+    expect(lifecycle.gone).toMatchObject([{ startLine: gone!.startLine, endLine: gone!.startLine + 3 }]);
+  });
+
+  it("calls a finding invalidated, not fixed, when its file left the change or was deleted", () => {
+    const [target] = base.findings;
+    const left = findingLifecycle([{ ...known(target!), fingerprint: "eeeeeeeeeeeeeeee", file: "gone/from/the/change.ts" }], base)!;
+    expect(left.gone).toMatchObject([{ outcome: "invalidated", reason: "left_change" }]);
+
+    const deletedFile = { path: target!.file, changeType: "deleted" as const, additions: 0, deletions: 10 };
+    const deleted = findingLifecycle([known(target!)], {
+      ...base,
+      findings: [],
+      files: [deletedFile],
+      coverage: { ...base.coverage, reviewedFiles: [] },
+    })!;
+    expect(deleted.gone).toMatchObject([{ fingerprint: target!.fingerprint, outcome: "invalidated", reason: "deleted" }]);
+  });
+
+  it("calls a renamed file's finding invalidated, and the same finding at the new path still open", () => {
+    const [target] = base.findings;
+    const moved = elsewhere(target!, "src/main.ts");
+    const lifecycle = findingLifecycle([known(target!)], {
+      ...base,
+      findings: [moved],
+      files: [{ path: "src/main.ts", previousPath: target!.file, changeType: "renamed", additions: 0, deletions: 0 }],
+      coverage: { ...base.coverage, reviewedFiles: ["src/main.ts"] },
+    })!;
+    expect(lifecycle.gone).toMatchObject([{ fingerprint: target!.fingerprint, outcome: "invalidated", reason: "renamed" }]);
+    expect(lifecycle).toMatchObject({ new: [], stillOpen: [moved.fingerprint] });
+  });
+
+  const added = (...paths: string[]) => [
+    ...base.files,
+    ...paths.map((path) => ({ path, changeType: "added" as const, additions: 10, deletions: 0 })),
+  ];
+
+  it("calls a finding moved to a file the change adds invalidated, and it still open there", () => {
+    const [target, other] = base.findings;
+    const moved = elsewhere(target!, "src/other.ts");
+    const lifecycle = findingLifecycle([known(target!), known(other!)], {
+      ...base,
+      findings: [other!, moved],
+      files: added("src/other.ts"),
+    })!;
+    expect(lifecycle.gone).toMatchObject([{ fingerprint: target!.fingerprint, outcome: "invalidated", reason: "moved" }]);
+    expect(lifecycle.stillOpen).toEqual([other!.fingerprint, moved.fingerprint]);
+    expect(lifecycle.new).toEqual([]);
+  });
+
+  it("calls a finding fixed when the same problem shows up in a file that already existed", () => {
+    const [target, other] = base.findings;
+    const coincidence = elsewhere(target!, "src/existing.ts");
+    const lifecycle = findingLifecycle([known(target!), known(other!)], {
+      ...base,
+      findings: [other!, coincidence],
+      files: [...base.files, { path: "src/existing.ts", changeType: "modified", additions: 1, deletions: 0 }],
+    })!;
+    expect(lifecycle.gone).toMatchObject([{ fingerprint: target!.fingerprint, outcome: "fixed" }]);
+    expect(lifecycle.new).toEqual([coincidence.fingerprint]);
+  });
+
+  it("matches no move when more than one new file has the same problem", () => {
+    const [target, other] = base.findings;
+    const first = elsewhere(target!, "src/one.ts");
+    const second = { ...elsewhere(target!, "src/two.ts"), fingerprint: "9999999999999999" };
+    const lifecycle = findingLifecycle([known(target!), known(other!)], {
+      ...base,
+      findings: [other!, first, second],
+      files: added("src/one.ts", "src/two.ts"),
+    })!;
+    expect(lifecycle.gone).toMatchObject([{ fingerprint: target!.fingerprint, outcome: "fixed" }]);
+    expect(lifecycle.new).toEqual([first.fingerprint, second.fingerprint]);
+  });
+
+  it("calls a finding moved out of a file a partial run skipped invalidated", () => {
+    const [target] = base.findings;
+    const moved = elsewhere(target!, "src/other.ts");
+    const lifecycle = findingLifecycle([known(target!)], {
+      ...base,
+      status: "partial",
+      findings: [moved],
+      files: added("src/other.ts"),
+      coverage: { ...base.coverage, reviewedFiles: ["src/other.ts"] },
+    })!;
+    expect(lifecycle.gone).toMatchObject([{ fingerprint: target!.fingerprint, outcome: "invalidated", reason: "moved" }]);
+    expect(lifecycle).toMatchObject({ new: [], stillOpen: [moved.fingerprint] });
+  });
+
+  it("says nothing about a finding in a file a partial run skipped", () => {
+    const [target, ...rest] = base.findings;
+    const lifecycle = findingLifecycle([known(target!)], {
+      ...base,
+      status: "partial",
+      findings: rest.filter((f) => f.file !== target!.file),
+      coverage: { ...base.coverage, reviewedFiles: [] },
+    })!;
+    expect(lifecycle.gone).toEqual([]);
+  });
+});
+
+describe("syncFindings lifecycle", () => {
+  it("marks first-run findings new, then still open, fixed or invalidated on later runs", async () => {
+    await sync(base);
+    expect((await rows()).every((row) => row.lifecycle === "new")).toBe(true);
+
+    const [fixed, moved, ...rest] = base.findings;
+    const movedHere = { ...moved!, file: "src/other.ts", fingerprint: "abababababababab" };
+    const files = [...base.files, { path: "src/other.ts", changeType: "added" as const, additions: 10, deletions: 0 }];
+    await sync({ ...base, findings: [...rest, movedHere], files });
+    expect(await byTitle(rest[0]!.title)).toMatchObject({ state: "open", lifecycle: "still_open" });
+    expect((await rows()).find((row) => row.fingerprint === fixed!.fingerprint)).toMatchObject({ state: "resolved", lifecycle: "fixed" });
+    expect((await rows()).find((row) => row.fingerprint === moved!.fingerprint)).toMatchObject({ state: "resolved", lifecycle: "invalidated" });
+    expect((await rows()).find((row) => row.fingerprint === movedHere.fingerprint)).toMatchObject({ state: "open", lifecycle: "still_open" });
+  });
+
+  it("keeps a finding a partial run did not read still open", async () => {
+    await sync(base);
+    const file = base.findings[0]!.file;
+    await sync({
+      ...base,
+      status: "partial",
+      findings: [],
+      coverage: { ...base.coverage, reviewedFiles: base.coverage.reviewedFiles.filter((f) => f !== file) },
+    });
+    expect((await rows()).every((row) => row.state === "open" && row.lifecycle === "still_open")).toBe(true);
+  });
+
+  it("marks a fixed finding that comes back reopened, then still open", async () => {
+    await sync(base);
+    const [back, ...rest] = base.findings;
+    await sync({ ...base, findings: rest });
+    await sync(base);
+    expect(await byTitle(back!.title)).toMatchObject({ state: "open", lifecycle: "reopened" });
+    await sync(base);
+    expect(await byTitle(back!.title)).toMatchObject({ state: "open", lifecycle: "still_open" });
+  });
+
+  it("moves an ignored finding no run reports again off new", async () => {
+    await sync(base);
+    const [target, ...rest] = base.findings;
+    await prisma.finding.updateMany({ where: { fingerprint: target!.fingerprint }, data: { state: "ignored" } });
+    await sync({ ...base, findings: rest });
+    expect(await byTitle(target!.title)).toMatchObject({ state: "ignored", lifecycle: "still_open" });
+  });
+
+  it("writes the lifecycle stored in the result, and leaves a finding ignored meanwhile alone", async () => {
+    await sync(base);
+    const [ignored, fixed, ...rest] = base.findings;
+    // Worked out by the worker before the user ignored the first finding.
+    const lifecycle = {
+      new: [],
+      stillOpen: rest.map((f) => f.fingerprint),
+      reopened: [],
+      gone: [ignored!, fixed!].map((f) => ({ ...f, outcome: "fixed" as const })),
+    };
+    await prisma.finding.updateMany({ where: { fingerprint: ignored!.fingerprint }, data: { state: "ignored" } });
+    await sync({ ...base, findings: rest, lifecycle });
+    expect(await byTitle(ignored!.title)).toMatchObject({ state: "ignored" });
+    expect(await byTitle(fixed!.title)).toMatchObject({ state: "resolved", lifecycle: "fixed" });
+  });
+
+  it("stores the end line of each finding", async () => {
+    await sync(base);
+    const [finding] = base.findings;
+    expect(await byTitle(finding!.title)).toMatchObject({ startLine: finding!.startLine, endLine: finding!.endLine });
   });
 });
 
@@ -227,6 +463,19 @@ describe("GET /api/findings", () => {
     await sync(base, { repositoryId: otherRepo });
     const res = await request(app).get("/api/findings").set("Cookie", cookie);
     expect(res.body.total).toBe(0);
+  });
+
+  it("filters by lifecycle", async () => {
+    await sync(base);
+    const [fixed, ...rest] = base.findings;
+    await sync({ ...base, findings: rest });
+    const res = await request(app).get("/api/findings?lifecycle=fixed").set("Cookie", cookie);
+    expect(res.status).toBe(200);
+    expect(res.body.findings).toEqual([expect.objectContaining({ title: fixed!.title, state: "resolved", lifecycle: "fixed" })]);
+    const open = await request(app).get("/api/findings?lifecycle=still_open").set("Cookie", cookie);
+    expect(open.body.total).toBe(rest.length);
+    const unknown = await request(app).get("/api/findings?lifecycle=gone").set("Cookie", cookie);
+    expect(unknown.status).toBe(400);
   });
 
   it("rejects an unknown filter value", async () => {
@@ -467,6 +716,17 @@ describe("GET /api/findings/stats", () => {
     });
   });
 
+  it("does not count invalidated findings as resolved", async () => {
+    await sync(base);
+    const [fixed, invalidated] = await rows();
+    const resolvedAt = new Date();
+    await prisma.finding.update({ where: { id: fixed!.id }, data: { state: "resolved", lifecycle: "fixed", resolvedAt } });
+    await prisma.finding.update({ where: { id: invalidated!.id }, data: { state: "resolved", lifecycle: "invalidated", resolvedAt } });
+    const total = (await rows()).length - 1;
+    const res = await request(app).get("/api/findings/stats").set("Cookie", cookie);
+    expect(res.body).toMatchObject({ resolved: 1, total, resolutionRate: Math.round((1 / total) * 100) });
+  });
+
   it("leaves ignored findings out of the rate", async () => {
     await sync(base);
     await prisma.finding.updateMany({ data: { state: "ignored" } });
@@ -486,6 +746,19 @@ describe("PATCH /api/findings/:id", () => {
 
     const reopened = await request(app).patch(`/api/findings/${row!.id}`).set("Cookie", cookie).send({ state: "open" });
     expect(reopened.body.finding).toMatchObject({ state: "open", ignoredAt: null });
+  });
+
+  it("no longer calls a fixed finding fixed once it is ignored or reopened", async () => {
+    await sync(base);
+    const [gone, ...rest] = base.findings;
+    await sync({ ...base, findings: rest });
+    const row = await byTitle(gone!.title);
+    expect(row).toMatchObject({ state: "resolved", lifecycle: "fixed" });
+
+    const ignored = await request(app).patch(`/api/findings/${row.id}`).set("Cookie", cookie).send({ state: "ignored" });
+    expect(ignored.body.finding).toMatchObject({ state: "ignored", lifecycle: "still_open" });
+    const reopened = await request(app).patch(`/api/findings/${row.id}`).set("Cookie", cookie).send({ state: "open" });
+    expect(reopened.body.finding).toMatchObject({ state: "open", lifecycle: "still_open" });
   });
 
   it("stores why a finding was ignored and forgets it on reopen", async () => {

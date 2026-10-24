@@ -11,6 +11,7 @@ const finding: FindingRow = {
   id: "f-1",
   number: 42,
   state: "open",
+  lifecycle: "new",
   title: "SQL built from input",
   file: "src/app.ts",
   startLine: 3,
@@ -213,6 +214,42 @@ describe("Findings page", () => {
     expect(await screen.findByRole("button", { name: "Unused import flagged" })).toBeInTheDocument()
     expect(screen.getByRole("searchbox", { name: "Search false positives" })).toBeInTheDocument()
     expect(screen.queryByRole("searchbox", { name: "Search findings" })).toBeNull()
+  })
+
+  it("filters by what the last review found, telling a fix from a refactor", async () => {
+    const invalidated = { ...finding, id: "f-2", state: "resolved" as const, lifecycle: "invalidated" as const, title: "Moved helper" }
+    mockApi({
+      "GET /api/findings/stats": stats,
+      "GET /api/findings?page=1&limit=10": page([finding, invalidated]),
+      "GET /api/findings?lifecycle=invalidated&page=1&limit=10": page([invalidated]),
+      [`${FP}&page=1&limit=10`]: page([]),
+    })
+    renderWithProviders(<App />, { route: "/findings" })
+
+    await screen.findByRole("button", { name: "SQL built from input" })
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }))
+    await userEvent.click(screen.getByRole("combobox", { name: "Last review" }))
+    await userEvent.click(await screen.findByRole("option", { name: "Invalidated" }))
+    await waitFor(() => expect(screen.queryByRole("button", { name: "SQL built from input" })).toBeNull())
+    expect(screen.getByRole("button", { name: "Moved helper" })).toBeInTheDocument()
+  })
+
+  it("filters by findings a review reported again after a fix", async () => {
+    const reopened = { ...finding, id: "f-2", lifecycle: "reopened" as const, title: "Back again" }
+    mockApi({
+      "GET /api/findings/stats": stats,
+      "GET /api/findings?page=1&limit=10": page([finding, reopened]),
+      "GET /api/findings?lifecycle=reopened&page=1&limit=10": page([reopened]),
+      [`${FP}&page=1&limit=10`]: page([]),
+    })
+    renderWithProviders(<App />, { route: "/findings" })
+
+    await screen.findByRole("button", { name: "SQL built from input" })
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }))
+    await userEvent.click(screen.getByRole("combobox", { name: "Last review" }))
+    await userEvent.click(await screen.findByRole("option", { name: "Reopened" }))
+    await waitFor(() => expect(screen.queryByRole("button", { name: "SQL built from input" })).toBeNull())
+    expect(screen.getByRole("button", { name: "Back again" })).toBeInTheDocument()
   })
 
   it("keeps the findings filters when switching tabs and back", async () => {

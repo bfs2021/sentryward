@@ -41,6 +41,7 @@ const schema: ConfigSchema = {
       postCheck: true,
       resolveFixedThreads: true,
       findingCounts: true,
+      findingLifecycle: true,
       reviewStats: true,
       agentPrompts: true,
       agentPromptAll: true,

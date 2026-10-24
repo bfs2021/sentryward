@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "../src/lib/prisma.ts";
-import type { IssueContext, ToolAnnotation } from "../src/review/core/models.ts";
+import type { IssueContext, ReviewResult, ToolAnnotation } from "../src/review/core/models.ts";
 import { ForgeCache } from "../src/review/forge/cache.ts";
 import { ForgeError } from "../src/review/forge/http.ts";
 import type { InlineComment } from "../src/review/forge/types.ts";
@@ -228,8 +228,10 @@ describe("runJob", () => {
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
     expect(stored).toMatchObject({ status: "completed", verdict: "blocked", headSha: "newhead", baseSha: "base", error: null, title: "Add b and c" });
     expect(stored.lockedAt).toBeNull();
-    const result = stored.result as { findings: unknown[]; verdict: { blockOn: string } };
+    const result = stored.result as ReviewResult;
     expect(result.findings).toHaveLength(1);
+    // A change's first review has nothing earlier to compare with.
+    expect(result.lifecycle).toBeUndefined();
     // blockOn came from the saved repository settings.
     expect(result.verdict.blockOn).toBe("major");
     expect(stored.resolvedConfig).toMatchObject({ repoFile: ".sentryward.yaml", sources: { "review.blockOn": "repoSettings" } });
@@ -239,7 +241,7 @@ describe("runJob", () => {
     // The findings table follows the run, with the change's author.
     const findings = await prisma.finding.findMany({ where: { repositoryId, number: 42 } });
     expect(findings).toHaveLength(1);
-    expect(findings[0]).toMatchObject({ state: "open", author: "alice", lastJobId: job.id });
+    expect(findings[0]).toMatchObject({ state: "open", lifecycle: "new", author: "alice", lastJobId: job.id });
   });
 
   it("reports static analysis on changed lines as tool findings that do not block", async () => {
@@ -496,12 +498,20 @@ describe("runJob", () => {
     expect(fixed.published.threads).toEqual([{ fingerprints: [print], resolved: true }]);
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: fixedJob.id } });
     expect(stored.publication).toMatchObject({ threadsResolved: [print], threadsReopened: [] });
-    expect(await prisma.finding.findFirst({ where: { fingerprint: print } })).toMatchObject({ state: "resolved" });
+    expect(await prisma.finding.findFirst({ where: { fingerprint: print } })).toMatchObject({ state: "resolved", lifecycle: "fixed" });
+    // The rerun records what became of the finding, and the summary says so.
+    expect((stored.result as ReviewResult).lifecycle).toMatchObject({ new: [], stillOpen: [], gone: [{ fingerprint: print, outcome: "fixed" }] });
+    expect(fixed.published.summaries.at(-1)).toContain("> 🔄 Since the last review: 1 fixed.");
 
     const back = deps({}, found);
     await enqueue({ repositoryId, number: 42, headSha: "back", trigger: "manual" });
-    await runJob((await claimNext())!, back.runDeps);
+    const backJob = (await claimNext())!;
+    await runJob(backJob, back.runDeps);
     expect(back.published.threads).toEqual([{ fingerprints: [print], resolved: false }]);
+    const backResult = (await prisma.reviewJob.findUniqueOrThrow({ where: { id: backJob.id } })).result as ReviewResult;
+    expect(backResult.lifecycle).toMatchObject({ new: [], stillOpen: [], reopened: [print], gone: [] });
+    expect(await prisma.finding.findFirst({ where: { fingerprint: print } })).toMatchObject({ state: "open", lifecycle: "reopened" });
+    expect(back.published.summaries.at(-1)).toContain("> 🔄 Since the last review: 1 reopened.");
   });
 
   it("retries a thread update that failed on a later run, until it lands", async () => {

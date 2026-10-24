@@ -41,9 +41,75 @@ describe("summarize and toJson", () => {
   });
 });
 
+// A rerun's view of the sample: one finding new, one back after a fix, the
+// rest still open, one earlier finding fixed and one whose code moved to
+// another file.
+function withLifecycle(result: ReviewResult): ReviewResult {
+  const [fresh, back, ...rest] = result.findings;
+  return {
+    ...result,
+    lifecycle: {
+      new: [fresh!.fingerprint],
+      stillOpen: rest.map((f) => f.fingerprint),
+      reopened: [back!.fingerprint],
+      gone: [
+        { fingerprint: "1111111111111111", title: "Off-by-one in <loop>", file: "src/app.ts", startLine: 8, endLine: 9, severity: "major", outcome: "fixed" },
+        { fingerprint: "2222222222222222", title: "Unused helper", file: "src/old.ts", startLine: 3, severity: "info", outcome: "invalidated", reason: "moved" },
+      ],
+    },
+  };
+}
+
 describe("toMarkdown", () => {
   it("renders the whole document", async () => {
-    await expect(toMarkdown(await sampleResult())).toMatchFileSnapshot("__snapshots__/review.md");
+    await expect(toMarkdown(withLifecycle(await sampleResult()))).toMatchFileSnapshot("__snapshots__/review.md");
+  });
+
+  describe("what changed since the last review", () => {
+    it("counts and lists each group, gone findings with why", async () => {
+      const markdown = toMarkdown(withLifecycle(await sampleResult()));
+      expect(markdown).toContain("> 🔄 Since the last review: 1 new, 2 still open, 1 reopened, 1 fixed, 1 invalidated.");
+      expect(markdown).toContain("<summary>↩️ Reopened (1)</summary>");
+      expect(markdown).toContain("<summary>✅ Fixed (1)</summary>");
+      expect(markdown).toContain("- 🟠 **major** `src/app.ts:8-9`: Off-by-one in &lt;loop&gt;");
+      expect(markdown).toContain("- ⚪ **info** `src/old.ts:3`: Unused helper (moved to another file)");
+    });
+
+    it("leaves out empty groups, and the section on a first review", async () => {
+      const result = await sampleResult();
+      expect(toMarkdown(result)).not.toContain("Since the last review");
+      const allStillOpen = { ...result, lifecycle: { new: [], stillOpen: result.findings.map((f) => f.fingerprint), reopened: [], gone: [] } };
+      const markdown = toMarkdown(allStillOpen);
+      expect(markdown).toContain("> 🔄 Since the last review: 4 still open.");
+      expect(markdown).not.toContain("<summary>🆕");
+    });
+
+    it("leaves the section out when every group is empty", async () => {
+      const result = await sampleResult();
+      const nothing = { ...result, findings: [], lifecycle: { new: [], stillOpen: [], reopened: [], gone: [] } };
+      expect(toMarkdown(nothing)).not.toContain("Since the last review");
+    });
+
+    it("is left out with lifecycle: false", async () => {
+      expect(toMarkdown(withLifecycle(await sampleResult()), { lifecycle: false })).not.toContain("Since the last review");
+    });
+
+    it("caps each list and says how many more there are", async () => {
+      const result = await sampleResult();
+      const gone = Array.from({ length: 25 }, (_, i) => ({
+        fingerprint: `${i}`.padStart(16, "0"),
+        title: `Fixed ${i}`,
+        file: "src/app.ts",
+        startLine: i + 1,
+        severity: "minor" as const,
+        outcome: "fixed" as const,
+      }));
+      const markdown = toMarkdown({ ...result, lifecycle: { new: [], stillOpen: [], reopened: [], gone } });
+      expect(markdown).toContain("<summary>✅ Fixed (25)</summary>");
+      expect(markdown).toContain("`src/app.ts:20`: Fixed 19");
+      expect(markdown).not.toContain("Fixed 20\n");
+      expect(markdown).toContain("- …and 5 more");
+    });
   });
 
   it("depends only on the result", async () => {

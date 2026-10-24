@@ -18,6 +18,7 @@ export const FLAGS = [
   { name: "postCheck", section: "output" },
   { name: "resolveFixedThreads", section: "output" },
   { name: "findingCounts", section: "output" },
+  { name: "findingLifecycle", section: "output" },
   { name: "reviewStats", section: "output" },
   { name: "agentPrompts", section: "output" },
   { name: "agentPromptAll", section: "output" },

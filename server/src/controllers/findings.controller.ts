@@ -16,6 +16,7 @@ const listFields = {
   id: true,
   number: true,
   state: true,
+  lifecycle: true,
   title: true,
   file: true,
   startLine: true,
@@ -79,11 +80,12 @@ const OTHER_CATEGORY = "other";
 const NUMBER_QUERY = /^[#!]?(\d{1,9})$/;
 
 export async function listFindings(req: Request, res: Response) {
-  const { repoId, state, ignoreReason, severity, category, kind, q, sort, dir, page, limit } = listFindingsQuerySchema.parse(req.query);
+  const { repoId, state, lifecycle, ignoreReason, severity, category, kind, q, sort, dir, page, limit } = listFindingsQuerySchema.parse(req.query);
   const where: Prisma.FindingWhereInput = {
     ...ownedBy(req.workspaceId!),
     ...(repoId ? { repositoryId: repoId } : {}),
     ...(state ? { state } : {}),
+    ...(lifecycle ? { lifecycle } : {}),
     ...(ignoreReason ? { ignoreReason } : {}),
     ...(severity ? { severity } : {}),
     ...(category ? { category } : {}),
@@ -124,17 +126,18 @@ export async function getFindingStats(req: Request, res: Response) {
       orderBy: { severity: "asc" },
       _count: { _all: true },
     }),
-    // Ignored findings were never going to be fixed; they would only drag the rate down.
+    // Ignored findings were never going to be fixed; they would only drag the
+    // rate down. Invalidated ones no longer apply, but were not fixed either.
     prisma.finding.groupBy({
       by: ["state"],
-      where: { ...scope, firstSeenAt: { gte: since }, state: { not: "ignored" } },
+      where: { ...scope, firstSeenAt: { gte: since }, state: { not: "ignored" }, lifecycle: { not: "invalidated" } },
       orderBy: { state: "asc" },
       _count: { _all: true },
     }),
     // Usually left behind by changes that were merged or closed without another run.
     prisma.finding.count({ where: { ...scope, state: "open", firstSeenAt: { lt: since } } }),
     prisma.finding.findMany({
-      where: { ...scope, state: "resolved", resolvedAt: { gte: since } },
+      where: { ...scope, state: "resolved", lifecycle: { not: "invalidated" }, resolvedAt: { gte: since } },
       select: { firstSeenAt: true, resolvedAt: true },
     }),
     // Everything first seen in the period. Unlike the resolution rate, this
@@ -218,7 +221,10 @@ export async function getFinding(req: Request, res: Response) {
 export async function updateFinding(req: Request, res: Response) {
   const { id } = findingIdParamSchema.parse(req.params);
   const input = updateFindingSchema.parse(req.body);
-  const existing = await prisma.finding.findFirst({ where: { id, ...ownedBy(req.workspaceId!) }, select: { id: true } });
+  const existing = await prisma.finding.findFirst({
+    where: { id, ...ownedBy(req.workspaceId!) },
+    select: { id: true, lifecycle: true },
+  });
   if (!existing) {
     throw new HttpError(404, "Finding not found");
   }
@@ -228,9 +234,12 @@ export async function updateFinding(req: Request, res: Response) {
     input.state === "ignored"
       ? { state: input.state, ignoredAt: new Date(), ignoreReason: input.reason, ignoreNote: input.note || null }
       : { state: input.state, ignoredAt: null, ignoreReason: null, ignoreNote: null };
+  // Either way it is no longer resolved, so "fixed" or "invalidated" would
+  // contradict its state until a run reports on it again.
+  const gone = existing.lifecycle === "fixed" || existing.lifecycle === "invalidated";
   const finding = await prisma.finding.update({
     where: { id },
-    data: { ...data, resolvedAt: null },
+    data: { ...data, resolvedAt: null, ...(gone ? { lifecycle: "still_open" as const } : {}) },
     select: listFields,
   });
   res.json({ finding });

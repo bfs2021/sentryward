@@ -1,5 +1,15 @@
 import { BUCKET_TITLE, SUMMARY_BUCKETS } from "../core/buckets.ts";
-import type { Bucket, Finding, IssueAssessment, IssueRef, Omission, ReviewResult, Walkthrough } from "../core/models.ts";
+import type {
+  Bucket,
+  Finding,
+  InvalidatedReason,
+  IssueAssessment,
+  IssueRef,
+  Lifecycle,
+  Omission,
+  ReviewResult,
+  Walkthrough,
+} from "../core/models.ts";
 import { SEVERITIES, type Severity } from "../core/severity.ts";
 import { DESCRIPTION_SUMMARY_END, DESCRIPTION_SUMMARY_START, SUMMARY_MARKER } from "../core/markers.ts";
 import { agentPromptBlock, allFindingsPrompt } from "./agentPrompt.ts";
@@ -74,12 +84,16 @@ export function toolSuffix(finding: Finding): string {
   return finding.source === "tool" && finding.tool ? ` · via ${codeCell(finding.tool.replace(/[\\*_`]/g, "\\$&"))}` : "";
 }
 
-function location(finding: Finding): string {
-  const lines = finding.startLine === finding.endLine ? `${finding.startLine}` : `${finding.startLine}-${finding.endLine}`;
+// A gone finding's snapshot may lack the end line; it then reads as one line.
+type Located = { file: string; startLine: number; endLine?: number };
+
+function location(finding: Located): string {
+  const end = finding.endLine ?? finding.startLine;
+  const lines = finding.startLine === end ? `${finding.startLine}` : `${finding.startLine}-${end}`;
   return `\`${finding.file}:${lines}\``;
 }
 
-function indexLine(finding: Finding): string {
+function indexLine(finding: Located & { severity: Severity; title: string }): string {
   return `- ${SEVERITY_ICON[finding.severity]} **${finding.severity}** ${location(finding)}: ${inline(finding.title)}`;
 }
 
@@ -304,6 +318,61 @@ function incrementalNote(result: ReviewResult): string[] {
   return ["", `> 🔁 Incremental review of ${range}: ${scope}${carried}.`];
 }
 
+const INVALIDATED_TEXT: Record<InvalidatedReason, string> = {
+  renamed: "file renamed",
+  deleted: "file deleted",
+  left_change: "file no longer in the change",
+  moved: "moved to another file",
+};
+
+function goneLine(gone: Lifecycle["gone"][number]): string {
+  const why = gone.reason ? ` (${INVALIDATED_TEXT[gone.reason]})` : "";
+  return `${indexLine(gone)}${why}`;
+}
+
+// Each list is capped so a large refactor (hundreds of findings invalidated by
+// renames) cannot push the comment past the forge's size limit.
+const LIFECYCLE_LIMIT = 20;
+
+function capped(items: string[]): string[] {
+  if (items.length <= LIFECYCLE_LIMIT) return items;
+  return [...items.slice(0, LIFECYCLE_LIMIT), `- …and ${items.length - LIFECYCLE_LIMIT} more`];
+}
+
+// What this run changed against the earlier reviews of the change. New, still
+// open and reopened findings are also in the sections below; the lists here
+// say which is which, and name the gone ones, which are nowhere else.
+// Invalidated findings are kept apart from fixed ones: their code was moved or
+// removed, so they no longer apply, but nothing says they were fixed. Left out
+// when every list is empty: earlier findings were all ignored or resolved
+// before, and this run reports none.
+function lifecycleSection(result: ReviewResult): string[] {
+  const { lifecycle } = result;
+  if (!lifecycle) return [];
+  const byPrint = new Map(result.findings.map((f) => [f.fingerprint, f]));
+  const listed = (prints: string[]) => prints.flatMap((print) => {
+    const finding = byPrint.get(print);
+    return finding ? [indexLine(finding)] : [];
+  });
+  const fixed = lifecycle.gone.filter((gone) => gone.outcome === "fixed");
+  const invalidated = lifecycle.gone.filter((gone) => gone.outcome === "invalidated");
+  const groups: [string, string, string[]][] = [
+    ["🆕", "New", listed(lifecycle.new)],
+    ["⏳", "Still open", listed(lifecycle.stillOpen)],
+    ["↩️", "Reopened", listed(lifecycle.reopened)],
+    ["✅", "Fixed", fixed.map(goneLine)],
+    ["♻️", "Invalidated", invalidated.map(goneLine)],
+  ];
+  const counts = groups.filter(([, , items]) => items.length).map(([, label, items]) => `${items.length} ${label.toLowerCase()}`);
+  if (!counts.length) return [];
+  const lines = ["", `> 🔄 Since the last review: ${counts.join(", ")}.`];
+  for (const [icon, label, items] of groups) {
+    if (!items.length) continue;
+    lines.push("", "<details>", `<summary>${icon} ${label} (${items.length})</summary>`, "", ...capped(items), "", "</details>");
+  }
+  return lines;
+}
+
 function footer(result: ReviewResult): string {
   const models = [...new Set(result.usage.map((u) => u.model))].join(", ") || "no model call";
   const passes = plural(result.coverage.passes, "review pass");
@@ -322,18 +391,20 @@ function footer(result: ReviewResult): string {
 // (walkthroughSection), so one comment carries what the change does and what
 // the review found. `walkthrough: false` leaves it out, `counts: false` the line
 // counting the findings (output.findingCounts), `stats: false` the line
-// naming the commit, models and coverage (output.reviewStats), and
-// `agentPrompt: false` the one prompt covering every finding
+// naming the commit, models and coverage (output.reviewStats), `lifecycle:
+// false` the comparison with the earlier reviews (output.findingLifecycle),
+// and `agentPrompt: false` the one prompt covering every finding
 // (output.agentPromptAll). The rest shape the walkthrough (walkthroughOptions).
 export function toMarkdown(
   result: ReviewResult,
-  options: { walkthrough?: boolean; counts?: boolean; stats?: boolean; agentPrompt?: boolean } & WalkthroughOptions = {},
+  options: { walkthrough?: boolean; counts?: boolean; stats?: boolean; lifecycle?: boolean; agentPrompt?: boolean } & WalkthroughOptions = {},
 ): string {
   const walkthrough = options.walkthrough === false ? null : walkthroughSection(result, options);
   const lines = [walkthrough?.heading ?? "## Summary", ...(walkthrough?.lines ?? [])];
   lines.push("", ...verdictSection(result));
   if (options.counts !== false) lines.push("", countsLine(result));
   lines.push(...incrementalNote(result));
+  if (options.lifecycle !== false) lines.push(...lifecycleSection(result));
   lines.push(...bucketSections(result));
   if (options.agentPrompt !== false && result.findings.length) {
     lines.push("", ...agentPromptBlock(`Prompt for AI agents (${plural(result.findings.length, "finding")})`, allFindingsPrompt(result.findings)));

@@ -43,6 +43,7 @@ const effective = {
     postCheck: true,
     resolveFixedThreads: true,
     findingCounts: true,
+    findingLifecycle: true,
     reviewStats: true,
     agentPrompts: true,
     agentPromptAll: true,
@@ -405,6 +406,7 @@ describe("Configuration page", { timeout: 20_000 }, () => {
 
     await openTab("Display")
     await userEvent.click(screen.getByRole("switch", { name: "Show finding counts" }))
+    await userEvent.click(screen.getByRole("switch", { name: "Show changes since the last review" }))
     await userEvent.click(screen.getByRole("switch", { name: "Show review details" }))
     await userEvent.click(screen.getByRole("switch", { name: "Prompt for AI agents per comment" }))
     await userEvent.click(screen.getByRole("switch", { name: "Show labels in the summary" }))
@@ -420,6 +422,7 @@ describe("Configuration page", { timeout: 20_000 }, () => {
           llm: { connection: "openai" },
           output: {
             findingCounts: false,
+            findingLifecycle: false,
             reviewStats: false,
             agentPrompts: false,
             blastRadiusLabel: true,
