@@ -15,12 +15,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { PROVIDERS } from "@/features/forge/providers"
 import { formatDuration, timeAgo } from "@/lib/time"
 import { cn } from "@/lib/utils"
-import { fetchReviewMarkdown, useCancelReview, useRerunReview, useReviews } from "./api"
+import { useCancelReview, useRerunReview, useReviews } from "./api"
 import { SeverityBadge, StatusBadge, TriggerIcon, VerdictBadge } from "./badges"
 import { CancelReviewDialog } from "./CancelReviewDialog"
 import { changeLabel, changeTitle } from "./links"
 import { RerunReviewDialog } from "./RerunReviewDialog"
 import { isActive, SEVERITIES, type ReviewListItem } from "./types"
+import { useReviewMarkdown } from "./useReviewMarkdown"
 
 // Ticks only while something is running, so idle tables never re-render.
 function useNow(enabled: boolean) {
@@ -62,6 +63,7 @@ function ReviewActions({ review }: { review: ReviewListItem }) {
   const cancel = useCancelReview()
   const [confirming, setConfirming] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const markdown = useReviewMarkdown(review.id)
   const forge = PROVIDERS[review.repository.provider].label
   const webUrl = review.summary?.webUrl
 
@@ -82,15 +84,6 @@ function ReviewActions({ review }: { review: ReviewListItem }) {
       setCancelling(false)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not cancel the review")
-    }
-  }
-
-  async function copyMarkdown() {
-    try {
-      await navigator.clipboard.writeText(await fetchReviewMarkdown(review.id))
-      toast.success("Markdown copied")
-    } catch {
-      toast.error("Could not copy the markdown")
     }
   }
 
@@ -115,7 +108,7 @@ function ReviewActions({ review }: { review: ReviewListItem }) {
             </DropdownMenuItem>
           )}
           {/* A summary is only stored alongside a result, which the markdown is rendered from. */}
-          <DropdownMenuItem onSelect={copyMarkdown} disabled={!review.summary}>
+          <DropdownMenuItem onSelect={markdown.copy} disabled={!review.summary}>
             <Copy />
             Copy markdown
           </DropdownMenuItem>

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { toast } from "sonner"
 
-import { downloadText } from "./download"
+import { downloadFile, downloadText } from "./download"
 
 describe("downloadText", () => {
   beforeEach(() => {
@@ -36,5 +37,37 @@ describe("downloadText", () => {
     expect(URL.revokeObjectURL).not.toHaveBeenCalled()
     vi.runAllTimers()
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:file")
+  })
+})
+
+describe("downloadFile", () => {
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => "blob:file")
+    URL.revokeObjectURL = vi.fn()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("waits for fetched text and saves it", async () => {
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {})
+
+    await downloadFile(Promise.resolve("# Review"), "review.md", "Markdown", "text/markdown")
+
+    expect(click).toHaveBeenCalledOnce()
+    expect((click.mock.contexts[0] as HTMLAnchorElement).download).toBe("review.md")
+    const blob = vi.mocked(URL.createObjectURL).mock.calls[0][0] as Blob
+    expect(await blob.text()).toBe("# Review")
+  })
+
+  it("toasts and saves nothing when the text cannot be fetched", async () => {
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {})
+    const showError = vi.spyOn(toast, "error").mockReturnValue("download-error")
+
+    await downloadFile(Promise.reject(new Error("boom")), "review.md", "Markdown")
+
+    expect(showError).toHaveBeenCalledWith("Could not download the markdown")
+    expect(click).not.toHaveBeenCalled()
   })
 })
