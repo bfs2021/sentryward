@@ -6,6 +6,7 @@ export const STATE_LABEL: Record<FindingState, string> = { open: "Open", resolve
 export const LIFECYCLE_LABEL: Record<FindingLifecycle, string> = {
   new: "New",
   still_open: "Still open",
+  reopened: "Reopened",
   fixed: "Fixed",
   invalidated: "Invalidated",
 }

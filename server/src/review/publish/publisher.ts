@@ -195,10 +195,17 @@ export interface SummaryPlacement {
 export function summaryPlacement(config: Config, result: ReviewResult): SummaryPlacement {
   const options = walkthroughOptions(config.output);
   const walkthrough = walkthroughMarkdown(result, options);
-  const { postSummary, findingCounts, reviewStats, agentPromptAll } = config.output;
+  const { postSummary, findingCounts, reviewStats, findingLifecycle, agentPromptAll } = config.output;
   return {
     summary: postSummary
-      ? toMarkdown(result, { walkthrough: true, counts: findingCounts, stats: reviewStats, agentPrompt: agentPromptAll, ...options })
+      ? toMarkdown(result, {
+          walkthrough: true,
+          counts: findingCounts,
+          stats: reviewStats,
+          lifecycle: findingLifecycle,
+          agentPrompt: agentPromptAll,
+          ...options,
+        })
       : null,
     walkthrough,
     walkthroughComment: !postSummary && walkthrough ? `${walkthrough}\n${WALKTHROUGH_MARKER}\n` : null,

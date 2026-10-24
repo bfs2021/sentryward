@@ -103,6 +103,9 @@ const outputShape = {
   // The line under the summary naming the commit, models, passes and files
   // reviewed.
   reviewStats: z.boolean(),
+  // The block comparing the findings with the change's earlier reviews: new,
+  // still open, reopened, fixed and invalidated.
+  findingLifecycle: z.boolean(),
   // Ready-to-paste instructions for a coding agent: one per actionable inline
   // comment, and one in the summary covering every finding.
   agentPrompts: z.boolean(),
@@ -237,6 +240,7 @@ export const DEFAULT_CONFIG: Config = {
     postCheck: true,
     resolveFixedThreads: true,
     findingCounts: true,
+    findingLifecycle: true,
     reviewStats: true,
     agentPrompts: true,
     agentPromptAll: true,

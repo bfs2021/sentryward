@@ -222,12 +222,14 @@ enum FindingState {
 }
 
 // How a finding stands against the change's latest run: first reported by it,
-// reported earlier and still there, or gone. A gone finding is either fixed or
-// invalidated (its code was renamed, moved or removed, so it no longer applies
-// but was not fixed); both have state resolved.
+// reported earlier and still there, back after an earlier run resolved it, or
+// gone. A gone finding is either fixed or invalidated (its code was renamed,
+// moved or removed, so it no longer applies but was not fixed); both have
+// state resolved.
 enum FindingLifecycle {
   new
   still_open
+  reopened
   fixed
   invalidated
 
@@ -421,6 +423,8 @@ model Finding {
   title        String
   file         String
   startLine    Int             @map("start_line")
+  // Null on rows recorded before it was kept.
+  endLine      Int?            @map("end_line")
   severity     FindingSeverity
   category     String
   kind         String

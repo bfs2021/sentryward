@@ -51,6 +51,7 @@ export interface ConfigOverride {
     postCheck?: boolean
     resolveFixedThreads?: boolean
     findingCounts?: boolean
+    findingLifecycle?: boolean
     reviewStats?: boolean
     agentPrompts?: boolean
     agentPromptAll?: boolean
@@ -132,6 +133,7 @@ export interface EffectiveConfig {
     postCheck: boolean
     resolveFixedThreads: boolean
     findingCounts: boolean
+    findingLifecycle: boolean
     reviewStats: boolean
     agentPrompts: boolean
     agentPromptAll: boolean

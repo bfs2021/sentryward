@@ -3,7 +3,7 @@ import { CATEGORIES, KINDS, SEVERITIES } from "../review/core/severity.ts";
 
 export const findingStateSchema = z.enum(["open", "resolved", "ignored"]);
 
-export const findingLifecycleSchema = z.enum(["new", "still_open", "fixed", "invalidated"]);
+export const findingLifecycleSchema = z.enum(["new", "still_open", "reopened", "fixed", "invalidated"]);
 
 export const ignoreReasonSchema = z.enum(["false_positive", "intentional", "fix_later", "not_specified"]);
 

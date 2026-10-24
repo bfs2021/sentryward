@@ -234,6 +234,24 @@ describe("Findings page", () => {
     expect(screen.getByRole("button", { name: "Moved helper" })).toBeInTheDocument()
   })
 
+  it("filters by findings a review reported again after a fix", async () => {
+    const reopened = { ...finding, id: "f-2", lifecycle: "reopened" as const, title: "Back again" }
+    mockApi({
+      "GET /api/findings/stats": stats,
+      "GET /api/findings?page=1&limit=10": page([finding, reopened]),
+      "GET /api/findings?lifecycle=reopened&page=1&limit=10": page([reopened]),
+      [`${FP}&page=1&limit=10`]: page([]),
+    })
+    renderWithProviders(<App />, { route: "/findings" })
+
+    await screen.findByRole("button", { name: "SQL built from input" })
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }))
+    await userEvent.click(screen.getByRole("combobox", { name: "Last review" }))
+    await userEvent.click(await screen.findByRole("option", { name: "Reopened" }))
+    await waitFor(() => expect(screen.queryByRole("button", { name: "SQL built from input" })).toBeNull())
+    expect(screen.getByRole("button", { name: "Back again" })).toBeInTheDocument()
+  })
+
   it("keeps the findings filters when switching tabs and back", async () => {
     const resolved = { ...finding, id: "f-2", state: "resolved" as const, title: "Old bug" }
     mockApi({

@@ -244,18 +244,22 @@ export const invalidatedReasonSchema = z.enum(["renamed", "deleted", "left_chang
 export type InvalidatedReason = z.infer<typeof invalidatedReasonSchema>;
 
 // How this run's findings relate to the ones earlier runs left on the change
-// (worker/syncFindings.ts). `new` and `stillOpen` are fingerprints of
-// `findings`; `gone` are earlier findings this run no longer reports, kept as a
-// snapshot since they are not in `findings`.
+// (worker/syncFindings.ts). `new`, `stillOpen` and `reopened` (resolved by an
+// earlier run, reported again) are fingerprints of `findings`; `gone` are
+// earlier findings this run no longer reports, kept as a snapshot since they
+// are not in `findings`.
 export const lifecycleSchema = z.object({
   new: z.array(z.string()),
   stillOpen: z.array(z.string()),
+  // Results stored before it existed counted these as still open.
+  reopened: z.array(z.string()).default([]),
   gone: z.array(
     z.object({
       fingerprint: z.string(),
       title: z.string(),
       file: z.string(),
       startLine: z.number().int(),
+      endLine: z.number().int().optional(),
       severity: severitySchema,
       outcome: z.enum(["fixed", "invalidated"]),
       reason: invalidatedReasonSchema.optional(),

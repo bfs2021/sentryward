@@ -7,7 +7,7 @@ export type FindingState = "open" | "resolved" | "ignored"
 // How the finding stands against its change's latest review. Fixed and
 // invalidated findings are both resolved; invalidated ones went away because
 // their code was renamed, moved or removed, not because they were fixed.
-export type FindingLifecycle = "new" | "still_open" | "fixed" | "invalidated"
+export type FindingLifecycle = "new" | "still_open" | "reopened" | "fixed" | "invalidated"
 export type IgnoreReason = "false_positive" | "intentional" | "fix_later" | "not_specified"
 export type FindingCategory =
   | "security"

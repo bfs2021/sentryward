@@ -315,6 +315,7 @@ export async function getReviewMarkdown(req: Request, res: Response) {
       output?: {
         findingCounts?: boolean;
         reviewStats?: boolean;
+        findingLifecycle?: boolean;
         agentPromptAll?: boolean;
         estimateEffort?: boolean;
         highLevelSummaryPlacement?: string;
@@ -326,10 +327,12 @@ export async function getReviewMarkdown(req: Request, res: Response) {
   const output = stored?.config?.output;
   const counts = output?.findingCounts !== false;
   const stats = output?.reviewStats !== false;
+  // Results stored before output.findingLifecycle existed have no lifecycle.
+  const lifecycle = output?.findingLifecycle !== false;
   const agentPrompt = output?.agentPromptAll === true;
   res
     .type("text/markdown; charset=utf-8")
-    .send(toMarkdown(result, { counts, stats, agentPrompt, ...walkthroughOptions(output) }));
+    .send(toMarkdown(result, { counts, stats, lifecycle, agentPrompt, ...walkthroughOptions(output) }));
 }
 
 export async function rerunReview(req: Request, res: Response) {

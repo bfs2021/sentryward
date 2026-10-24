@@ -68,17 +68,21 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   Setting a new password signs the user in and ends every other session.
   Includes a migration (a `password_resets` table and a `session_version`
   column on users). Closes #83.
-- Findings are classified across runs as new, still open, fixed or
-  invalidated. Each review after a change's first records this in its result
-  (`lifecycle`), and the summary comment opens its findings with a "Since the
-  last review" line and a list per group. A finding counts as invalidated
+- Findings are classified across runs as new, still open, reopened, fixed
+  or invalidated. Each review after a change's first records this in its
+  result (`lifecycle`), and the summary comment opens its findings with a
+  "Since the last review" line and a list per group, at most 20 entries each
+  (`output.finding_lifecycle` turns it off). A finding counts as invalidated
   rather than fixed when its file was renamed, deleted or dropped from the
-  change, or the same problem is now reported in another file (that finding
-  is still open, not new). Findings carry a `lifecycle` column, `GET
-  /api/findings` filters by `lifecycle`, the findings page gains a "Last
-  review" filter, and invalidated findings no longer count as resolved in the
-  stats. Includes a migration (a `finding_lifecycle` enum and column,
-  backfilled from each finding's state). Closes #104.
+  change, or the same problem now appears in a file the change adds or
+  renames and is the only one of its kind (that finding is still open, not
+  new). A finding resolved earlier and reported again is reopened. Findings
+  carry a `lifecycle` column, `GET /api/findings` filters by `lifecycle`, the
+  findings page gains a "Last review" filter, and invalidated findings no
+  longer count as resolved in the stats. Includes migrations (a
+  `finding_lifecycle` enum and column, backfilled from each finding's state,
+  and an `end_line` column so gone findings keep their line range). Closes
+  #104.
 
 ### Changed
 

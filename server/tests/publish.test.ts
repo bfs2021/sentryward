@@ -5,7 +5,7 @@ import { DESCRIPTION_END, DESCRIPTION_START, WALKTHROUGH_MARKER, markersIn } fro
 import type { Finding, ReviewResult } from "../src/review/core/models.ts";
 import type { CommitStatus, ForgePublisher, InlineComment } from "../src/review/forge/types.ts";
 import { inlineBody, inlineComments } from "../src/review/publish/inline.ts";
-import { publishReview } from "../src/review/publish/publisher.ts";
+import { publishReview, summaryPlacement } from "../src/review/publish/publisher.ts";
 import { commitStatus } from "../src/review/publish/status.ts";
 import { toMarkdown, walkthroughMarkdown } from "../src/review/render/markdown.ts";
 import { makeChangeSet } from "./helpers/changeSet.ts";
@@ -342,6 +342,15 @@ describe("walkthrough placement and labels", () => {
     const { calls, result } = await publish({ findingCounts: false });
     expect(calls.summaries).toEqual([toMarkdown(result, { walkthrough: true, counts: false })]);
     expect(calls.summaries[0]).not.toContain("in the sections below.");
+  });
+
+  it("leaves the lifecycle block out when findingLifecycle is off", async () => {
+    const result = await sampleResult();
+    const rerun = { ...result, lifecycle: { new: [], stillOpen: result.findings.map((f) => f.fingerprint), reopened: [], gone: [] } };
+    const summary = (output: NonNullable<ConfigOverride["output"]>) => summaryPlacement(config({ output }), rerun).summary!;
+    expect(summary({})).toContain("Since the last review");
+    expect(summary({ findingLifecycle: false })).toBe(toMarkdown(rerun, { walkthrough: true, lifecycle: false }));
+    expect(summary({ findingLifecycle: false })).not.toContain("Since the last review");
   });
 
   it("adds the agent prompts by default and leaves each out when turned off", async () => {

@@ -104,6 +104,10 @@ const FLAG_INFO: Record<FlagName, { label: string; description: ReactNode }> = {
     label: "Show finding counts",
     description: "Add a line under the verdict counting the findings by severity and where they are listed.",
   },
+  findingLifecycle: {
+    label: "Show changes since the last review",
+    description: "List which findings are new, still open or reopened, and which earlier ones were fixed or invalidated.",
+  },
   reviewStats: {
     label: "Show review details",
     description: "Add a line under the summary with the commit, models and how much was reviewed.",
@@ -1090,8 +1094,8 @@ export function ConfigFields(props: {
       <>
         <Section title="Review comments" description="What the review leaves on the change.">
           <ToggleList>{toggles(["postInline", "postSummary", "postCheck"])}</ToggleList>
-          {/* The counts and details lines are part of the summary comment. */}
-          <ToggleList>{toggles(["findingCounts", "reviewStats"], !postSummaryOn)}</ToggleList>
+          {/* The counts, lifecycle and details are part of the summary comment. */}
+          <ToggleList>{toggles(["findingCounts", "findingLifecycle", "reviewStats"], !postSummaryOn)}</ToggleList>
           {/* Each prompt lives in the comment it belongs to. */}
           <ToggleList>{toggles(["agentPrompts"], !postInlineOn)}</ToggleList>
           <ToggleList>{toggles(["agentPromptAll"], !postSummaryOn)}</ToggleList>

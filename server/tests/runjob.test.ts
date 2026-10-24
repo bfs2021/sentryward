@@ -509,8 +509,9 @@ describe("runJob", () => {
     await runJob(backJob, back.runDeps);
     expect(back.published.threads).toEqual([{ fingerprints: [print], resolved: false }]);
     const backResult = (await prisma.reviewJob.findUniqueOrThrow({ where: { id: backJob.id } })).result as ReviewResult;
-    expect(backResult.lifecycle).toMatchObject({ new: [], stillOpen: [print], gone: [] });
-    expect(await prisma.finding.findFirst({ where: { fingerprint: print } })).toMatchObject({ state: "open", lifecycle: "still_open" });
+    expect(backResult.lifecycle).toMatchObject({ new: [], stillOpen: [], reopened: [print], gone: [] });
+    expect(await prisma.finding.findFirst({ where: { fingerprint: print } })).toMatchObject({ state: "open", lifecycle: "reopened" });
+    expect(back.published.summaries.at(-1)).toContain("> 🔄 Since the last review: 1 reopened.");
   });
 
   it("retries a thread update that failed on a later run, until it lands", async () => {
