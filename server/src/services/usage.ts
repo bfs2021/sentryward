@@ -21,7 +21,6 @@ const DAY = 24 * HOUR;
 const PERIOD_MS: Record<Exclude<UsagePeriod, "all">, number> = { "24h": DAY, "7d": 7 * DAY, "30d": 30 * DAY, "90d": 90 * DAY };
 // Past this span "all" is charted by month, so years of history stay readable.
 const MAX_DAILY_SPAN = 90 * DAY;
-const RECENT = 10;
 
 export function periodStart(period: UsagePeriod, now: Date): Date | null {
   return period === "all" ? null : new Date(now.getTime() - PERIOD_MS[period]);
@@ -157,7 +156,8 @@ export function buildUsageReport(jobs: UsageJob[], period: UsagePeriod, now: Dat
   const repos = new Map<string, { fullPath: string; reviews: number; byModel: UsageByModel; lastUsed: Date | null }>();
   const recent: UsageReport["recent"] = [];
 
-  // Newest first, so the recent list fills in order.
+  // Newest first, so the recent list is in order. It lists every review that
+  // used a model; the page paginates it.
   for (const job of [...jobs].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())) {
     const { title, byModel } = digestOf(job);
     const repo = repos.get(job.repository.id) ?? { fullPath: job.repository.fullPath, reviews: 0, byModel: {}, lastUsed: null };
@@ -175,20 +175,18 @@ export function buildUsageReport(jobs: UsageJob[], period: UsagePeriod, now: Dat
     for (const [model, usage] of Object.entries(byModel)) {
       if (usedTokens(usage)) modelLastUsed.set(model, later(modelLastUsed.get(model) ?? null, job.createdAt));
     }
-    if (recent.length < RECENT) {
-      const totals = totalsOf(byModel);
-      recent.push({
-        id: job.id,
-        number: job.number,
-        title,
-        fullPath: job.repository.fullPath,
-        createdAt: job.createdAt.toISOString(),
-        models: Object.keys(byModel).sort(),
-        inputTokens: totals.inputTokens,
-        outputTokens: totals.outputTokens,
-        usd: totals.usd,
-      });
-    }
+    const totals = totalsOf(byModel);
+    recent.push({
+      id: job.id,
+      number: job.number,
+      title,
+      fullPath: job.repository.fullPath,
+      createdAt: job.createdAt.toISOString(),
+      models: Object.keys(byModel).sort(),
+      inputTokens: totals.inputTokens,
+      outputTokens: totals.outputTokens,
+      usd: totals.usd,
+    });
   }
 
   const byModel: UsageReport["byModel"] = Object.entries(all)

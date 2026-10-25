@@ -69,6 +69,20 @@ function report(overrides: Partial<UsageReport> = {}): UsageReport {
   }
 }
 
+// Enough rows for two pages; listed out of order so a sort has work to do.
+function manyRows() {
+  const base = report()
+  const order = [5, 12, 1, 9, 3, 11, 7, 2, 10, 4, 8, 6]
+  return report({
+    byModel: order.map((n) => ({ ...base.byModel[0]!, model: `openai/model-${String(n).padStart(2, "0")}`, calls: n })),
+    byRepository: order.map((n) => ({ ...base.byRepository[0]!, repositoryId: `r${n}`, fullPath: `acme/repo-${n}` })),
+    recent: Array.from({ length: 12 }, (_, i) => ({ ...base.recent[0]!, id: `rev-${i + 1}`, title: `Review ${i + 1}` })),
+  })
+}
+
+const recentCard = () => screen.getByRole("list", { name: "Recent reviews" }).parentElement!
+const usageSection = () => screen.getByRole("region", { name: "Usage table" })
+
 describe("Usage page", () => {
   it("is reachable from the sidebar and shows the totals", async () => {
     mockApi({ "GET /api/reviews": { reviews: [], total: 0 }, "GET /api/usage?period=7d": report() })
@@ -116,6 +130,73 @@ describe("Usage page", () => {
     await userEvent.click(await screen.findByRole("option", { name: "Usage by Repository" }))
     const byRepo = await screen.findByRole("table", { name: "Usage by repository" })
     expect(within(byRepo).getByText("acme/web")).toBeInTheDocument()
+  })
+
+  it("pages recent reviews past the first ten", async () => {
+    mockApi({ "GET /api/usage?period=7d": manyRows() })
+    renderWithProviders(<App />, { route: "/usage" })
+
+    await screen.findByRole("list", { name: "Recent reviews" })
+    expect(within(recentCard()).getByText("Showing 1-10 of 12")).toBeInTheDocument()
+    await userEvent.click(within(recentCard()).getByRole("button", { name: "Next page" }))
+
+    expect(await within(recentCard()).findByText("Showing 11-12 of 12")).toBeInTheDocument()
+    const titles = within(screen.getByRole("list", { name: "Recent reviews" })).getAllByRole("link").map((link) => link.textContent)
+    expect(titles).toEqual(["Review 11", "Review 12"])
+    // The usage table keeps its own page.
+    expect(within(usageSection()).getByText("Showing 1-10 of 12")).toBeInTheDocument()
+  })
+
+  it("sorts the usage table across every row, then pages it", async () => {
+    mockApi({ "GET /api/usage?period=7d": manyRows() })
+    renderWithProviders(<App />, { route: "/usage" })
+
+    const table = await screen.findByRole("table", { name: "Usage by model" })
+    await userEvent.click(within(table).getByRole("button", { name: "Calls" }))
+    await userEvent.click(within(usageSection()).getByRole("button", { name: "Next page" }))
+
+    expect(await within(usageSection()).findByText("Showing 11-12 of 12")).toBeInTheDocument()
+    const models = within(screen.getByRole("table", { name: "Usage by model" }))
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => within(row).getAllByRole("cell")[0]!.textContent)
+    expect(models).toEqual(["openai/model-11", "openai/model-12"])
+  })
+
+  it("returns both lists to the first page for another mode, view or period", async () => {
+    mockApi({ "GET /api/usage?period=7d": manyRows(), "GET /api/usage?period=30d": manyRows() })
+    renderWithProviders(<App />, { route: "/usage" })
+    await screen.findByRole("table", { name: "Usage by model" })
+
+    const nextUsagePage = () => userEvent.click(within(usageSection()).getByRole("button", { name: "Next page" }))
+    await nextUsagePage()
+    await userEvent.click(within(screen.getByRole("tablist", { name: "Table values" })).getByRole("tab", { name: "Tokens" }))
+    expect(await within(usageSection()).findByText("Showing 1-10 of 12")).toBeInTheDocument()
+
+    await nextUsagePage()
+    await userEvent.click(screen.getByRole("combobox", { name: "Group usage by" }))
+    await userEvent.click(await screen.findByRole("option", { name: "Usage by Repository" }))
+    await screen.findByRole("table", { name: "Usage by repository" })
+    expect(within(usageSection()).getByText("Showing 1-10 of 12")).toBeInTheDocument()
+
+    await nextUsagePage()
+    await userEvent.click(within(recentCard()).getByRole("button", { name: "Next page" }))
+    expect(await within(recentCard()).findByText("Showing 11-12 of 12")).toBeInTheDocument()
+    await userEvent.click(screen.getByRole("tab", { name: "30D" }))
+
+    await waitFor(() => expect(within(recentCard()).getByText("Showing 1-10 of 12")).toBeInTheDocument())
+    expect(within(usageSection()).getByText("Showing 1-10 of 12")).toBeInTheDocument()
+  })
+
+  it("gives each list its own rows-per-page control", async () => {
+    mockApi({ "GET /api/usage?period=7d": manyRows() })
+    renderWithProviders(<App />, { route: "/usage" })
+    await screen.findByRole("list", { name: "Recent reviews" })
+
+    const selects = screen.getAllByRole("combobox", { name: "Rows per page" })
+    expect(selects).toHaveLength(2)
+    expect(selects[0]!.id).not.toBe(selects[1]!.id)
+    expect(within(recentCard()).getByRole("combobox", { name: "Rows per page" })).toBe(selects[0])
   })
 
   it("shows a model without a price at $0", async () => {

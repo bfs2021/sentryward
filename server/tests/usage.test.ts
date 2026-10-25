@@ -188,6 +188,17 @@ describe("buildUsageReport", () => {
     );
   });
 
+  it("lists every recent review in the period, not just the latest few", () => {
+    const jobs = Array.from({ length: 12 }, (_, i) =>
+      job(`2026-10-23T${String(i).padStart(2, "0")}:00:00Z`, { [SONNET]: usage(1_000, 0) }),
+    );
+
+    const report = buildUsageReport(jobs, "7d", NOW);
+
+    expect(report.recent).toHaveLength(12);
+    expect(report.recent.map((r) => r.id)).toEqual(jobs.map((j) => j.id).reverse());
+  });
+
   it("titles a recent review from the stored column before the digest", () => {
     const run = { ...job("2026-10-23T10:00:00Z", { [SONNET]: usage(1_000_000, 0, { input: 2, output: 0 }) }), title: "Fix login redirect" };
     const older = job("2026-10-23T09:00:00Z", { [SONNET]: usage(1_000_000, 0, { input: 2, output: 0 }) });

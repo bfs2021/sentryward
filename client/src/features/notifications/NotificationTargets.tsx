@@ -49,6 +49,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { TextField } from "@/features/auth/TextField"
 import { applyServerErrors } from "@/features/auth/applyServerErrors"
@@ -456,6 +457,30 @@ function EventBadges({ events }: { events: NotificationEvent[] }) {
   )
 }
 
+// Pausing keeps a target's settings, so it can be turned back on without
+// adding it again (and, for a webhook, getting a new secret).
+function TargetActiveSwitch({ target, canManage }: { target: NotificationTarget; canManage: boolean }) {
+  const updateTarget = useUpdateNotificationTarget()
+
+  async function setActive(active: boolean) {
+    try {
+      await updateTarget.mutateAsync({ id: target.id, active })
+      toast.success(`${active ? "Resumed" : "Paused"} ${target.name}`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update the target")
+    }
+  }
+
+  return (
+    <Switch
+      checked={target.active}
+      onCheckedChange={setActive}
+      disabled={!canManage || updateTarget.isPending}
+      aria-label={`Active: ${target.name}`}
+    />
+  )
+}
+
 function TargetActions({
   target,
   onEdit,
@@ -539,6 +564,7 @@ function TargetTable({
             <TableHead>Destination</TableHead>
             <TableHead>Events</TableHead>
             <SortableHead label="Added" sortKey="createdAt" {...head} />
+            <TableHead>Active</TableHead>
             {canManage && (
               <TableHead className="w-0">
                 <span className="sr-only">Actions</span>
@@ -548,11 +574,16 @@ function TargetTable({
         </TableHeader>
         <TableBody>
           {!sorted.length && (
-            <NoMatchesRow colSpan={canManage ? 6 : 5}>No notification targets match your filters.</NoMatchesRow>
+            <NoMatchesRow colSpan={canManage ? 7 : 6}>No notification targets match your filters.</NoMatchesRow>
           )}
           {page.rows.map((target) => (
             <TableRow key={target.id}>
-              <TableCell className="font-medium">{target.name}</TableCell>
+              <TableCell className="font-medium">
+                <div className="flex items-center gap-2">
+                  <span className={target.active ? undefined : "text-muted-foreground"}>{target.name}</span>
+                  {!target.active && <Badge variant="outline">Inactive</Badge>}
+                </div>
+              </TableCell>
               <TableCell>
                 <Badge variant="outline">{KIND_LABELS[target.kind]}</Badge>
               </TableCell>
@@ -563,6 +594,9 @@ function TargetTable({
                 <EventBadges events={target.events} />
               </TableCell>
               <TableCell className="text-muted-foreground">{timeAgo(target.createdAt)}</TableCell>
+              <TableCell>
+                <TargetActiveSwitch target={target} canManage={canManage} />
+              </TableCell>
               {canManage && (
                 <TableCell className="text-right">
                   <TargetActions

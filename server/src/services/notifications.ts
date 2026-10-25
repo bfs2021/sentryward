@@ -169,7 +169,10 @@ export async function notifyJob(jobId: string): Promise<void> {
     });
     const events = eventsFor(job);
     const workspaceId = job.repository.connection.workspaceId;
-    const targets = await prisma.notificationTarget.findMany({ where: { workspaceId, events: { hasSome: events } } });
+    // Paused targets are left out here only; a test delivery still reaches them.
+    const targets = await prisma.notificationTarget.findMany({
+      where: { workspaceId, active: true, events: { hasSome: events } },
+    });
     await Promise.all(
       targets.map(async (target) => {
         const event = eventForTarget(events, target)!;
@@ -229,6 +232,7 @@ export function publicTarget(target: NotificationTarget) {
     host,
     undecryptable,
     recipientIds: target.recipientIds,
+    active: target.active,
     createdAt: target.createdAt,
     updatedAt: target.updatedAt,
   };

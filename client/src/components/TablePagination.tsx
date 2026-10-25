@@ -1,3 +1,4 @@
+import { useId } from "react"
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -19,6 +20,8 @@ export function TablePagination({
   onPageChange: (page: number) => void
   onSizeChange: (size: number) => void
 }) {
+  // Unique per instance, so two tables on one page keep their labels apart.
+  const sizeId = useId()
   const lastPage = Math.max(1, Math.ceil(total / size))
   const first = (page - 1) * size + 1
   const last = Math.min(page * size, total)
@@ -28,11 +31,11 @@ export function TablePagination({
       <p aria-live="polite">{total > 0 && `Showing ${first}-${last} of ${total}`}</p>
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
-          <Label htmlFor="rows-per-page" className="font-normal text-muted-foreground">
+          <Label htmlFor={sizeId} className="font-normal text-muted-foreground">
             Rows per page
           </Label>
           <Select value={String(size)} onValueChange={(value) => onSizeChange(Number(value))}>
-            <SelectTrigger id="rows-per-page" size="sm" className="w-18">
+            <SelectTrigger id={sizeId} size="sm" className="w-18">
               <SelectValue />
             </SelectTrigger>
             <SelectContent position="popper" align="end">

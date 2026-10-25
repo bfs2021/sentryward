@@ -23,7 +23,12 @@ export const createNotificationSchema = z.discriminatedUnion("kind", [
 // The URL is not editable: replacing it is removing the target and adding it
 // again, which for a webhook also issues a new secret.
 export const updateNotificationSchema = z
-  .object({ name: name.optional(), events: events.optional(), recipientIds: recipientIds.optional() })
+  .object({
+    name: name.optional(),
+    events: events.optional(),
+    recipientIds: recipientIds.optional(),
+    active: z.boolean().optional(),
+  })
   .refine((data) => Object.values(data).some((value) => value !== undefined), {
     message: "Nothing to update",
     path: ["name"],
