@@ -21,7 +21,7 @@ export async function verifyFinding(
 ): Promise<FindingVerification> {
   const response = await generateWithFallback(generate, modelChain(config.llm, "verify"), {
     system: VERIFY_SYSTEM_PROMPT,
-    prompt: verifyUserPrompt(changeSet, finding, code.diff, code.context),
+    prompt: verifyUserPrompt(changeSet, finding, code.diff, code.context, config),
     schema: verificationOutputSchema,
     schemaName: "verification",
     repair: repairVerificationOutput,

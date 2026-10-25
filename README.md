@@ -530,15 +530,15 @@ rules:                      # team rules, see "Review rules" below
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `id` | yes | Lowercase letters, digits, `.`, `-` and `_`, unique in the file. Shown on every finding and in the dashboard. |
-| `description` | yes | What the rule requires, up to 1000 characters. Its first sentence is the finding's title. |
+| `description` | yes | What the rule requires, up to 1000 characters. For a rule with a `pattern`, its first sentence is the finding's title; a violation the model reports keeps the model's own title. |
 | `severity` | yes | `critical`, `major`, `minor` or `info`. A violation blocks when it reaches `review.block_on`, and is reported only at or above `review.severity_floor`. |
 | `category` | no | Files the finding, default `maintainability`. Rule findings are reported whatever `review.categories` holds. |
-| `paths` | no | Globs the rule applies to; every reviewed file when absent. |
+| `paths` | no | Globs the rule applies to; every reviewed file when absent. A violation the model reports under a rule that does not cover its file is dropped (`rule_mismatch`). |
 | `pattern` | no | A regular expression (up to 300 characters) checked without a model. RE2 syntax: like JavaScript, but without backreferences or lookarounds, so matching always takes linear time. |
 | `good`, `bad` | no | Compliant and violating examples, up to 2000 characters each. |
 
 - **With a `pattern`**, the rule is checked against every added line of the files it covers (lines over 2000 characters are skipped), so the same diff always gives the same findings. It is never shown to the model and is not re-checked by `review.verify`.
-- **Without one**, the rule is given to the model with its examples, and a violation it reports is filed under the rule with the rule's severity. These still go through `require_evidence` and `verify` like any model finding. Their text is capped at 16000 characters in total.
+- **Without one**, the rule is given to the model with its examples, and a violation it reports is filed under the rule with the rule's severity. These still go through `require_evidence` and `verify` like any model finding. Their text (ids, paths, descriptions and examples) is capped at 16000 characters in total.
 
 Both kinds are reported with source `rule` and the rule's id, count towards `max_findings`, and can be dismissed like any finding. The Findings page's False positives tab lists found and false-positive counts per rule. Rules are read from the base revision like the rest of the file, so a pull request cannot loosen the rules it is reviewed against. Rules can only be set in the file, not in dashboard settings. An invalid rule (a pattern that does not compile, a duplicate id) makes the whole file invalid, as with any other setting.
 

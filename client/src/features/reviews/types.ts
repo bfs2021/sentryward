@@ -81,6 +81,7 @@ export type DropReason =
   | "over_limit"
   | "previously_ignored"
   | "refuted"
+  | "rule_mismatch"
 
 export interface UsageTotals {
   calls: number

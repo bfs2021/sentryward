@@ -76,18 +76,23 @@ function codeCell(text: string): string {
   return sanitize(text).replace(/[<>]/g, (c) => (c === "<" ? "&lt;" : "&gt;")).replace(/\|/g, "\\|").replace(/\n+/g, " ");
 }
 
-// Names the analyzer behind a tool finding, after its severity and category.
-// The name comes from the forge (a check run or report), so it is escaped
-// too: backslashes with the emphasis characters, in one pass, so a name
-// ending in "\" cannot cancel the escape after it.
+// " · <prefix> <value>" after a finding's severity and category. The value may
+// come from outside (an analyzer name from the forge), so it is escaped:
+// backslashes with the emphasis characters, in one pass, so a value ending in
+// "\" cannot cancel the escape after it.
+function labelSuffix(prefix: string, value: string): string {
+  return ` · ${prefix} ${codeCell(value.replace(/[\\*_`]/g, "\\$&"))}`;
+}
+
+// Names the analyzer behind a tool finding.
 export function toolSuffix(finding: Finding): string {
-  return finding.source === "tool" && finding.tool ? ` · via ${codeCell(finding.tool.replace(/[\\*_`]/g, "\\$&"))}` : "";
+  return finding.source === "tool" && finding.tool ? labelSuffix("via", finding.tool) : "";
 }
 
 // Names the team rule behind a rule finding. The id is constrained by the
 // config schema, but is escaped like a tool name all the same.
 export function ruleSuffix(finding: Finding): string {
-  return finding.source === "rule" && finding.ruleId ? ` · rule ${codeCell(finding.ruleId.replace(/[\\*_`]/g, "\\$&"))}` : "";
+  return finding.source === "rule" && finding.ruleId ? labelSuffix("rule", finding.ruleId) : "";
 }
 
 // Only an outcome is worth a word: "not checked" on every finding would be

@@ -173,18 +173,31 @@ const triggersShape = {
 // cap, is what bounds the cost. The cap only keeps the file readable.
 export const MAX_RULE_PATTERN_CHARS = 300;
 // Model-checked rules are listed in every pass's system prompt, so their text
-// as a whole is capped, not just each field.
+// as a whole is capped, not just each field: everything the prompt prints of
+// them (llm/prompt.ts), ids and paths included.
 export const MAX_RULES_CHARS = 16_000;
 
 // RE2 rejects what it cannot match in linear time (backreferences,
-// lookarounds), so such a pattern fails here rather than mid-review.
+// lookarounds), so such a pattern fails here rather than mid-review. One
+// review parses the same rules several times (each config layer, then the
+// merged config), so answers are remembered; the cache is cleared, not grown,
+// past a bound, since patterns come from repository files.
+const compileResults = new Map<string, boolean>();
+const MAX_COMPILE_RESULTS = 500;
+
 function compiles(pattern: string): boolean {
+  const known = compileResults.get(pattern);
+  if (known !== undefined) return known;
+  let ok: boolean;
   try {
     new RE2(pattern);
-    return true;
+    ok = true;
   } catch {
-    return false;
+    ok = false;
   }
+  if (compileResults.size >= MAX_COMPILE_RESULTS) compileResults.clear();
+  compileResults.set(pattern, ok);
+  return ok;
 }
 
 export const ruleSchema = z.strictObject({
@@ -222,9 +235,18 @@ const rulesSchema = z
     }
     const chars = rules
       .filter((rule) => rule.pattern === undefined)
-      .reduce((sum, rule) => sum + rule.description.length + (rule.good?.length ?? 0) + (rule.bad?.length ?? 0), 0);
+      .reduce(
+        (sum, rule) =>
+          sum +
+          rule.id.length +
+          (rule.paths?.join(", ").length ?? 0) +
+          rule.description.length +
+          (rule.good?.length ?? 0) +
+          (rule.bad?.length ?? 0),
+        0,
+      );
     if (chars > MAX_RULES_CHARS) {
-      ctx.addIssue({ code: "custom", message: `Rules without a pattern may hold at most ${MAX_RULES_CHARS} characters of text in total` });
+      ctx.addIssue({ code: "custom", message: `Rules without a pattern may hold at most ${MAX_RULES_CHARS} characters in total (ids, paths, descriptions and examples)` });
     }
   });
 
@@ -264,11 +286,12 @@ export type ConfigOverride = z.infer<typeof configOverrideSchema>;
 // triggers use configOverrideSchema, which rejects them as unknown settings.
 // Rules are the reverse: they live in the repository file alone, so a team
 // reads every rule it is held to in one place.
+export const REPOSITORY_ONLY_KEYS = { rules: true } as const;
 export const dashboardOverrideSchema = configOverrideSchema
   .extend({
     llm: z.strictObject(dashboardLlmShape).partial().optional(),
   })
-  .omit({ rules: true });
+  .omit(REPOSITORY_ONLY_KEYS);
 export type DashboardOverride = z.infer<typeof dashboardOverrideSchema>;
 
 export const DEFAULT_CONFIG: Config = {

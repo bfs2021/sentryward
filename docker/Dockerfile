@@ -13,7 +13,10 @@ RUN npm run build
 
 FROM node:24-slim AS server
 
-RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
+# python3, make and g++ build re2 (a native addon) when no prebuilt binary
+# matches this platform and Node version. Only this stage needs them:
+# the final image copies the built node_modules.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl python3 make g++ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY server/package.json server/package-lock.json ./

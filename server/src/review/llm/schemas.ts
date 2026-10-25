@@ -158,14 +158,17 @@ function numberValue(value: unknown): unknown {
 function repairFinding(value: unknown): unknown {
   const entry = camelKeys(record(value));
   const startLine = numberValue(entry.startLine ?? entry.line);
+  const ruleId = typeof entry.ruleId === "string" && entry.ruleId.trim() ? entry.ruleId.trim() : null;
   return {
     ...entry,
     startLine,
     endLine: numberValue(entry.endLine ?? startLine),
     // Severity and category decide what blocks, so an unknown value is not
-    // guessed: the finding is dropped instead.
-    severity: enumValue(entry.severity, SEVERITIES),
-    category: enumValue(entry.category, CATEGORIES),
+    // guessed: the finding is dropped instead. A finding naming a rule is the
+    // exception: the rule sets both, and one naming a rule it may not is
+    // dropped by the validator, so the placeholder is never reported.
+    severity: enumValue(entry.severity, SEVERITIES, ruleId ? "minor" : undefined),
+    category: enumValue(entry.category, CATEGORIES, ruleId ? "maintainability" : undefined),
     kind: enumValue(entry.kind, MODEL_KINDS, "potential_issue"),
     effort: enumValue(entry.effort, EFFORTS, "moderate"),
     // Unverified is what the validator demotes, so it is the safe default.
@@ -176,7 +179,7 @@ function repairFinding(value: unknown): unknown {
     evidenceFiles: Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles : [],
     suggestion: typeof entry.suggestion === "string" && entry.suggestion.trim() ? entry.suggestion : null,
     confidence: numberValue(entry.confidence),
-    ruleId: typeof entry.ruleId === "string" && entry.ruleId.trim() ? entry.ruleId.trim() : null,
+    ruleId,
   };
 }
 

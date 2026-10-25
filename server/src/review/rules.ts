@@ -5,6 +5,8 @@ import { bucketFor } from "./core/buckets.ts";
 import { fingerprint } from "./core/fingerprint.ts";
 import type { ChangedFile, ChangeSet, Finding } from "./core/models.ts";
 import { atLeast, type Category } from "./core/severity.ts";
+import { hunkLines } from "./context/diffText.ts";
+import { fence } from "./render/markdown.ts";
 import type { DropReason, ValidationResult } from "./validate/validator.ts";
 
 // Team rules from `.sentryward.yaml`. A rule with a pattern is checked here,
@@ -19,6 +21,7 @@ export const DEFAULT_RULE_CATEGORY: Category = "maintainability";
 const MAX_MATCHED_LINE_CHARS = 2000;
 
 const matchers = new WeakMap<Rule, (path: string) => boolean>();
+const patterns = new WeakMap<Rule, RE2>();
 
 export function ruleApplies(rule: Rule, path: string): boolean {
   if (!rule.paths?.length) return true;
@@ -35,50 +38,43 @@ export function modelRules(config: Config): Rule[] {
   return config.rules.filter((rule) => rule.pattern === undefined);
 }
 
-// The rule a model finding names, if it is one the model was given and it
-// covers the finding's file. Anything else is an ordinary finding.
-export function modelRuleFor(config: Config, ruleId: string | null | undefined, path: string): Rule | undefined {
+// The rule a model finding names: undefined when it names none, null when the
+// name does not hold (an unknown id, a pattern rule, or a rule whose paths
+// leave the file out), which the validator drops.
+export function modelRuleFor(config: Config, ruleId: string | null | undefined, path: string): Rule | null | undefined {
   const id = ruleId?.trim();
   if (!id) return undefined;
-  return modelRules(config).find((rule) => rule.id === id && ruleApplies(rule, path));
+  return modelRules(config).find((rule) => rule.id === id && ruleApplies(rule, path)) ?? null;
 }
 
 // Up to the first sentence, so a title stays one line however long the rule.
+// A full stop ends it only before a capital or the end, so "e.g. logger.info"
+// does not.
 export function ruleTitle(rule: Rule): string {
   const text = rule.description.replace(/\s+/g, " ").trim();
-  const end = text.search(/[.;:](\s|$)/);
+  const end = text.search(/[;:](\s|$)|\.(\s+[A-Z]|$)/);
   return (end > 0 ? text.slice(0, end) : text).slice(0, 200);
 }
 
 function ruleBody(rule: Rule): string {
   const good = rule.good?.trimEnd();
-  return good ? `${rule.description.trim()}\n\nInstead:\n\n\`\`\`\n${good}\n\`\`\`` : rule.description.trim();
+  return good ? `${rule.description.trim()}\n\nInstead:\n\n${fence(good)}` : rule.description.trim();
 }
 
-// Added lines with their new-file numbers, read from the hunk text the same
-// way the diff is rendered for the model (context/diffText.ts).
-function addedLines(file: ChangedFile): { line: number; text: string }[] {
-  const out: { line: number; text: string }[] = [];
-  for (const hunk of file.hunks) {
-    let newLine = hunk.newStart;
-    for (const raw of hunk.content.split("\n").slice(1)) {
-      const marker = raw[0];
-      if (marker === "+") {
-        out.push({ line: newLine, text: raw.slice(1) });
-        newLine += 1;
-      } else if (marker !== "-" && marker !== "\\") {
-        newLine += 1;
-      }
-    }
+function compiled(rule: Rule & { pattern: string }): RE2 {
+  let pattern = patterns.get(rule);
+  if (!pattern) {
+    pattern = new RE2(rule.pattern);
+    patterns.set(rule, pattern);
   }
-  return out;
+  return pattern;
 }
 
 // Pattern rules over the added lines of the reviewed files. Pure and
 // order-stable, so the same diff and rules give the same findings and
-// fingerprints on every run. Held to the floor and dismissals like any other
-// finding, but not to review.categories (see ruleSchema); the cap is applied
-// by the caller across every source.
+// fingerprints on every run. Held to the floor (a rule below it is skipped
+// whole) and dismissals like any other finding, but not to review.categories
+// (see ruleSchema); the cap is applied by the caller across every source.
 export function checkPatternRules(
   reviewed: ChangedFile[],
   changeSet: ChangeSet,
@@ -91,22 +87,29 @@ export function checkPatternRules(
   };
   const kept = new Map<string, Finding>();
 
-  for (const rule of config.rules) {
-    if (rule.pattern === undefined) continue;
-    // RE2, as validated by the config schema, so a change author's line cannot
-    // make a pattern backtrack. No flags: a global or sticky regex would carry
-    // lastIndex between lines.
-    const pattern = new RE2(rule.pattern);
-    const category = rule.category ?? DEFAULT_RULE_CATEGORY;
-    const title = ruleTitle(rule);
-    for (const file of reviewed) {
-      if (!ruleApplies(rule, file.path)) continue;
-      for (const { line, text } of addedLines(file)) {
+  // A rule below the floor can produce nothing, so it is not run at all.
+  const rules = config.rules.filter(
+    (rule): rule is Rule & { pattern: string } =>
+      rule.pattern !== undefined && atLeast(rule.severity, config.review.severityFloor),
+  );
+  if (rules.length === 0) return { findings: [], dropped, demoted: 0 };
+
+  for (const file of reviewed) {
+    const applicable = rules.filter((rule) => ruleApplies(rule, file.path));
+    if (applicable.length === 0) continue;
+    // Read once per file, not once per rule.
+    const added = file.hunks
+      .flatMap(hunkLines)
+      .flatMap(({ marker, line, text }) => (marker === "+" && line !== undefined ? [{ line, text }] : []));
+    for (const rule of applicable) {
+      // RE2, as validated by the config schema, so a change author's line
+      // cannot make a pattern backtrack. No flags: a global or sticky regex
+      // would carry lastIndex between lines.
+      const pattern = compiled(rule);
+      const category = rule.category ?? DEFAULT_RULE_CATEGORY;
+      const title = ruleTitle(rule);
+      for (const { line, text } of added) {
         if (text.length > MAX_MATCHED_LINE_CHARS || !pattern.test(text)) continue;
-        if (!atLeast(rule.severity, config.review.severityFloor)) {
-          drop("below_floor");
-          continue;
-        }
         const kind = "potential_issue";
         const finding: Finding = {
           file: file.path,

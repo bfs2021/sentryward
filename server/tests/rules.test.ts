@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { parseRepoFile } from "../src/review/config/repoFile.ts";
 import { resolveConfig } from "../src/review/config/resolve.ts";
 import type { Config, ConfigOverride, Rule } from "../src/review/config/schema.ts";
-import { reviewSystemPrompt } from "../src/review/llm/prompt.ts";
+import { reviewSystemPrompt, verifyUserPrompt } from "../src/review/llm/prompt.ts";
+import { repairReviewOutput } from "../src/review/llm/schemas.ts";
 import { runReview } from "../src/review/pipeline.ts";
 import { inlineBody } from "../src/review/publish/inline.ts";
 import { checkPatternRules, ruleTitle } from "../src/review/rules.ts";
@@ -85,6 +86,12 @@ describe("rules in .sentryward.yaml", () => {
     // Pattern rules never reach the prompt, so they do not count.
     expect(() => config({ rules: rules.map((r) => ({ ...r, pattern: "b" })) })).not.toThrow();
   });
+
+  it("counts the ids and paths the prompt prints towards that cap", () => {
+    const paths = Array.from({ length: 50 }, (_, index) => `src/${"deep/".repeat(60)}${index}/**`);
+    const rules = Array.from({ length: 2 }, (_, index) => rule({ id: `r${index}`, description: "x", paths }));
+    expect(() => config({ rules })).toThrow(/at most 16000 characters/);
+  });
 });
 
 describe("checkPatternRules", () => {
@@ -136,7 +143,8 @@ describe("checkPatternRules", () => {
       new Set([kept.fingerprint]),
     );
     expect(findings).toEqual([]);
-    expect(dropped).toEqual({ previously_ignored: 1, below_floor: 2 });
+    // A rule below the floor is not run, so its matches are not counted.
+    expect(dropped).toEqual({ previously_ignored: 1 });
   });
 
   it("cannot be made to backtrack by the change's lines", () => {
@@ -158,6 +166,15 @@ describe("checkPatternRules", () => {
   it("titles a rule by its first sentence", () => {
     expect(ruleTitle(rule({ description: "No raw SQL; use the query builder." }))).toBe("No raw SQL");
     expect(ruleTitle(rule({ description: "Use v1.2 APIs only" }))).toBe("Use v1.2 APIs only");
+    expect(ruleTitle(rule({ description: "Log through the logger, e.g. logger.info, never console.log. Always." }))).toBe(
+      "Log through the logger, e.g. logger.info, never console.log",
+    );
+  });
+
+  it("fences a compliant example that holds a fence of its own", () => {
+    const good = "```ts\nconst x = 1\n```";
+    const [finding] = check([rule({ pattern: "const b", paths: ["src/**"], good })]).findings;
+    expect(finding!.body).toContain(`Instead:\n\n\`\`\`\`\n${good}\n\`\`\`\``);
   });
 });
 
@@ -190,13 +207,56 @@ describe("model-checked rules", () => {
     expect(findings[0]).toMatchObject({ source: "rule", ruleId: "thin", severity: "critical", category: "style" });
   });
 
-  it("ignores a rule id the model was not given or that does not cover the file", () => {
+  it("drops a finding naming a rule the model was not given or that does not cover the file", () => {
     const rules = [rule({ id: "elsewhere", paths: ["lib/**"] }), rule({ id: "pattern", pattern: "x" })];
     for (const ruleId of ["unknown", "elsewhere", "pattern"]) {
-      const { findings } = validateFindings([modelFinding({ ruleId })], changeSet, changeSet.files, withRules(rules));
-      expect(findings[0]).toMatchObject({ source: "llm" });
-      expect(findings[0]).not.toHaveProperty("ruleId");
+      const { findings, dropped } = validateFindings([modelFinding({ ruleId })], changeSet, changeSet.files, withRules(rules));
+      expect(findings).toEqual([]);
+      expect(dropped).toEqual({ rule_mismatch: 1 });
     }
+  });
+
+  it("gives a violation one fingerprint whether or not the model named the rule", () => {
+    const rules = [rule({ id: "thin", severity: "major" })];
+    const validate = (ruleId: string | null) =>
+      validateFindings(
+        [modelFinding({ ruleId, category: "maintainability", evidence: "contract" })],
+        changeSet,
+        changeSet.files,
+        withRules(rules, { review: { categories: ["maintainability"] } }),
+      ).findings[0]!;
+    expect(validate("thin").source).toBe("rule");
+    expect(validate("thin").fingerprint).toBe(validate(null).fingerprint);
+  });
+
+  it("repairs a severity or category the rule replaces anyway", () => {
+    const repaired = repairReviewOutput({
+      findings: [{ ...modelFinding({ ruleId: "thin" }), severity: "high", category: "architecture" }],
+    }) as { findings: { severity: string; category: string }[] };
+    expect(repaired.findings[0]).toMatchObject({ severity: "minor", category: "maintainability" });
+    const { findings } = validateFindings(
+      repaired.findings as never,
+      changeSet,
+      changeSet.files,
+      withRules([rule({ id: "thin", severity: "critical", category: "security" })]),
+    );
+    expect(findings[0]).toMatchObject({ source: "rule", severity: "critical", category: "security" });
+    // Without a rule, an unknown severity is still not guessed.
+    const plain = repairReviewOutput({ findings: [{ ...modelFinding(), severity: "high" }] }) as { findings: unknown[] };
+    expect(plain.findings).toEqual([]);
+  });
+
+  it("shows the verifier the rule a rule finding claims is broken", () => {
+    const rules = [rule({ id: "thin", description: "Controllers stay thin.", bad: "prisma.user.find()" })];
+    const [finding] = validateFindings(
+      [modelFinding({ ruleId: "thin", evidence: "contract" })],
+      changeSet,
+      changeSet.files,
+      withRules(rules),
+    ).findings;
+    const prompt = verifyUserPrompt(changeSet, finding!, "", "", withRules(rules));
+    expect(prompt).toContain("Repository rule thin:\nControllers stay thin.");
+    expect(prompt).toContain("Violating example:\n      prisma.user.find()");
   });
 
   it("demotes an unproven violation of a blocking rule", () => {
@@ -253,5 +313,16 @@ describe("runReview with rules", () => {
     );
     expect(result.findings.map((finding) => finding.source)).toEqual(["llm"]);
     expect(result.validation.dropped).toEqual({ over_limit: 1 });
+  });
+
+  it("keeps a model finding over a pattern match of the same severity at the cap", async () => {
+    const result = await runReview(
+      {
+        changeSet: makeChangeSet(),
+        config: config({ review: { maxFindings: 1, verify: "off" }, rules: [rule({ severity: "major", pattern: "const c" })] }),
+      },
+      { generate: model([modelFinding({ severity: "major", confidence: 0.8, evidence: "execution_path" })]), now },
+    );
+    expect(result.findings.map((finding) => finding.source)).toEqual(["llm"]);
   });
 });

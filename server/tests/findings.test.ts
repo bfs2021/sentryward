@@ -224,6 +224,30 @@ describe("findingTransitions", () => {
     };
     expect(findingTransitions(existing, result).resolved).toEqual([target!.fingerprint]);
   });
+
+  it("does not pair pattern rule matches, or model findings under different rules, as a move", () => {
+    const [target] = base.findings;
+    const result = (finding: ReviewResult["findings"][number]): ReviewResult => ({
+      ...base,
+      status: "partial",
+      findings: [finding],
+      files: [...base.files, { path: "src/extracted.ts", changeType: "added", additions: 10, deletions: 0 }],
+      coverage: { ...base.coverage, reviewedFiles: ["src/extracted.ts"] },
+    });
+    const known = (extra: Partial<KnownFinding>): KnownFinding[] => [
+      { ...row(target!.fingerprint, "open", target!.file), title: target!.title, category: target!.category, kind: target!.kind, ...extra },
+    ];
+    const elsewhere = { ...target!, file: "src/extracted.ts", fingerprint: "abababababababab" };
+
+    // Two matches of one pattern rule share its title.
+    const pattern = { ...elsewhere, source: "rule" as const, ruleId: "no-b" };
+    expect(findingTransitions(known({ ruleId: "no-b", model: null }), result(pattern)).resolved).toEqual([]);
+
+    // Model findings with one title under different rules are different problems.
+    const ruled = { ...elsewhere, source: "rule" as const, ruleId: "thin", model: "m" };
+    expect(findingTransitions(known({ ruleId: "other", model: "m" }), result(ruled)).resolved).toEqual([]);
+    expect(findingTransitions(known({ ruleId: "thin", model: "m" }), result(ruled)).resolved).toEqual([target!.fingerprint]);
+  });
 });
 
 describe("findingLifecycle", () => {
