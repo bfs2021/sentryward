@@ -13,13 +13,17 @@ function parseSize(raw: string | null) {
   return PAGE_SIZES.includes(size) ? size : DEFAULT_SIZE
 }
 
+// The search params a table's pagination lives in, e.g. ?fpPage= and ?fpSize=.
+export function paginationKeys(prefix?: string) {
+  return prefix ? { page: `${prefix}Page`, size: `${prefix}Size` } : { page: "page", size: "size" }
+}
+
 // ?page= and ?size= keep the current page linkable and survive a reload.
 // Defaults are left out of the URL, and other params (e.g. ?tab=) are kept.
 // A prefix gives a second table on the same page its own params (?fpPage=).
 export function usePagination(prefix?: string) {
   const [params, setParams] = useSearchParams()
-  const pageKey = prefix ? `${prefix}Page` : "page"
-  const sizeKey = prefix ? `${prefix}Size` : "size"
+  const { page: pageKey, size: sizeKey } = paginationKeys(prefix)
   const page = parsePage(params.get(pageKey))
   const size = parseSize(params.get(sizeKey))
 

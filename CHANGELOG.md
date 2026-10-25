@@ -128,6 +128,14 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   as they are typed (`POST /api/config/rules/check`), and inline comments for
   rule findings include the rule's description and paths, since dashboard
   rules are not visible in the repository. Closes #140.
+- Notification targets can be paused. Admins switch a target off from the
+  Notifications list (`PATCH /api/notifications/:id` with `active`) to stop
+  its deliveries while keeping its name, events, recipients, URL and signing
+  secret, and switch it back on later. Reviews that finish while a target is
+  paused are never sent to it, even after it is resumed. The list sorts and
+  filters by status, paused targets still accept test deliveries, and members
+  see the switch but cannot change it. Existing targets stay active (migration: an `active` column on
+  `notification_targets`, default true). Closes #130.
 
 ### Changed
 
@@ -146,6 +154,15 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   shows "Self-reported confidence" instead of a bare percentage, the minimum
   confidence setting says it is the model's own estimate, and forge comments
   still never show it.
+- The Usage page paginates its lists. Recent reviews now pages through every
+  review that used a model in the period instead of only the latest 10. It is
+  served a page at a time by the new `GET /api/usage/recent` (`page`, `limit`
+  up to 100), and `GET /api/usage` no longer returns `recent`. It and the
+  Usage by Model / Usage by Repository table page separately
+  (`?recentPage=`, `?usagePage=`). The table sorts across every row before
+  paging. A new period sends both lists back to page 1, and so does a new
+  sort, view or Costs/Tokens mode for the table. Each table's rows-per-page control now has
+  its own id, so two on one page keep their labels. Closes #132.
 
 ### Fixed
 

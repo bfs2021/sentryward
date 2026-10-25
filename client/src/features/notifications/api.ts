@@ -28,6 +28,8 @@ export interface NotificationTarget {
   // Saved under a different server ENCRYPTION_KEY; only adding it again helps.
   undecryptable: boolean
   recipientIds: string[]
+  // A paused target keeps its settings but gets no deliveries.
+  active: boolean
   createdAt: string
   updatedAt: string
 }
@@ -40,6 +42,7 @@ export interface NotificationTargetUpdate {
   name?: string
   events?: NotificationEvent[]
   recipientIds?: string[]
+  active?: boolean
 }
 
 export type TestResult = { ok: true } | { ok: false; error: string }

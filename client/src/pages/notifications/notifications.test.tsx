@@ -3,7 +3,7 @@ import { screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { App } from "@/App"
 import { jsonResponse, renderWithProviders } from "@/test/renderWithProviders"
-import { mockApi, personalWorkspace, testUser } from "@/test/apiRoutes"
+import { mockApi, personalWorkspace, testUser, testWorkspaces } from "@/test/apiRoutes"
 
 const webhook = {
   id: "n1",
@@ -13,6 +13,7 @@ const webhook = {
   host: "ci.example.com",
   undecryptable: false,
   recipientIds: [],
+  active: true,
   createdAt: "2026-10-01T00:00:00.000Z",
   updatedAt: "2026-10-01T00:00:00.000Z",
 }
@@ -199,6 +200,91 @@ describe("Notifications", () => {
     await userEvent.click(screen.getByRole("button", { name: "Next page" }))
     expect(await screen.findByText("Showing 11-12 of 12")).toBeInTheDocument()
     expect(rowNames()).toEqual(["Target 11", "Target 12"])
+  })
+
+  it("pauses a target from the list without opening the edit dialog", async () => {
+    let active = true
+    const fetchSpy = mockApi({
+      "GET /api/notifications": () => jsonResponse(200, { targets: [{ ...webhook, active }], mailConfigured: false }),
+      "PATCH /api/notifications/n1": (init?: RequestInit) => {
+        active = JSON.parse(String(init?.body)).active
+        return jsonResponse(200, { target: { ...webhook, active } })
+      },
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    const toggle = await screen.findByRole("switch", { name: "Active: CI alerts" })
+    expect(toggle).toBeChecked()
+    await userEvent.click(toggle)
+
+    expect(await screen.findByText("Paused CI alerts")).toBeInTheDocument()
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    const [[, init]] = calls(fetchSpy, "PATCH", "/api/notifications/n1")
+    expect(JSON.parse(String(init?.body))).toEqual({ active: false })
+    expect(screen.getByRole("switch", { name: "Active: CI alerts" })).not.toBeChecked()
+  })
+
+  it("moves the switch as soon as it is clicked, and back if saving fails", async () => {
+    let fail!: () => void
+    mockApi({
+      "GET /api/notifications": { targets: [webhook], mailConfigured: false },
+      // Held open, so the switch is checked while the request is in flight.
+      "PATCH /api/notifications/n1": (() =>
+        new Promise<Response>((resolve) => {
+          fail = () => resolve(jsonResponse(500, { message: "Could not save" }))
+        })) as unknown as () => Response,
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    const toggle = await screen.findByRole("switch", { name: "Active: CI alerts" })
+    await userEvent.click(toggle)
+    expect(toggle).not.toBeChecked()
+    expect(toggle).toBeDisabled()
+
+    fail()
+    expect(await screen.findByText("Could not save")).toBeInTheDocument()
+    expect(toggle).toBeChecked()
+  })
+
+  it("sorts and filters targets by whether they are active", async () => {
+    mockApi({
+      "GET /api/notifications": {
+        targets: [webhook, { ...emailTarget, active: false }, slackTarget],
+        mailConfigured: true,
+      },
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    await screen.findByRole("cell", { name: "CI alerts" })
+    await userEvent.click(screen.getByRole("button", { name: "Active" }))
+    expect(rowNames()).toEqual(["CI alerts", "Team channel", "Leads"])
+    await userEvent.click(screen.getByRole("button", { name: "Active" }))
+    expect(rowNames()[0]).toBe("Leads")
+
+    await chooseFilter("Status", "Paused")
+    expect(rowNames()).toEqual(["Leads"])
+    await userEvent.click(screen.getByRole("button", { name: "Remove Status filter" }))
+    await chooseFilter("Status", "Active")
+    expect(rowNames()).toEqual(["CI alerts", "Team channel"])
+  })
+
+  it("shows members whether a target is active but does not let them change it", async () => {
+    const asMember = testWorkspaces.map((workspace) => ({ ...workspace, role: "member" }))
+    mockApi({
+      "GET /api/auth/me": { user: testUser, workspaces: asMember },
+      "GET /api/workspaces": { workspaces: asMember },
+      "GET /api/notifications": { targets: [{ ...webhook, active: false }], mailConfigured: false },
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    const toggle = await screen.findByRole("switch", { name: "Active: CI alerts" })
+    expect(toggle).not.toBeChecked()
+    expect(toggle).toBeDisabled()
+    expect(screen.queryByRole("button", { name: "Actions for CI alerts" })).not.toBeInTheDocument()
   })
 
   it("asks before removing a target", async () => {

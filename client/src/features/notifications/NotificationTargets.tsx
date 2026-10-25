@@ -49,6 +49,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { TextField } from "@/features/auth/TextField"
 import { applyServerErrors } from "@/features/auth/applyServerErrors"
@@ -110,7 +111,12 @@ const KIND_OPTIONS = (Object.keys(KIND_LABELS) as NotificationKind[]).map((kind)
   label: KIND_LABELS[kind],
 }))
 
-type SortKey = "name" | "kind" | "createdAt"
+const STATUS_OPTIONS = [
+  { value: "active", label: "Active" },
+  { value: "paused", label: "Paused" },
+]
+
+type SortKey = "name" | "kind" | "createdAt" | "active"
 
 function compareTargets(a: NotificationTarget, b: NotificationTarget, key: SortKey) {
   switch (key) {
@@ -120,6 +126,9 @@ function compareTargets(a: NotificationTarget, b: NotificationTarget, key: SortK
       return KIND_LABELS[a.kind].localeCompare(KIND_LABELS[b.kind])
     case "createdAt":
       return Date.parse(a.createdAt) - Date.parse(b.createdAt)
+    case "active":
+      // Ascending lists active targets first.
+      return Number(b.active) - Number(a.active)
   }
 }
 
@@ -456,6 +465,32 @@ function EventBadges({ events }: { events: NotificationEvent[] }) {
   )
 }
 
+// Pausing keeps a target's settings, so it can be turned back on without
+// adding it again (and, for a webhook, getting a new secret).
+function TargetActiveSwitch({ target, canManage }: { target: NotificationTarget; canManage: boolean }) {
+  const updateTarget = useUpdateNotificationTarget()
+
+  async function setActive(active: boolean) {
+    try {
+      await updateTarget.mutateAsync({ id: target.id, active })
+      toast.success(`${active ? "Resumed" : "Paused"} ${target.name}`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update the target")
+    }
+  }
+
+  return (
+    <Switch
+      // Shows the requested state while the change is saved and the list
+      // refetched; on an error it falls back to what the server has.
+      checked={updateTarget.isPending ? (updateTarget.variables.active ?? target.active) : target.active}
+      onCheckedChange={setActive}
+      disabled={!canManage || updateTarget.isPending}
+      aria-label={`Active: ${target.name}`}
+    />
+  )
+}
+
 function TargetActions({
   target,
   onEdit,
@@ -539,6 +574,7 @@ function TargetTable({
             <TableHead>Destination</TableHead>
             <TableHead>Events</TableHead>
             <SortableHead label="Added" sortKey="createdAt" {...head} />
+            <SortableHead label="Active" sortKey="active" {...head} />
             {canManage && (
               <TableHead className="w-0">
                 <span className="sr-only">Actions</span>
@@ -548,7 +584,7 @@ function TargetTable({
         </TableHeader>
         <TableBody>
           {!sorted.length && (
-            <NoMatchesRow colSpan={canManage ? 6 : 5}>No notification targets match your filters.</NoMatchesRow>
+            <NoMatchesRow colSpan={canManage ? 7 : 6}>No notification targets match your filters.</NoMatchesRow>
           )}
           {page.rows.map((target) => (
             <TableRow key={target.id}>
@@ -563,6 +599,9 @@ function TargetTable({
                 <EventBadges events={target.events} />
               </TableCell>
               <TableCell className="text-muted-foreground">{timeAgo(target.createdAt)}</TableCell>
+              <TableCell>
+                <TargetActiveSwitch target={target} canManage={canManage} />
+              </TableCell>
               {canManage && (
                 <TableCell className="text-right">
                   <TargetActions
@@ -615,9 +654,10 @@ function TargetList({
   const [query, setQuery] = useState("")
   const [kind, setKind] = useState(ALL)
   const [event, setEvent] = useState(ALL)
+  const [status, setStatus] = useState(ALL)
   const [adding, setAdding] = useState(false)
   const hasTargets = targets.length > 0
-  const filtering = kind !== ALL || event !== ALL
+  const filtering = kind !== ALL || event !== ALL || status !== ALL
 
   // A new filter or search starts over at the first page.
   function filterBy<T>(set: (value: T) => void) {
@@ -630,6 +670,7 @@ function TargetList({
   function clearFilters() {
     setKind(ALL)
     setEvent(ALL)
+    setStatus(ALL)
     setPage(1)
   }
 
@@ -651,14 +692,16 @@ function TargetList({
             ...recipientNames(target, memberNames),
           ) &&
           (kind === ALL || target.kind === kind) &&
-          (event === ALL || target.events.includes(event as NotificationEvent)),
+          (event === ALL || target.events.includes(event as NotificationEvent)) &&
+          (status === ALL || target.active === (status === "active")),
       ),
-    [targets, query, kind, event, memberNames],
+    [targets, query, kind, event, status, memberNames],
   )
 
   const activeFilters = [
     { label: "Type", value: selectedLabel(kind, KIND_OPTIONS), onRemove: () => filterBy(setKind)(ALL) },
     { label: "Event", value: selectedLabel(event, EVENT_OPTIONS), onRemove: () => filterBy(setEvent)(ALL) },
+    { label: "Status", value: selectedLabel(status, STATUS_OPTIONS), onRemove: () => filterBy(setStatus)(ALL) },
   ].filter((filter): filter is ActiveFilter => filter.value !== null)
 
   const addButton = canManage && (
@@ -690,6 +733,14 @@ function TargetList({
               value={event}
               onValueChange={filterBy(setEvent)}
               options={EVENT_OPTIONS}
+            />
+            <FilterSelect
+              id="notification-status-filter"
+              label="Status"
+              allLabel="All statuses"
+              value={status}
+              onValueChange={filterBy(setStatus)}
+              options={STATUS_OPTIONS}
             />
           </FilterPopover>
           <SearchInput label="Search notification targets" value={query} onChange={filterBy(setQuery)} />

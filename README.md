@@ -383,7 +383,7 @@ Under **Notifications**, workspace admins add targets that hear about finished r
 - **Failed**: the review could not run or finish (no model key, the forge unreachable, the maximum run time or a worker that stopped responding).
 - **Completed**: any finished review, blocked or not. Skipped and cancelled reviews never notify.
 
-A target gets one delivery per review, named after the most specific event it listens for (failed, then blocked, then completed). There are three kinds:
+A target gets one delivery per review, named after the most specific event it listens for (failed, then blocked, then completed). Admins can switch a target off in the list to pause its deliveries while keeping its events, recipients, URL and secret. Pausing drops deliveries rather than holding them: a review that finishes while a target is paused is never sent to it, even after it is switched back on. A paused target shows as switched off, can be filtered by status, and still accepts test deliveries, so it can be checked before it is switched back on. There are three kinds:
 
 - **Webhook**: a `POST` with a JSON body, an `X-Sentryward-Event` header and an `X-Sentryward-Signature: sha256=<hex>` header, the HMAC-SHA256 of the raw body keyed with the signing secret shown once when the target is added. Remove the target and add it again to change the URL or rotate the secret.
 
@@ -631,7 +631,8 @@ so scripts written before workspaces keep working. Routes under
 | GET    | `/api/reviews?repoId=&status=&page=&limit=` | The workspace's reviews, newest first, with a summary but not the full result; returns `{ reviews, total, page, limit }` (`limit` 1-100, default 20) |
 | GET    | `/api/reviews/stats?repoId=&days=` | Runs, verdicts, review time and token totals over the last `days` (default 7), with `cost: { usd }`: the summed costs reviews recorded when they ran. Reviews from before costs were recorded add nothing |
 | GET    | `/api/reviews/:id`   | One review with its full result; each model call carries the `cost` it recorded and `usageTotals.costUsd` sums them |
-| GET    | `/api/usage?period=&repoId=` | Model usage of the workspace's reviews over `24h`, `7d` (default), `30d`, `90d` or `all`: totals with input, cached and output tokens and the cost, a UTC time series (hourly for `24h`, monthly for a long `all`), and breakdowns by model (input, cached and output cost each), provider and repository, plus the latest reviews that called a model |
+| GET    | `/api/usage?period=&repoId=` | Model usage of the workspace's reviews over `24h`, `7d` (default), `30d`, `90d` or `all`: totals with input, cached and output tokens and the cost, a UTC time series (hourly for `24h`, monthly for a long `all`), and breakdowns by model (input, cached and output cost each), provider and repository |
+| GET    | `/api/usage/recent?period=&repoId=&page=&limit=` | `{ reviews, total, page }`: one page (`limit` 10 by default, 100 at most) of the period's reviews that called a model, newest first, with their models, tokens and cost; a page past the end returns the last one |
 | GET    | `/api/reviews/:id/markdown` | The review as the markdown document that is posted to the forge |
 | POST   | `/api/reviews/:id/rerun` | Queues a fresh review of the PR's latest head |
 | POST   | `/api/reviews/:id/cancel` | Cancels a queued or running review; a running one stops within one check interval (about 15s) and posts nothing more. `409` once it has finished |
@@ -649,9 +650,9 @@ so scripts written before workspaces keep working. Routes under
 | GET    | `/api/settings/api-keys/:provider/status` | `{ status }`: `active`, `revoked` when the provider rejects the key, or `unreachable` |
 | GET    | `/api/settings/api-keys/:provider/models` | The model ids the connection lists, prefixed with its provider; 400 when the host rejects the key or is down |
 | POST   | `/api/settings/api-keys/:provider/test` | `{ model }`, runs one minimal generation with the stored credential; returns `{ result }` with latency and token usage, or `ok: false` with a `reason` (`revoked`, `model`, `unreachable`, `output`) and message. 400 when an official API is given another provider's model; 409 when the stored key can't be decrypted |
-| GET    | `/api/notifications` | `{ targets, mailConfigured }`: the workspace's notification targets with their events, a URL's host only and email recipients' user ids |
+| GET    | `/api/notifications` | `{ targets, mailConfigured }`: the workspace's notification targets with their events, whether each is `active`, a URL's host only and email recipients' user ids |
 | POST   | `/api/notifications` | Workspace admins: `{ kind: "webhook" \| "slack", name, events, url }` or `{ kind: "email", name, events, recipientIds }`; returns `{ target, secret? }`, a webhook's signing secret shown only here |
-| PATCH  | `/api/notifications/:id` | Workspace admins: `{ name?, events?, recipientIds? }` |
+| PATCH  | `/api/notifications/:id` | Workspace admins: `{ name?, events?, recipientIds?, active? }`; `active: false` pauses deliveries |
 | POST   | `/api/notifications/:id/test` | Workspace admins: sends a sample delivery; returns `{ result }`, `{ ok: true }` or `{ ok: false, error }` |
 | DELETE | `/api/notifications/:id` | Workspace admins: removes a target |
 | PUT    | `/api/settings/avatar` | Raw PNG, JPEG or WebP body (512 KB at most; the dashboard uploads a 256px JPEG); sets the caller's profile picture |

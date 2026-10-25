@@ -7,11 +7,12 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { useUsage } from "@/features/usage/api"
 import { BreakdownChart } from "@/features/usage/BreakdownChart"
 import { OverviewCards } from "@/features/usage/OverviewCards"
-import { RecentReviews } from "@/features/usage/RecentReviews"
+import { RECENT_PAGINATION, RecentReviews } from "@/features/usage/RecentReviews"
 import { Segmented } from "@/features/usage/Segmented"
 import { USAGE_PERIODS, type UsagePeriod } from "@/features/usage/types"
 import { UsageChart } from "@/features/usage/UsageChart"
-import { UsageTable } from "@/features/usage/UsageTable"
+import { USAGE_PAGINATION, UsageTable } from "@/features/usage/UsageTable"
+import { paginationKeys } from "@/hooks/use-pagination"
 
 const PERIOD_OPTIONS: { value: UsagePeriod; label: string }[] = [
   { value: "24h", label: "24h" },
@@ -31,6 +32,8 @@ export function UsagePage() {
     setParams((current) => {
       const updated = new URLSearchParams(current)
       updated.set("period", next)
+      // Another period lists other rows, so both lists start over at page 1.
+      for (const prefix of [RECENT_PAGINATION, USAGE_PAGINATION]) updated.delete(paginationKeys(prefix).page)
       return updated
     })
   }
@@ -77,7 +80,7 @@ export function UsagePage() {
               }))}
             />
           </div>
-          <RecentReviews reviews={data.recent} />
+          <RecentReviews period={period} />
           <UsageTable report={data} />
         </>
       )}

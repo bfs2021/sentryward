@@ -3,12 +3,17 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { SortableHead } from "@/components/SortableHead"
+import { TablePagination } from "@/components/TablePagination"
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table"
+import { paginate, usePagination } from "@/hooks/use-pagination"
 import { useSort } from "@/hooks/use-sort"
 import { timeAgo } from "@/lib/time"
 import { formatCount, formatUsd } from "./format"
 import { Segmented } from "./Segmented"
 import type { ModelUsageRow, RepositoryUsageRow, UsageReport, UsageTokens } from "./types"
+
+// ?usagePage= and ?usageSize=, apart from the recent reviews'.
+export const USAGE_PAGINATION = "usage"
 
 type View = "model" | "repository"
 type Mode = "costs" | "tokens"
@@ -85,8 +90,27 @@ function compare(a: string | number | null, b: string | number | null) {
   return typeof a === "string" ? a.localeCompare(String(b)) : a - Number(b)
 }
 
-function DataTable<R>({ label, rows, columns, rowKey }: { label: string; rows: R[]; columns: Column<R>[]; rowKey: (row: R) => string }) {
-  const { sort, onSort } = useSort<string>()
+type Pagination = ReturnType<typeof usePagination>
+
+function DataTable<R>({
+  label,
+  rows,
+  columns,
+  rowKey,
+  pagination,
+}: {
+  label: string
+  rows: R[]
+  columns: Column<R>[]
+  rowKey: (row: R) => string
+  pagination: Pagination
+}) {
+  const { sort, onSort: toggleSort } = useSort<string>()
+  // A new order starts over at page 1, so the top of it is what shows.
+  function onSort(key: string) {
+    toggleSort(key)
+    pagination.setPage(1)
+  }
   const sorted = useMemo(() => {
     const column = sort && columns.find((c) => c.key === sort.key)
     if (!sort || !column) return rows
@@ -97,46 +121,69 @@ function DataTable<R>({ label, rows, columns, rowKey }: { label: string; rows: R
       return column.sortValue(a) === null || column.sortValue(b) === null ? order : direction * order
     })
   }, [rows, columns, sort])
+  // Paged after sorting, so a sort orders every row and not just this page.
+  const page = paginate(sorted, pagination.page, pagination.size)
 
   return (
-    <Table aria-label={label}>
-      <TableHeader>
-        <TableRow>
-          {columns.map((column) => (
-            <SortableHead key={column.key} label={column.label} sortKey={column.key} sort={sort} onSort={onSort} />
-          ))}
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {sorted.map((row) => (
-          <TableRow key={rowKey(row)}>
+    <>
+      <Table aria-label={label}>
+        <TableHeader>
+          <TableRow>
             {columns.map((column) => (
-              <TableCell key={column.key} className={column.numeric ? "text-right tabular-nums" : undefined}>
-                {column.cell(row)}
-              </TableCell>
+              <SortableHead key={column.key} label={column.label} sortKey={column.key} sort={sort} onSort={onSort} />
             ))}
           </TableRow>
-        ))}
-        {sorted.length === 0 && (
-          <TableRow>
-            <TableCell colSpan={columns.length} className="py-6 text-center text-muted-foreground">
-              No usage recorded in this period.
-            </TableCell>
-          </TableRow>
-        )}
-      </TableBody>
-    </Table>
+        </TableHeader>
+        <TableBody>
+          {page.rows.map((row) => (
+            <TableRow key={rowKey(row)}>
+              {columns.map((column) => (
+                <TableCell key={column.key} className={column.numeric ? "text-right tabular-nums" : undefined}>
+                  {column.cell(row)}
+                </TableCell>
+              ))}
+            </TableRow>
+          ))}
+          {sorted.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={columns.length} className="py-6 text-center text-muted-foreground">
+                No usage recorded in this period.
+              </TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
+      {page.total > 0 && (
+        <TablePagination
+          page={page.page}
+          size={pagination.size}
+          total={page.total}
+          onPageChange={pagination.setPage}
+          onSizeChange={pagination.setSize}
+        />
+      )}
+    </>
   )
 }
 
 export function UsageTable({ report }: { report: UsageReport }) {
   const [view, setView] = useState<View>("model")
   const [mode, setMode] = useState<Mode>("costs")
+  // The one instance for this table; DataTable reads and sets it through props.
+  const pagination = usePagination(USAGE_PAGINATION)
+
+  // Other rows (or the same rows by another measure) start over at page 1.
+  function startOver<T>(set: (value: T) => void) {
+    return (value: T) => {
+      set(value)
+      pagination.setPage(1)
+    }
+  }
 
   return (
     <section aria-label="Usage table" className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Select value={view} onValueChange={(next) => setView(next as View)}>
+        <Select value={view} onValueChange={(next) => startOver(setView)(next as View)}>
           <SelectTrigger aria-label="Group usage by" className="w-56">
             <SelectValue />
           </SelectTrigger>
@@ -148,7 +195,7 @@ export function UsageTable({ report }: { report: UsageReport }) {
             ))}
           </SelectContent>
         </Select>
-        <Segmented label="Table values" options={MODES} value={mode} onChange={setMode} />
+        <Segmented label="Table values" options={MODES} value={mode} onChange={startOver(setMode)} />
       </div>
       <Card>
         <CardContent>
@@ -159,6 +206,7 @@ export function UsageTable({ report }: { report: UsageReport }) {
               rows={report.byModel}
               columns={modelColumns(mode)}
               rowKey={(row) => row.model}
+              pagination={pagination}
             />
           ) : (
             <DataTable
@@ -167,6 +215,7 @@ export function UsageTable({ report }: { report: UsageReport }) {
               rows={report.byRepository}
               columns={repositoryColumns(mode)}
               rowKey={(row) => row.repositoryId}
+              pagination={pagination}
             />
           )}
         </CardContent>

@@ -21,7 +21,6 @@ const DAY = 24 * HOUR;
 const PERIOD_MS: Record<Exclude<UsagePeriod, "all">, number> = { "24h": DAY, "7d": 7 * DAY, "30d": 30 * DAY, "90d": 90 * DAY };
 // Past this span "all" is charted by month, so years of history stay readable.
 const MAX_DAILY_SPAN = 90 * DAY;
-const RECENT = 10;
 
 export function periodStart(period: UsagePeriod, now: Date): Date | null {
   return period === "all" ? null : new Date(now.getTime() - PERIOD_MS[period]);
@@ -129,17 +128,18 @@ export interface UsageReport {
     lastUsed: string | null;
     usd: number;
   }[];
-  recent: {
-    id: string;
-    number: number;
-    title: string | null;
-    fullPath: string;
-    createdAt: string;
-    models: string[];
-    inputTokens: number;
-    outputTokens: number;
-    usd: number;
-  }[];
+}
+
+export interface RecentUsage {
+  id: string;
+  number: number;
+  title: string | null;
+  fullPath: string;
+  createdAt: string;
+  models: string[];
+  inputTokens: number;
+  outputTokens: number;
+  usd: number;
 }
 
 // Everything the usage page shows, summed from the costs each review recorded
@@ -155,11 +155,10 @@ export function buildUsageReport(jobs: UsageJob[], period: UsagePeriod, now: Dat
   for (let at = floorTo(start, unit); at <= now; at = next(at, unit)) buckets.set(at.getTime(), {});
 
   const repos = new Map<string, { fullPath: string; reviews: number; byModel: UsageByModel; lastUsed: Date | null }>();
-  const recent: UsageReport["recent"] = [];
 
-  // Newest first, so the recent list fills in order.
+  // Newest first, so repositories are listed by their latest review.
   for (const job of [...jobs].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())) {
-    const { title, byModel } = digestOf(job);
+    const { byModel } = digestOf(job);
     const repo = repos.get(job.repository.id) ?? { fullPath: job.repository.fullPath, reviews: 0, byModel: {}, lastUsed: null };
     repos.set(job.repository.id, repo);
     repo.reviews += 1;
@@ -174,20 +173,6 @@ export function buildUsageReport(jobs: UsageJob[], period: UsagePeriod, now: Dat
     repo.lastUsed = later(repo.lastUsed, job.createdAt);
     for (const [model, usage] of Object.entries(byModel)) {
       if (usedTokens(usage)) modelLastUsed.set(model, later(modelLastUsed.get(model) ?? null, job.createdAt));
-    }
-    if (recent.length < RECENT) {
-      const totals = totalsOf(byModel);
-      recent.push({
-        id: job.id,
-        number: job.number,
-        title,
-        fullPath: job.repository.fullPath,
-        createdAt: job.createdAt.toISOString(),
-        models: Object.keys(byModel).sort(),
-        inputTokens: totals.inputTokens,
-        outputTokens: totals.outputTokens,
-        usd: totals.usd,
-      });
     }
   }
 
@@ -245,6 +230,31 @@ export function buildUsageReport(jobs: UsageJob[], period: UsagePeriod, now: Dat
       ...totalsOf(repo.byModel),
       lastUsed: repo.lastUsed?.toISOString() ?? null,
     })),
-    recent,
   };
+}
+
+// One page of the reviews that used a model, newest first. Served apart from
+// the report so a long period never sends every review to show ten of them.
+// A page past the end is clamped to the last one, like the client's paginate.
+export function buildRecentUsage(jobs: UsageJob[], page: number, limit: number) {
+  const used = jobs
+    .filter((job) => Object.values(digestOf(job).byModel ?? {}).some(usedTokens))
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  const current = Math.min(page, Math.max(1, Math.ceil(used.length / limit)));
+  const reviews: RecentUsage[] = used.slice((current - 1) * limit, current * limit).map((job) => {
+    const { title, byModel } = digestOf(job);
+    const totals = totalsOf(byModel!);
+    return {
+      id: job.id,
+      number: job.number,
+      title,
+      fullPath: job.repository.fullPath,
+      createdAt: job.createdAt.toISOString(),
+      models: Object.keys(byModel!).sort(),
+      inputTokens: totals.inputTokens,
+      outputTokens: totals.outputTokens,
+      usd: totals.usd,
+    };
+  });
+  return { reviews, total: used.length, page: current };
 }

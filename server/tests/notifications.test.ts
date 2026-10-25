@@ -135,6 +135,19 @@ describe("notifyJob", () => {
     });
   });
 
+  it("skips paused targets", async () => {
+    const stub = fetchStub([{ method: "POST", url: /hooks\.example\.com/ }]);
+    vi.stubGlobal("fetch", stub.fetch);
+    await target("webhook", ["completed"]);
+    const paused = await target("webhook", ["completed"], "https://hooks.example.com/paused");
+    await prisma.notificationTarget.update({ where: { id: paused.id }, data: { active: false } });
+    const job = await finishedJob("completed", "pass");
+
+    await notifyJob(job.id);
+
+    expect(stub.calls.map((call) => call.url)).toEqual(["https://hooks.example.com/sw"]);
+  });
+
   it("names the most specific event a target listens for", async () => {
     const stub = fetchStub([{ method: "POST", url: /hooks\.example\.com/ }]);
     vi.stubGlobal("fetch", stub.fetch);
@@ -338,6 +351,29 @@ describe("/api/notifications", () => {
     expect(await prisma.notificationTarget.count()).toBe(0);
   });
 
+  it("pauses and resumes a target, which still takes test deliveries while paused", async () => {
+    const stub = fetchStub([{ method: "POST", url: /hooks\.example\.com/ }]);
+    vi.stubGlobal("fetch", stub.fetch);
+    const hook = await target("webhook", ["failed"]);
+
+    const list = await request(app).get("/api/notifications").set("Cookie", cookie);
+    expect(list.body.targets[0].active).toBe(true);
+
+    const paused = await request(app).patch(`/api/notifications/${hook.id}`).set("Cookie", cookie).send({ active: false });
+    expect(paused.status).toBe(200);
+    expect(paused.body.target).toMatchObject({ active: false, events: ["failed"], name: "webhook" });
+
+    const tested = await request(app).post(`/api/notifications/${hook.id}/test`).set("Cookie", cookie);
+    expect(tested.body.result).toEqual({ ok: true });
+    expect(stub.calls).toHaveLength(1);
+
+    const resumed = await request(app).patch(`/api/notifications/${hook.id}`).set("Cookie", cookie).send({ active: true });
+    expect(resumed.body.target.active).toBe(true);
+
+    const invalid = await request(app).patch(`/api/notifications/${hook.id}`).set("Cookie", cookie).send({ active: "no" });
+    expect(invalid.status).toBe(400);
+  });
+
   it("reports a test delivery's outcome", async () => {
     const stub = fetchStub([
       { method: "POST", url: /hooks\.example\.com/ },
@@ -370,12 +406,14 @@ describe("/api/notifications", () => {
     for (const call of [
       request(app).post("/api/notifications").send({ kind: "slack", name: "x", events: ["failed"], url: "https://a.b/c" }),
       request(app).patch(`/api/notifications/${hook.id}`).send({ name: "x" }),
+      request(app).patch(`/api/notifications/${hook.id}`).send({ active: false }),
       request(app).post(`/api/notifications/${hook.id}/test`),
       request(app).delete(`/api/notifications/${hook.id}`),
     ]) {
       const res = await call.set("Cookie", memberCookie).set(...header);
       expect(res.status).toBe(403);
     }
+    expect((await prisma.notificationTarget.findUniqueOrThrow({ where: { id: hook.id } })).active).toBe(true);
   });
 
   it("hides another workspace's targets", async () => {

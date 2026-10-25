@@ -564,6 +564,8 @@ model NotificationTarget {
   encryptedUrl    String?             @map("encrypted_url")
   encryptedSecret String?             @map("encrypted_secret")
   recipientIds    String[]            @default([]) @map("recipient_ids") @db.Uuid
+  // Paused targets keep their settings but get no deliveries.
+  active          Boolean             @default(true)
   createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime            @updatedAt @map("updated_at") @db.Timestamptz
 

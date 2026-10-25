@@ -56,5 +56,11 @@ export interface UsageReport {
   byModel: ModelUsageRow[]
   byProvider: { provider: string; calls: number; tokens: number; usd: number }[]
   byRepository: RepositoryUsageRow[]
-  recent: RecentReviewUsage[]
+}
+
+// One page of GET /usage/recent; page is clamped to the last one.
+export interface RecentUsagePage {
+  reviews: RecentReviewUsage[]
+  total: number
+  page: number
 }
