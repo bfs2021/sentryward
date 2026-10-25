@@ -9,6 +9,7 @@ import {
   fixRationaleLines,
   impactLines,
   sanitize,
+  ruleSuffix,
   toolSuffix,
   verificationSuffix,
 } from "../render/markdown.ts";
@@ -26,7 +27,7 @@ export interface InlineOptions {
 
 export function inlineBody(finding: Finding, provider: ForgeProvider, options: InlineOptions = {}): string {
   const lines = [
-    `${SEVERITY_ICON[finding.severity]} **${finding.severity}** · ${finding.category}${finding.kind === "potential_issue" ? "" : ` · ${finding.kind.replace(/_/g, " ")}`}${toolSuffix(finding)}${verificationSuffix(finding)}`,
+    `${SEVERITY_ICON[finding.severity]} **${finding.severity}** · ${finding.category}${finding.kind === "potential_issue" ? "" : ` · ${finding.kind.replace(/_/g, " ")}`}${toolSuffix(finding)}${ruleSuffix(finding)}${verificationSuffix(finding)}`,
     "",
     `**${sanitize(finding.title)}**`,
     "",

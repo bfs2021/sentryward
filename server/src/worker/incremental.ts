@@ -36,6 +36,9 @@ function reviewSettings(config: Config) {
       ignorePaths: config.ignorePaths,
       instructions: config.instructions,
       languageInstructions: config.languageInstructions,
+      // Configs stored before rules existed have none, which is no rules, so
+      // they do not force a full review.
+      rules: config.rules ?? [],
     }),
   ) as unknown;
 }

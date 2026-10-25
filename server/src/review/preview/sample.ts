@@ -77,6 +77,7 @@ function finding(overrides: Partial<ModelFinding> & Pick<ModelFinding, "file" | 
     evidence: "execution_path",
     evidenceNote: "",
     evidenceFiles: [],
+    ruleId: null,
     ...overrides,
   };
 }

@@ -391,6 +391,18 @@ describe("Review detail page", () => {
     expect(within(actionable).getByText("A bound parameter cannot change the query.")).toBeInTheDocument()
   })
 
+  it("names the rule of a rule finding, with no confidence for a pattern match", async () => {
+    const [first, ...rest] = detail.result!.findings
+    const findings = [{ ...first!, source: "rule" as const, ruleId: "no-db-in-controllers", model: undefined }, ...rest]
+    const review = { ...detail, result: { ...detail.result!, findings } }
+    mockApi({ [`GET /api/reviews/${detail.id}`]: { review } })
+    renderWithProviders(<App />, { route: `/reviews/${detail.id}` })
+
+    const actionable = await screen.findByRole("region", { name: "Actionable comments" })
+    expect(within(actionable).getByText("Rule no-db-in-controllers")).toBeInTheDocument()
+    expect(within(actionable).queryByText(/Self-reported confidence/)).toBeNull()
+  })
+
   it("collapses a long walkthrough file list until expanded", async () => {
     const fileSummaries = Array.from({ length: 6 }, (_, i) => ({ path: `src/f${i}.ts`, summary: `Changes f${i}` }))
     const walkthrough = { ...detail.result!.walkthrough!, fileSummaries }

@@ -42,11 +42,15 @@ export interface KnownFinding extends FindingRow {
   severity: Severity;
   category: string;
   kind: string;
+  // Absent on rows read without them (tests); null as stored.
+  ruleId?: string | null;
+  model?: string | null;
 }
 
-// The same problem, wherever it is: the fingerprint without the file.
-function problem(finding: { category: string; kind: string; title: string }): string {
-  return [finding.category, finding.kind, normaliseTitle(finding.title)].join("|");
+// The same problem, wherever it is: the fingerprint without the file. Rule
+// findings stay apart from each other and from model findings by rule.
+function problem(finding: { category: string; kind: string; title: string; ruleId?: string | null }): string {
+  return [finding.category, finding.kind, finding.ruleId ?? "", normaliseTitle(finding.title)].join("|");
 }
 
 // Earlier open findings that moved to another file, mapped to where they are
@@ -69,15 +73,21 @@ function movedFindings(existing: KnownFinding[], result: ReviewResult): Map<stri
     for (const item of items) groups.set(key(item), [...(groups.get(key(item)) ?? []), item]);
     return groups;
   };
+  // Every match of a pattern rule has the rule's title, so the problem key
+  // cannot tell one from another: they are never paired as a move. The row's
+  // ruleId without a model is a pattern match; the finding says so by source.
   const before = group(
-    existing.filter((row) => row.state === "open" && !reported.has(row.fingerprint)),
+    existing.filter((row) => row.state === "open" && !reported.has(row.fingerprint) && !(row.ruleId && !row.model)),
     problem,
   );
   // A run can report the same fingerprint twice (overlapping chunks).
   const fresh = [...new Map(result.findings.map((finding) => [finding.fingerprint, finding])).values()];
   const after = group(
-    fresh.filter((finding) => !known.has(finding.fingerprint) && added.has(finding.file)),
-    problem,
+    fresh.filter(
+      (finding) =>
+        !known.has(finding.fingerprint) && added.has(finding.file) && !(finding.source === "rule" && !finding.model),
+    ),
+    (finding) => problem({ ...finding, ruleId: finding.source === "rule" ? finding.ruleId : null }),
   );
   const moved = new Map<string, string>();
   for (const [key, rows] of before) {
@@ -220,13 +230,19 @@ export async function syncFindings({ repositoryId, number, jobId, author, result
         // Backfilled rows have no author; keep a known one if the forge stops saying.
         ...(author ? { author } : {}),
       };
-      const source = { model: finding.model ?? null, lastJobId: jobId };
+      // Only team rules are counted per rule; an analyzer's rule id is the
+      // analyzer's business.
+      const source = {
+        model: finding.model ?? null,
+        ruleId: finding.source === "rule" ? (finding.ruleId ?? null) : null,
+        lastJobId: jobId,
+      };
       const row = known.get(finding.fingerprint);
       // Calibration buckets a finding by the confidence it was first reported
       // with, matching its first_seen_at window, so a later run only fills a
-      // gap. Confidence is only a model's to report; tool and rule findings
-      // carry a fixed one.
-      const reportedConfidence = finding.source === "llm" ? finding.confidence : null;
+      // gap. Confidence is only a model's to report, including for a rule
+      // violation it found; tool and pattern rule findings carry a fixed one.
+      const reportedConfidence = finding.source === "llm" || (finding.source === "rule" && finding.model) ? finding.confidence : null;
       const confidence = row?.confidence ?? reportedConfidence;
       if (!row) {
         // A finding that moved here from another file is the same problem, still open.
@@ -283,6 +299,8 @@ export const KNOWN_FINDING = {
   severity: true,
   category: true,
   kind: true,
+  ruleId: true,
+  model: true,
 } as const;
 
 type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];

@@ -140,6 +140,14 @@ describe("resolveConfig", () => {
     }
   });
 
+  it("takes rules from the repository file only", () => {
+    const rules = [{ id: "no-b", description: "No b.", severity: "major" as const }];
+    expect(resolveConfig({ repoFile: { rules } }).config.rules).toEqual(rules);
+    expect(dashboardOverrideSchema.safeParse({ rules }).success).toBe(false);
+    expect(() => resolveConfig({ repoSettings: { rules } as never })).toThrow();
+    expect(() => resolveConfig({ global: { rules } as never })).toThrow();
+  });
+
   it("only accepts an http(s) base URL and a known key slot", () => {
     expect(dashboardOverrideSchema.safeParse({ llm: { baseUrl: "ftp://proxy.example" } }).success).toBe(false);
     expect(dashboardOverrideSchema.safeParse({ llm: { endpointKey: "mistral" } }).success).toBe(false);

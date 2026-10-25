@@ -504,6 +504,23 @@ describe("GET and PUT /api/config/global", () => {
     expect(res.body.errors.settings).toBeDefined();
   });
 
+  it("rejects rules, which only the repository file sets", async () => {
+    const rules = [{ id: "no-b", description: "No b.", severity: "major" }];
+    const global = await request(app)
+      .put("/api/config/global")
+      .set("Cookie", cookie)
+      .send({ settings: { llm: { connection: "openai" }, rules } });
+    expect(global.status).toBe(400);
+    expect(JSON.stringify(global.body.errors.settings)).toMatch(/rules/);
+
+    const repo = await prisma.repository.create({
+      data: { connectionId, provider: "gitlab", host: "gitlab.com", fullPath: "team/rules", externalId: "9", defaultBranch: "main" },
+    });
+    const saved = await request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ settings: { rules } });
+    expect(saved.status).toBe(400);
+    expect(JSON.stringify(saved.body.errors.settings)).toMatch(/rules/);
+  });
+
   it("requires a saved connection for global configuration", async () => {
     const missing = await request(app)
       .put("/api/config/global")

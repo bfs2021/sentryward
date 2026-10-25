@@ -70,6 +70,8 @@ export interface FindingStats {
     // The model of the review pass that raised each finding; null for tool and
     // rule findings, and rows from before the model was recorded.
     model: FalsePositiveRow<string | null>[]
+    // Findings per `.sentryward.yaml` rule; findings without a rule are left out.
+    rule: FalsePositiveRow<string>[]
   }
 }
 

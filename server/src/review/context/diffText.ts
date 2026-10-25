@@ -9,26 +9,38 @@ export function renderFileHeader(file: ChangedFile): string {
   return `=== FILE: ${file.path} (${details})${renamed} ===`;
 }
 
-export function renderHunk(hunk: Hunk): string {
-  const lines = hunk.content.split("\n");
-  const out = [lines[0] ?? ""];
+export interface HunkLine {
+  marker: "+" | "-" | " ";
+  // The new-file line number; absent on a removed line.
+  line?: number;
+  text: string;
+}
+
+// The lines of a hunk's text after its header, numbered as the model reads
+// them. "\ No newline at end of file" is not a line of either file, so it is
+// left out. Team rules (rules.ts) match against these same numbers.
+export function hunkLines(hunk: Hunk): HunkLine[] {
+  const out: HunkLine[] = [];
   let newLine = hunk.newStart;
-  for (const line of lines.slice(1)) {
-    const marker = line[0];
-    const text = line.slice(1);
-    if (marker === "+") {
-      out.push(`${String(newLine).padStart(6)} + | ${text}`);
-      newLine += 1;
-    } else if (marker === "-") {
-      out.push(`${"".padStart(6)} - | ${text}`);
-    } else if (marker === "\\") {
-      continue;
-    } else {
-      out.push(`${String(newLine).padStart(6)}   | ${text}`);
+  for (const raw of hunk.content.split("\n").slice(1)) {
+    const marker = raw[0];
+    const text = raw.slice(1);
+    if (marker === "-") {
+      out.push({ marker, text });
+    } else if (marker !== "\\") {
+      out.push({ marker: marker === "+" ? "+" : " ", line: newLine, text });
       newLine += 1;
     }
   }
-  return out.join("\n");
+  return out;
+}
+
+export function renderHunk(hunk: Hunk): string {
+  const header = hunk.content.split("\n", 1)[0] ?? "";
+  const body = hunkLines(hunk).map(({ marker, line, text }) =>
+    marker === "-" ? `${"".padStart(6)} - | ${text}` : `${String(line).padStart(6)} ${marker} | ${text}`,
+  );
+  return [header, ...body].join("\n");
 }
 
 export function renderFileDiff(file: ChangedFile, hunks: Hunk[] = file.hunks): string {

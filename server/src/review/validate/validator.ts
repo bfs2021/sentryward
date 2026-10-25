@@ -4,6 +4,7 @@ import { fingerprint } from "../core/fingerprint.ts";
 import { isAddedLine, type ChangedFile, type ChangeSet, type Finding, type ToolAnnotation } from "../core/models.ts";
 import { atLeast, severityRank } from "../core/severity.ts";
 import type { ModelFinding } from "../llm/schemas.ts";
+import { DEFAULT_RULE_CATEGORY, modelRuleFor } from "../rules.ts";
 
 // A model finding plus the model of the pass that produced it.
 export type TaggedFinding = ModelFinding & { model?: string };
@@ -26,7 +27,11 @@ export type DropReason =
   // The same finding was dismissed by this team on this change (by fingerprint).
   | "previously_ignored"
   // A second model call showed the finding wrong (verify.ts).
-  | "refuted";
+  | "refuted"
+  // Named a team rule the model was not given for its file: an unknown id, a
+  // pattern rule, or one whose paths leave the file out. Its severity and
+  // evidence were chosen for that rule, so it is not kept as anything else.
+  | "rule_mismatch";
 
 export interface ValidationResult {
   findings: Finding[];
@@ -55,16 +60,17 @@ function clampEnd(file: ChangedFile, start: number, end: number): number {
   return hunk && hunk.newLineToPosition[String(end)] !== undefined ? end : start;
 }
 
-function isUnprovenBlocker(finding: ModelFinding): boolean {
+function isUnprovenBlocker(finding: ModelFinding, severity: Finding["severity"]): boolean {
   return (
-    (finding.severity === "critical" || finding.severity === "major") &&
+    (severity === "critical" || severity === "major") &&
     (finding.evidence === "unverified" || finding.evidenceNote.trim() === "")
   );
 }
 
 // What a finding the review cannot stand behind becomes: still shown, never
 // blocking (see isBlocking), and never more severe than it was. Kind is part
-// of the fingerprint, so it and the bucket follow.
+// of the fingerprint, so it and the bucket follow. Only model findings are
+// demoted, and their fingerprint leaves the rule id out (validateFindings).
 export function demoteFinding(finding: Finding, changeSet: ChangeSet): Finding {
   const kind = "verification_needed";
   return {
@@ -76,7 +82,6 @@ export function demoteFinding(finding: Finding, changeSet: ChangeSet): Finding {
       category: finding.category,
       kind,
       title: finding.title,
-      ruleId: finding.ruleId,
     }),
     bucket: bucketFor({ file: finding.file, startLine: finding.startLine, kind }, changeSet),
   };
@@ -86,10 +91,19 @@ function rank(finding: Finding): [number, number] {
   return [severityRank(finding.severity), finding.confidence];
 }
 
-// Worst first, then most confident, then by place.
+// A pattern rule match carries a fixed confidence of 1, so ranked by
+// confidence it would outrank every model finding of its severity and a noisy
+// pattern could take every max_findings slot. It goes after them instead.
+function isPatternMatch(finding: Finding): boolean {
+  return finding.source === "rule" && finding.model === undefined;
+}
+
+// Worst first, then model and tool findings before pattern matches, then most
+// confident, then by place.
 export function compareFindings(a: Finding, b: Finding): number {
   return (
     severityRank(b.severity) - severityRank(a.severity) ||
+    Number(isPatternMatch(a)) - Number(isPatternMatch(b)) ||
     b.confidence - a.confidence ||
     a.file.localeCompare(b.file) ||
     a.startLine - b.startLine
@@ -134,7 +148,15 @@ export function validateFindings(
       drop("unknown_file");
       continue;
     }
-    if (!categories.has(candidate.category)) {
+    // A violation of a team rule is filed and weighed as the rule says, and is
+    // reported whatever review.categories holds: the team asked for it.
+    const rule = modelRuleFor(config, candidate.ruleId, file.path);
+    if (rule === null) {
+      drop("rule_mismatch");
+      continue;
+    }
+    const category = rule ? (rule.category ?? DEFAULT_RULE_CATEGORY) : candidate.category;
+    if (!rule && !categories.has(candidate.category)) {
       drop("category");
       continue;
     }
@@ -157,9 +179,10 @@ export function validateFindings(
       continue;
     }
 
-    let { severity, kind } = candidate as { severity: Finding["severity"]; kind: Finding["kind"] };
+    let severity: Finding["severity"] = rule ? rule.severity : candidate.severity;
+    let kind: Finding["kind"] = candidate.kind;
     // Blocking takes evidence. Self-reported confidence is not evidence.
-    if (config.review.requireEvidence && isUnprovenBlocker(candidate)) {
+    if (config.review.requireEvidence && isUnprovenBlocker(candidate, severity)) {
       severity = "minor";
       kind = "verification_needed";
       demoted += 1;
@@ -187,7 +210,7 @@ export function validateFindings(
       startLine: start,
       endLine: end,
       severity,
-      category: candidate.category,
+      category,
       kind,
       effort: candidate.effort,
       title,
@@ -201,8 +224,12 @@ export function validateFindings(
       evidenceFiles: candidate.evidenceFiles.filter((path) => path !== file.path),
       // review.verify, when on, decides this afterwards.
       verification: "not_checked",
-      source: "llm",
-      fingerprint: fingerprint({ file: file.path, category: candidate.category, kind, title }),
+      source: rule ? "rule" : "llm",
+      ...(rule ? { ruleId: rule.id } : {}),
+      // Without the rule id: the model does not name the rule every time, and
+      // a violation filed under the rule's category should still be the same
+      // finding as one the model filed there on its own.
+      fingerprint: fingerprint({ file: file.path, category, kind, title }),
       ...(candidate.model ? { model: candidate.model } : {}),
       bucket: bucketFor({ file: file.path, startLine: start, kind }, changeSet),
     };

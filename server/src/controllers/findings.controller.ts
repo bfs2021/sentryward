@@ -146,7 +146,7 @@ export async function getFindingStats(req: Request, res: Response) {
     // what the false-positive rate measures. Split so the totals and every
     // breakdown fold from one query.
     prisma.finding.groupBy({
-      by: ["category", "severity", "model", "state", "ignoreReason"],
+      by: ["category", "severity", "model", "ruleId", "state", "ignoreReason"],
       where: { ...scope, firstSeenAt: { gte: since } },
       orderBy: { category: "asc" },
       _count: { _all: true },
@@ -194,6 +194,11 @@ export async function getFindingStats(req: Request, res: Response) {
       // The model of the review pass that raised each finding; null for tool
       // and rule findings and rows from before it was recorded.
       model: tally((row) => row.model).sort(byRate),
+      // The `.sentryward.yaml` rule each rule finding violates; every other
+      // finding has none and is left out, so this is findings per rule.
+      rule: tally((row) => row.ruleId)
+        .filter((row) => row.key !== null)
+        .sort(byRate),
     },
   });
 }

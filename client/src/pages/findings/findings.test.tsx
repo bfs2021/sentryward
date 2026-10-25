@@ -52,6 +52,7 @@ const stats: FindingStats = {
       { key: "major", found: 4, falsePositives: 0, rate: 0 },
     ],
     model: [{ key: "anthropic/claude-sonnet-5-5", found: 9, falsePositives: 1, rate: 11 }],
+    rule: [],
   },
 }
 
@@ -113,6 +114,7 @@ describe("Findings page", () => {
             { key: "minor", found: 10, falsePositives: 4, rate: 40 },
           ],
           model: [{ key: null, found: 16, falsePositives: 6, rate: 38 }],
+          rule: [{ key: "no-db-in-controllers", found: 6, falsePositives: 3, rate: 50 }],
         },
       },
       "GET /api/findings?page=1&limit=10": page([finding]),
@@ -145,6 +147,22 @@ describe("Findings page", () => {
     const byModel = screen.getByRole("table", { name: "False positives by model" })
     expect(within(byModel).getByText("Analyzer or unrecorded")).toBeInTheDocument()
     expect(within(byModel).queryByRole("link")).toBeNull()
+
+    // Findings per .sentryward.yaml rule; a rule has no setting here to point at.
+    const byRule = screen.getByRole("table", { name: "False positives by rule" })
+    expect(within(within(byRule).getByText("no-db-in-controllers").closest("tr")!).getByText("50%")).toBeInTheDocument()
+    expect(within(byRule).queryByRole("link")).toBeNull()
+  })
+
+  it("shows no rule table without rule findings", async () => {
+    mockApi({
+      "GET /api/findings/stats": stats,
+      "GET /api/findings?page=1&limit=10": page([finding]),
+      [`${FP}&page=1&limit=10`]: page([]),
+    })
+    renderWithProviders(<App />, { route: "/findings?tab=false-positives" })
+    await screen.findByRole("table", { name: "False positives by category" })
+    expect(screen.queryByRole("table", { name: "False positives by rule" })).toBeNull()
   })
 
   it("shows how self-reported confidence matched outcomes, overall and by model", async () => {
@@ -199,6 +217,7 @@ describe("Findings page", () => {
         category: [{ key: "style", found: 6, falsePositives: 3, rate: 50 }],
         severity: [],
         model: [{ key: "openai/gpt-5", found: 6, falsePositives: 3, rate: 50 }],
+        rule: [],
       },
     }
     mockApi({

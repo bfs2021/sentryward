@@ -98,6 +98,19 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   `category`. The False positives tab gains a card showing it. Includes a
   migration adding a `confidence` column to findings, backfilled from each
   finding's last run (null for tool and rule findings). Closes #105.
+- Team rules in `.sentryward.yaml`. A `rules` list states a convention once,
+  with an `id`, `description`, `severity` and optional `category`, `paths`
+  globs and `good`/`bad` examples, read from the base revision like the rest
+  of the file (rules cannot be set in dashboard settings). A rule with a
+  `pattern` (an RE2 regular expression, matched in linear time) is checked
+  against the change's added lines without a model, so the same diff always
+  gives the same findings; the rest are given to the model, and a violation it
+  reports is filed under the rule with the rule's severity. Both are reported
+  with source `rule` and the rule's id, block at `review.block_on`, are
+  reported whatever `review.categories` holds, and are marked with the rule in
+  forge comments and the dashboard. The False positives tab gains a per-rule
+  table, and a change to the rules makes the next push a full review. Includes
+  a migration adding a `rule_id` column to findings. Closes #106.
 
 ### Changed
 
