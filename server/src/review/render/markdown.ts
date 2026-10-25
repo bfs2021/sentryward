@@ -84,6 +84,23 @@ export function toolSuffix(finding: Finding): string {
   return finding.source === "tool" && finding.tool ? ` · via ${codeCell(finding.tool.replace(/[\\*_`]/g, "\\$&"))}` : "";
 }
 
+// Only an outcome is worth a word: "not checked" on every finding would be
+// noise whenever review.verify is off.
+export function verificationSuffix(finding: Finding): string {
+  if (finding.verification === "verified") return " · ✅ verified";
+  if (finding.verification === "uncertain") return " · ❔ uncertain after verification";
+  return "";
+}
+
+// Impact goes under the explanation; the rationale under the fix it explains.
+export function impactLines(finding: Finding): string[] {
+  return finding.impact ? ["", `**💥 Impact:** ${sanitize(finding.impact)}`] : [];
+}
+
+export function fixRationaleLines(finding: Finding): string[] {
+  return finding.fixRationale ? ["", `**🛠️ Why this fix works:** ${sanitize(finding.fixRationale)}`] : [];
+}
+
 // A gone finding's snapshot may lack the end line; it then reads as one line.
 type Located = { file: string; startLine: number; endLine?: number };
 
@@ -247,12 +264,14 @@ function findingDetail(finding: Finding): string[] {
   const lines = [
     `#### ${location(finding)}: ${inline(finding.title)}`,
     "",
-    `${SEVERITY_ICON[finding.severity]} *${finding.severity} · ${finding.category} · ${finding.kind.replace(/_/g, " ")}${toolSuffix(finding)}*`,
+    `${SEVERITY_ICON[finding.severity]} *${finding.severity} · ${finding.category} · ${finding.kind.replace(/_/g, " ")}${toolSuffix(finding)}${verificationSuffix(finding)}*`,
     "",
     sanitize(finding.body),
+    ...impactLines(finding),
   ];
   if (finding.evidenceNote) lines.push("", `**🔎 Evidence:** ${sanitize(finding.evidenceNote)}`);
   if (finding.suggestion) lines.push("", fence(finding.suggestion));
+  lines.push(...fixRationaleLines(finding));
   return lines;
 }
 

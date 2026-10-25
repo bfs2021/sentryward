@@ -220,7 +220,12 @@ export async function syncFindings({ repositoryId, number, jobId, author, result
         // Backfilled rows have no author; keep a known one if the forge stops saying.
         ...(author ? { author } : {}),
       };
-      const source = { model: finding.model ?? null, lastJobId: jobId };
+      // Confidence is only a model's to report; tool and rule findings carry a fixed one.
+      const source = {
+        model: finding.model ?? null,
+        confidence: finding.source === "llm" ? finding.confidence : null,
+        lastJobId: jobId,
+      };
       const row = known.get(finding.fingerprint);
       if (!row) {
         // A finding that moved here from another file is the same problem, still open.

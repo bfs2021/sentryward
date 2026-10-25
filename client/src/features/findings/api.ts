@@ -2,6 +2,8 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { api } from "@/lib/api"
 import type { Severity } from "@/features/reviews/types"
 import type {
+  CalibrationGroupBy,
+  FindingCalibration,
   FindingCategory,
   FindingDetail,
   FindingKind,
@@ -62,6 +64,17 @@ export function useFindingStats(repoId?: string) {
   return useQuery({
     queryKey: ["findings", "stats", repoId ?? null],
     queryFn: () => api<FindingStats>(`/findings/stats${query ? `?${query}` : ""}`),
+  })
+}
+
+// Under the "findings" key, so ignoring or reopening a finding refreshes it too.
+export function useFindingCalibration(repoId: string | undefined, groupBy: CalibrationGroupBy) {
+  const search = new URLSearchParams(findingSearch({ repoId }))
+  if (groupBy !== "none") search.set("groupBy", groupBy)
+  const query = search.toString()
+  return useQuery({
+    queryKey: ["findings", "calibration", repoId ?? null, groupBy],
+    queryFn: () => api<FindingCalibration>(`/findings/calibration${query ? `?${query}` : ""}`),
   })
 }
 

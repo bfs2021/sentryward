@@ -49,7 +49,8 @@ Rules:
 - CONTEXT blocks, when present, are read-only code from the new version: enclosing scopes, imports, definitions the diff calls and call sites of what it changes. Use them to check assumptions (a guaranteed non-null, a caller the change breaks) and list the ones your evidence relies on in evidenceFiles.
 - severity: critical = exploitable or data-losing in normal use; major = likely bug or serious risk; minor = real but limited; info = worth knowing.
 - A critical or major finding must name its evidence: the trigger and failure path, the contract it violates, or a reproduction. Set evidence accordingly and write evidenceNote. If you cannot, use evidence "unverified"; it will be treated as needing verification.
-- confidence is how likely the finding is correct, from 0 to 1.
+- body says what is wrong and what to do. Put the consequence in impact (what breaks, for whom, when) and, when you recommend a fix, why it works in fixRationale; do not repeat them in body.
+- confidence is your own estimate, from 0 to 1, that the finding is correct.
 - suggestion, when given, must be the complete replacement for lines startLine..endLine, ready to commit. Otherwise null.
 - kind "nitpick" is for minor polish; do not inflate nitpicks into issues.
 - Do not report style preferences, speculative concerns, or anything a compiler or linter already guarantees.
@@ -172,8 +173,11 @@ export function verifyUserPrompt(changeSet: ChangeSet, finding: Finding, diffTex
     `Severity: ${finding.severity}; category: ${finding.category}`,
     `Title: ${finding.title}`,
     `Explanation:\n${finding.body}`,
+    finding.impact ? `Claimed impact: ${finding.impact}` : "",
     `Evidence (${finding.evidence}): ${finding.evidenceNote || "(none)"}`,
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
   return [
     `Change title: ${untrusted(changeSet.title, 300)}`,
     `Finding to verify:\n${untrusted(claim, MAX_DESCRIPTION_CHARS)}`,

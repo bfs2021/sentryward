@@ -85,6 +85,21 @@ describe("syncFindings", () => {
     expect(await byTitle(kept!.title)).toMatchObject({ model: "openai/gpt-x", lastJobId: second });
   });
 
+  it("records the confidence a model reported, none for a tool finding, and keeps it on ignored rows", async () => {
+    const [first, second, ...rest] = base.findings;
+    await sync({
+      ...base,
+      findings: [{ ...first!, confidence: 0.72 }, { ...second!, source: "tool", tool: "eslint", confidence: 1 }, ...rest],
+    });
+    expect((await byTitle(first!.title)).confidence).toBe(0.72);
+    expect((await byTitle(second!.title)).confidence).toBeNull();
+
+    const dismissed = await byTitle(first!.title);
+    await prisma.finding.update({ where: { id: dismissed.id }, data: { state: "ignored", ignoreReason: "false_positive" } });
+    await sync({ ...base, findings: base.findings.map((f) => ({ ...f, confidence: 0.3 })) });
+    expect((await byTitle(first!.title)).confidence).toBe(0.72);
+  });
+
   it("resolves a finding a later run no longer reports, and reopens it if it returns", async () => {
     await sync(base);
     const [gone, ...rest] = base.findings;
@@ -732,6 +747,113 @@ describe("GET /api/findings/stats", () => {
     await prisma.finding.updateMany({ data: { state: "ignored" } });
     const res = await request(app).get("/api/findings/stats").set("Cookie", cookie);
     expect(res.body).toMatchObject({ open: 0, total: 0, resolutionRate: null });
+  });
+});
+
+describe("GET /api/findings/calibration", () => {
+  type Seed = {
+    confidence: number | null;
+    state?: "open" | "resolved" | "ignored";
+    ignoreReason?: "false_positive" | "intentional";
+    lifecycle?: "new" | "invalidated";
+    model?: string;
+    category?: string;
+    repositoryId?: string;
+    firstSeenAt?: Date;
+  };
+  let seq = 0;
+  const finding = (seed: Seed) =>
+    prisma.finding.create({
+      data: {
+        repositoryId: seed.repositoryId ?? repoId,
+        number: 7,
+        fingerprint: `fp-${++seq}`,
+        title: `Finding ${seq}`,
+        file: "src/app.ts",
+        startLine: 1,
+        severity: "major",
+        category: seed.category ?? "bug",
+        kind: "potential_issue",
+        changeTitle: "Change",
+        model: seed.model ?? "anthropic/claude",
+        confidence: seed.confidence,
+        state: seed.state ?? "open",
+        lifecycle: seed.lifecycle ?? "new",
+        ...(seed.ignoreReason ? { ignoreReason: seed.ignoreReason } : {}),
+        ...(seed.firstSeenAt ? { firstSeenAt: seed.firstSeenAt } : {}),
+      },
+    });
+  const get = (query = "") => request(app).get(`/api/findings/calibration${query}`).set("Cookie", cookie);
+
+  it("buckets findings by reported confidence, with rates over the decided ones", async () => {
+    // 0.9 bucket: two fixed, one false positive, one open, one dismissed as intentional.
+    await finding({ confidence: 0.92, state: "resolved" });
+    await finding({ confidence: 0.95, state: "resolved" });
+    await finding({ confidence: 0.9, state: "ignored", ignoreReason: "false_positive" });
+    await finding({ confidence: 0.99, state: "open" });
+    await finding({ confidence: 0.91, state: "ignored", ignoreReason: "intentional" });
+    // 1.0 lands in the top bucket; an invalidated finding was not confirmed.
+    await finding({ confidence: 1, state: "resolved", lifecycle: "invalidated" });
+    await finding({ confidence: 0.55, state: "ignored", ignoreReason: "false_positive" });
+    // Tool findings and rows nothing could be backfilled for have no confidence.
+    await finding({ confidence: null, state: "resolved" });
+
+    const res = await get();
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ days: 30, groupBy: "none", selfReported: true });
+    expect(res.body.note).toMatch(/own estimate/);
+    expect(res.body.groups).toEqual([
+      {
+        key: null,
+        found: 7,
+        buckets: [
+          { min: 0.5, max: 0.6, found: 1, confirmed: 0, falsePositives: 1, decided: 1, confirmedRate: 0, falsePositiveRate: 100 },
+          { min: 0.9, max: 1, found: 6, confirmed: 2, falsePositives: 1, decided: 3, confirmedRate: 67, falsePositiveRate: 33 },
+        ],
+      },
+    ]);
+  });
+
+  it("leaves the rates null for a bucket nothing has decided yet", async () => {
+    await finding({ confidence: 0.7 });
+    const res = await get();
+    expect(res.body.groups[0].buckets).toEqual([
+      { min: 0.7, max: 0.8, found: 1, confirmed: 0, falsePositives: 0, decided: 0, confirmedRate: null, falsePositiveRate: null },
+    ]);
+  });
+
+  it("groups by model and by category, folding unknown categories into other", async () => {
+    await finding({ confidence: 0.8, model: "openai/gpt-x", state: "resolved" });
+    await finding({ confidence: 0.8, model: "anthropic/claude", category: "security" });
+    await finding({ confidence: 0.8, model: "anthropic/claude", category: "naming" });
+
+    const byModel = await get("?groupBy=model");
+    expect(byModel.body.groups.map((g: { key: string; found: number }) => [g.key, g.found])).toEqual([
+      ["anthropic/claude", 2],
+      ["openai/gpt-x", 1],
+    ]);
+    const byCategory = await get("?groupBy=category");
+    expect(byCategory.body.groups.map((g: { key: string }) => g.key).sort()).toEqual(["bug", "other", "security"]);
+    expect((await get("?groupBy=severity")).status).toBe(400);
+  });
+
+  it("counts only the workspace's findings in the period, narrowed by repository", async () => {
+    const other = await createUser("other@example.com");
+    const theirs = await createRepo(other.workspace.id, "other/app");
+    const second = await createRepo(workspaceId, "team/api");
+    await finding({ confidence: 0.8 });
+    await finding({ confidence: 0.8, repositoryId: second });
+    await finding({ confidence: 0.8, repositoryId: theirs });
+    await finding({ confidence: 0.8, firstSeenAt: new Date(Date.now() - 40 * 86_400_000) });
+
+    expect((await get()).body.groups[0].found).toBe(2);
+    expect((await get(`?repoId=${second}`)).body.groups[0].found).toBe(1);
+    expect((await get("?days=60")).body.groups[0].found).toBe(3);
+  });
+
+  it("returns no groups when nothing has a reported confidence", async () => {
+    await finding({ confidence: null });
+    expect((await get()).body.groups).toEqual([]);
   });
 });
 

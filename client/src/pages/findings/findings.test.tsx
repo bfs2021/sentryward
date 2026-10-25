@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event"
 import { App } from "@/App"
 import { jsonResponse, renderWithProviders } from "@/test/renderWithProviders"
 import { mockApi } from "@/test/apiRoutes"
-import type { FindingDetail, FindingRow, FindingStats } from "@/features/findings/types"
+import type { FindingCalibration, FindingDetail, FindingRow, FindingStats } from "@/features/findings/types"
 import { detail as reviewDetail } from "@/test/fixtures"
 
 const finding: FindingRow = {
@@ -145,6 +145,49 @@ describe("Findings page", () => {
     const byModel = screen.getByRole("table", { name: "False positives by model" })
     expect(within(byModel).getByText("Analyzer or unrecorded")).toBeInTheDocument()
     expect(within(byModel).queryByRole("link")).toBeNull()
+  })
+
+  it("shows how self-reported confidence matched outcomes, overall and by model", async () => {
+    const bucket = (min: number, found: number, confirmed: number, falsePositives: number) => {
+      const decided = confirmed + falsePositives
+      const pct = (n: number) => (decided ? Math.round((n / decided) * 100) : null)
+      return { min, max: min + 0.1, found, confirmed, falsePositives, decided, confirmedRate: pct(confirmed), falsePositiveRate: pct(falsePositives) }
+    }
+    const calibration = (groupBy: FindingCalibration["groupBy"], groups: FindingCalibration["groups"]): FindingCalibration => ({
+      days: 30,
+      groupBy,
+      selfReported: true,
+      note: "",
+      groups,
+    })
+    mockApi({
+      "GET /api/findings/stats": stats,
+      "GET /api/findings?page=1&limit=10": page([finding]),
+      [`${FP}&page=1&limit=10`]: page([]),
+      "GET /api/findings/calibration": calibration("none", [
+        { key: null, found: 14, buckets: [bucket(0.6, 4, 1, 1), bucket(0.9, 10, 6, 2)] },
+      ]),
+      "GET /api/findings/calibration?groupBy=model": calibration("model", [
+        { key: "anthropic/claude", found: 10, buckets: [bucket(0.9, 10, 6, 2)] },
+        { key: null, found: 4, buckets: [bucket(0.6, 4, 1, 1)] },
+      ]),
+    })
+    renderWithProviders(<App />, { route: "/findings?tab=false-positives" })
+
+    const card = await screen.findByRole("region", { name: "Confidence calibration" })
+    expect(within(card).getByText(/Confidence is self-reported by the model/)).toBeInTheDocument()
+    const table = await within(card).findByRole("table", { name: "Calibration" })
+    const high = within(table).getByText("90-100%").closest("tr")!
+    expect(within(high).getByText("75%")).toBeInTheDocument()
+    expect(within(high).getByText("25%")).toBeInTheDocument()
+    // Two decided findings is too few to trust; the row is muted.
+    expect(within(table).getByText("60-70%").closest("tr")).toHaveClass("text-muted-foreground")
+    expect(high).not.toHaveClass("text-muted-foreground")
+
+    await userEvent.click(within(card).getByRole("combobox", { name: "Group calibration" }))
+    await userEvent.click(await screen.findByRole("option", { name: "By model" }))
+    expect(await within(card).findByRole("table", { name: "Calibration for anthropic/claude" })).toBeInTheDocument()
+    expect(within(card).getByRole("table", { name: "Calibration for Unrecorded model" })).toBeInTheDocument()
   })
 
   it("scopes the breakdown and its hints to the selected repository", async () => {

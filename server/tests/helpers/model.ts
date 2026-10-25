@@ -12,6 +12,8 @@ export function modelFinding(overrides: Partial<ModelFinding> = {}): ModelFindin
     effort: "quick_win",
     title: "b overflows for large a",
     body: "Adding one can exceed the safe integer range.",
+    impact: "",
+    fixRationale: "",
     suggestion: null,
     confidence: 0.9,
     evidence: "execution_path",

@@ -368,6 +368,29 @@ describe("Review detail page", () => {
     )
   })
 
+  it("labels confidence as self-reported and shows verification, impact and fix rationale", async () => {
+    const [first, ...rest] = detail.result!.findings
+    const findings = [
+      {
+        ...first!,
+        impact: "Any visitor can read every row.",
+        fixRationale: "A bound parameter cannot change the query.",
+        verification: "verified" as const,
+      },
+      ...rest,
+    ]
+    const review = { ...detail, result: { ...detail.result!, findings } }
+    mockApi({ [`GET /api/reviews/${detail.id}`]: { review } })
+    renderWithProviders(<App />, { route: `/reviews/${detail.id}` })
+
+    const actionable = await screen.findByRole("region", { name: "Actionable comments" })
+    expect(within(actionable).getByText(/Self-reported confidence 90%/)).toBeInTheDocument()
+    expect(within(actionable).queryByText(/^Confidence/)).toBeNull()
+    expect(within(actionable).getByText("Verified")).toBeInTheDocument()
+    expect(within(actionable).getByText("Any visitor can read every row.")).toBeInTheDocument()
+    expect(within(actionable).getByText("A bound parameter cannot change the query.")).toBeInTheDocument()
+  })
+
   it("collapses a long walkthrough file list until expanded", async () => {
     const fileSummaries = Array.from({ length: 6 }, (_, i) => ({ path: `src/f${i}.ts`, summary: `Changes f${i}` }))
     const walkthrough = { ...detail.result!.walkthrough!, fileSummaries }

@@ -29,6 +29,10 @@ export const findingStatsQuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(365).default(30),
 });
 
+export const findingCalibrationQuerySchema = findingStatsQuerySchema.extend({
+  groupBy: z.enum(["none", "model", "category"]).default("none"),
+});
+
 export const findingIdParamSchema = z.object({ id: z.uuid() });
 
 // "resolved" belongs to the worker: only a later run can show a finding is gone.

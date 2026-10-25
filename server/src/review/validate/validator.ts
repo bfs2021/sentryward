@@ -177,6 +177,8 @@ export function validateFindings(
     }
     const suggestion =
       config.review.committableSuggestions && candidate.suggestion?.trim() ? candidate.suggestion : undefined;
+    const impact = candidate.impact.trim();
+    const fixRationale = candidate.fixRationale.trim();
 
     const finding: Finding = {
       file: file.path,
@@ -188,11 +190,15 @@ export function validateFindings(
       effort: candidate.effort,
       title,
       body,
+      ...(impact ? { impact } : {}),
+      ...(fixRationale ? { fixRationale } : {}),
       ...(suggestion !== undefined ? { suggestion } : {}),
       confidence,
       evidence: candidate.evidence,
       evidenceNote: candidate.evidenceNote.trim(),
       evidenceFiles: candidate.evidenceFiles.filter((path) => path !== file.path),
+      // review.verify, when on, decides this afterwards.
+      verification: "not_checked",
       source: "llm",
       fingerprint: fingerprint({ file: file.path, category: candidate.category, kind, title }),
       ...(candidate.model ? { model: candidate.model } : {}),
@@ -282,6 +288,7 @@ export function validateToolFindings(
       evidence: "static_tool",
       evidenceNote: `Reported by ${annotation.tool}${ruleId ? ` (${ruleId})` : ""}`,
       evidenceFiles: [],
+      verification: "not_checked",
       source: "tool",
       tool: annotation.tool,
       ...(ruleId ? { ruleId } : {}),

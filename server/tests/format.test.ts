@@ -80,6 +80,15 @@ describe("repairReviewOutput", () => {
     ]);
   });
 
+  it("defaults a missing impact and fix rationale to empty strings", () => {
+    const { impact: _, fixRationale: __, ...rest } = modelFinding();
+    const { findings } = parse({ findings: [rest, { ...modelFinding(), fix_rationale: "Bounds the sum." }] });
+    expect(findings.map((f) => [f.impact, f.fixRationale])).toEqual([
+      ["", ""],
+      ["", "Bounds the sum."],
+    ]);
+  });
+
   it("defaults an unknown evidence to unverified", () => {
     const { findings } = parse({ findings: [{ ...modelFinding(), evidence: "gut feeling" }] });
     expect(findings[0]!.evidence).toBe("unverified");

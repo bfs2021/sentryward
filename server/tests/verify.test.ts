@@ -103,6 +103,41 @@ describe("verifying findings", () => {
     expect(result.usage.map((u) => u.purpose)).toEqual(["review"]);
   });
 
+  it("records what verification made of each finding", async () => {
+    const minor = modelFinding({ severity: "minor", startLine: 12, endLine: 12, title: "c is never negative" });
+    const outcome = async (verification: unknown) =>
+      (await review([BLOCKER, minor], verification, { review: { severityFloor: "info" } })).result.findings.map((f) => [f.title, f.verification]);
+
+    // The minor finding is not a candidate by default, so nobody checked it.
+    expect(await outcome({ verdict: "confirmed", reason: "" })).toEqual([
+      ["b overflows for large a", "verified"],
+      ["c is never negative", "not_checked"],
+    ]);
+    expect(await outcome({ verdict: "uncertain", reason: "" })).toContainEqual(["b overflows for large a", "uncertain"]);
+    expect(await outcome(new Error("rate limited"))).toContainEqual(["b overflows for large a", "not_checked"]);
+    const off = await review([BLOCKER], { verdict: "confirmed", reason: "" }, { review: { verify: "off" } });
+    expect(off.result.findings[0]!.verification).toBe("not_checked");
+  });
+
+  it("marks a finding the validator already demoted uncertain when verification cannot decide either", async () => {
+    const unproven = modelFinding({ severity: "critical", evidence: "unverified", title: "b overflows for large a" });
+    const { result } = await review([unproven], { verdict: "uncertain", reason: "" }, { review: { verify: "all", severityFloor: "info" } });
+
+    expect(result.findings).toMatchObject([{ kind: "verification_needed", verification: "uncertain" }]);
+    expect(result.validation.demoted).toBe(1);
+  });
+
+  it("shows the verifier the claimed impact", async () => {
+    const model = fakeModel({
+      code_review: { findings: [modelFinding({ severity: "critical", impact: "The CLI prints a wrong total." })] },
+      verification: { verdict: "confirmed", reason: "" },
+    });
+    await runReview({ changeSet: makeChangeSet(), config: config() }, { generate: model.generate, now });
+
+    const prompt = model.requests.find((request) => request.schemaName === "verification")!.prompt;
+    expect(prompt).toContain("Claimed impact: The CLI prints a wrong total.");
+  });
+
   it("verifies only blocking findings by default, every finding with all, none with off", async () => {
     const findings = [BLOCKER, modelFinding({ severity: "minor", startLine: 12, endLine: 12, title: "c is never negative" })];
     const answer = { verdict: "confirmed", reason: "" };

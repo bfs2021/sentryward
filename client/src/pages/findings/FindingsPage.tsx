@@ -7,6 +7,7 @@ import { selectedLabel } from "@/lib/filters"
 import { useRepos } from "@/features/forge/api"
 import type { FindingQuery } from "@/features/findings/api"
 import { FindingDetailsSheet } from "@/features/findings/FindingDetailsSheet"
+import { ConfidenceCalibration } from "@/features/findings/ConfidenceCalibration"
 import { FalsePositiveBreakdown } from "@/features/findings/FalsePositiveBreakdown"
 import { FindingList } from "@/features/findings/FindingList"
 import { FindingStatsStrip } from "@/features/findings/FindingStatsStrip"
@@ -82,6 +83,10 @@ export function FindingsPage() {
             onOpen={setOpened}
           />
           <FalsePositiveBreakdown
+            repoId={falsePositives.params.repoId}
+            repoName={selectedLabel(falsePositives.values.repo, repoOptions)}
+          />
+          <ConfidenceCalibration
             repoId={falsePositives.params.repoId}
             repoName={selectedLabel(falsePositives.values.repo, repoOptions)}
           />

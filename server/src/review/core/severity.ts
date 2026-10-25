@@ -46,6 +46,14 @@ export const EVIDENCE = ["execution_path", "reproduction", "contract", "static_t
 export const evidenceSchema = z.enum(EVIDENCE);
 export type Evidence = z.infer<typeof evidenceSchema>;
 
+// What the verifier (review.verify) made of a finding: confirmed by a second
+// look, left undecided, or never checked (verify off, not a candidate, or the
+// call failed). Recorded so readers can tell a finding that survived a second
+// check from one nobody re-examined.
+export const VERIFICATIONS = ["verified", "uncertain", "not_checked"] as const;
+export const verificationSchema = z.enum(VERIFICATIONS);
+export type Verification = z.infer<typeof verificationSchema>;
+
 export const EFFORTS = ["quick_win", "moderate", "heavy_lift"] as const;
 export const effortSchema = z.enum(EFFORTS);
 export type Effort = z.infer<typeof effortSchema>;
