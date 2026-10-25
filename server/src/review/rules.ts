@@ -9,9 +9,10 @@ import { hunkLines } from "./context/diffText.ts";
 import { fence } from "./render/markdown.ts";
 import type { DropReason, ValidationResult } from "./validate/validator.ts";
 
-// Team rules from `.sentryward.yaml`. A rule with a pattern is checked here,
-// without a model; the rest are listed in the review prompt and come back as
-// model findings naming the rule (validator.ts). Either way the finding has
+// Team rules, from the dashboard layers and `.sentryward.yaml` combined
+// (config/resolve.ts). A rule with a pattern is checked here, without a model;
+// the rest are listed in the review prompt and come back as model findings
+// naming the rule (validator.ts). Either way the finding has
 // source "rule", the rule's id, severity and category.
 
 export const DEFAULT_RULE_CATEGORY: Category = "maintainability";

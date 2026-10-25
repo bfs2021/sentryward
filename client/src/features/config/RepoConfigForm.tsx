@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import type { ForgeRepo } from "@/features/forge/api"
 import { useApiKeys } from "@/features/llm-connections/api"
-import { useGlobalConfig, useRepoConfig, useSaveRepoSettings, useSetFollowGlobal } from "./api"
+import { useGlobalConfig, useRepoConfig, useRulePatternErrors, useSaveRepoSettings, useSetFollowGlobal } from "./api"
 import { ConfigFields } from "./ConfigFields"
 import type { ConfigTab } from "./tabs"
 import { isDirty, toForm, toSettings, validateForm, type FormState } from "./settingsForm"
@@ -47,10 +47,12 @@ export function RepoConfigForm(props: { repo: ForgeRepo; tab: ConfigTab; onTabCh
   const apiKeys = useApiKeys()
   const [form, setForm] = useState<FormState>(() => toForm(repo.settings))
   const dirty = isDirty(repo.settings, form)
+  const patternErrors = useRulePatternErrors(form.rules.map((rule) => rule.pattern)).data
   const errors = validateForm(
     form,
     false,
     apiKeys.data?.keys.filter((key) => key.stored).map((key) => key.provider),
+    patternErrors,
   )
   const valid = Object.keys(errors).length === 0
 
@@ -104,6 +106,7 @@ export function RepoConfigForm(props: { repo: ForgeRepo; tab: ConfigTab; onTabCh
       inherited={global.data?.config}
       inheritedSources={global.data?.sources}
       errors={errors}
+      rulePatternErrors={patternErrors}
       disabled={repo.followGlobal}
       guidanceLabel="Repository guidance"
       notices={notices}

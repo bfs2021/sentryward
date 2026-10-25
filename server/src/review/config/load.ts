@@ -69,9 +69,6 @@ export async function loadReviewConfig(input: LoadConfigInput): Promise<LoadedCo
     break;
   }
 
-  return {
-    ...resolveConfig({ global, repoSettings, repoFile: fileOverride, trigger: input.trigger }),
-    repoFile,
-    warnings,
-  };
+  const resolved = resolveConfig({ global, repoSettings, repoFile: fileOverride, trigger: input.trigger });
+  return { ...resolved, repoFile, warnings: [...warnings, ...resolved.warnings] };
 }

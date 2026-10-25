@@ -140,12 +140,67 @@ describe("resolveConfig", () => {
     }
   });
 
-  it("takes rules from the repository file only", () => {
-    const rules = [{ id: "no-b", description: "No b.", severity: "major" as const }];
-    expect(resolveConfig({ repoFile: { rules } }).config.rules).toEqual(rules);
-    expect(dashboardOverrideSchema.safeParse({ rules }).success).toBe(false);
-    expect(() => resolveConfig({ repoSettings: { rules } as never })).toThrow();
-    expect(() => resolveConfig({ global: { rules } as never })).toThrow();
+  describe("rules", () => {
+    const rule = (id: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      description: `Rule ${id}.`,
+      severity: "major" as const,
+      ...extra,
+    });
+
+    it("are accepted by the dashboard layers", () => {
+      expect(dashboardOverrideSchema.safeParse({ rules: [rule("no-b")] }).success).toBe(true);
+      expect(dashboardOverrideSchema.safeParse({ rules: [rule("no-b", { pattern: "(?=b)" })] }).success).toBe(false);
+    });
+
+    it("combine across layers, lowest first, with each rule's source", () => {
+      const { config, sources, warnings } = resolveConfig({
+        global: { rules: [rule("global")] },
+        repoSettings: { rules: [rule("settings")] },
+        repoFile: { rules: [rule("file")] },
+      });
+      expect(config.rules.map((r) => r.id)).toEqual(["global", "settings", "file"]);
+      expect(sources).toMatchObject({
+        "rules.global": "global",
+        "rules.settings": "repoSettings",
+        "rules.file": "repoFile",
+        rules: "repoFile",
+      });
+      expect(warnings).toEqual([]);
+    });
+
+    it("keep a lower layer's rule when a higher one reuses its id", () => {
+      const { config, sources, warnings } = resolveConfig({
+        global: { rules: [rule("shared", { severity: "critical" })] },
+        repoSettings: { rules: [rule("mine"), rule("shared", { severity: "info" })] },
+        repoFile: { rules: [rule("mine", { severity: "info" }), rule("file")] },
+      });
+      expect(config.rules).toEqual([rule("shared", { severity: "critical" }), rule("mine"), rule("file")]);
+      expect(sources).toMatchObject({ "rules.shared": "global", "rules.mine": "repoSettings", "rules.file": "repoFile" });
+      expect(warnings).toEqual([
+        "Rule shared in the repository settings was ignored: a rule with that id is already set in the global config",
+        "Rule mine in the repository file was ignored: a rule with that id is already set in the repository settings",
+      ]);
+    });
+
+    it("leave out a layer's additions as a whole when the combination is over a limit", () => {
+      const many = (prefix: string, count: number) => Array.from({ length: count }, (_, i) => rule(`${prefix}-${i}`));
+      const { config, sources, warnings } = resolveConfig({
+        global: { rules: many("global", 40) },
+        repoFile: { rules: many("file", 20) },
+      });
+      expect(config.rules).toHaveLength(40);
+      expect(sources["rules.file-0"]).toBeUndefined();
+      expect(sources.rules).toBe("global");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/^Rules in the repository file were ignored: together with the rules below them/);
+    });
+
+    it("default to none, attributed to the defaults", () => {
+      const { config, sources } = resolveConfig({});
+      expect(config.rules).toEqual([]);
+      expect(sources.rules).toBe("default");
+    });
   });
 
   it("only accepts an http(s) base URL and a known key slot", () => {
@@ -422,6 +477,26 @@ describe("loadReviewConfig", () => {
 
     expect(loaded.config.review.maxFindings).toBe(7);
     expect(loaded.warnings).toEqual([".sentryward.yaml was ignored: review: unknown setting nope"]);
+  });
+
+  it("adds the repository file's rules to the saved ones, ignoring repository settings while following the global config", async () => {
+    const { adapter } = fakeAdapter({
+      "base:.sentryward.yaml": "rules:\n  - id: shared\n    description: Weaker.\n    severity: info\n",
+    });
+    const shared = { id: "shared", description: "Strict.", severity: "critical" as const };
+    const own = { id: "own", description: "Own.", severity: "minor" as const };
+
+    const loaded = await loadReviewConfig({
+      adapter,
+      project: "acme/web",
+      ref: "base",
+      globalSettings: { rules: [shared] },
+      repoSettings: { rules: [own] },
+      followGlobal: true,
+    });
+
+    expect(loaded.config.rules).toEqual([shared]);
+    expect(loaded.warnings).toEqual(["Rule shared in the repository file was ignored: a rule with that id is already set in the global config"]);
   });
 
   it("ignores saved settings that no longer validate", async () => {

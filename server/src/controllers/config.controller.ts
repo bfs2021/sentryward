@@ -4,9 +4,9 @@ import { prisma } from "../lib/prisma.ts";
 import { CATEGORIES, SEVERITIES } from "../review/core/severity.ts";
 import { PROFILES } from "../review/config/profiles.ts";
 import { resolveConfig } from "../review/config/resolve.ts";
-import { DEFAULT_CONFIG, PROFILE_NAMES, dashboardOverrideSchema } from "../review/config/schema.ts";
+import { DEFAULT_CONFIG, PROFILE_NAMES, RULE_PATTERN_ERROR, dashboardOverrideSchema, rulePatternCompiles } from "../review/config/schema.ts";
 import { previewPublication } from "../review/preview/preview.ts";
-import { configPreviewSchema, updateGlobalConfigSchema } from "../schemas/config.schema.ts";
+import { checkRulePatternsSchema, configPreviewSchema, updateGlobalConfigSchema } from "../schemas/config.schema.ts";
 import { requireStoredLlmConnection } from "../services/llm.ts";
 
 // What the settings UI needs to render choices and show inherited values.
@@ -27,7 +27,8 @@ function globalConfigBody(saved: unknown) {
   const parsed = dashboardOverrideSchema.safeParse(saved);
   const warnings = parsed.success ? [] : ["Saved global settings are no longer valid and were ignored"];
   const settings = parsed.success ? parsed.data : {};
-  return { settings, warnings, ...resolveConfig({ global: settings }) };
+  const resolved = resolveConfig({ global: settings });
+  return { settings, ...resolved, warnings: [...warnings, ...resolved.warnings] };
 }
 
 export async function getGlobalConfig(req: Request, res: Response) {
@@ -58,4 +59,11 @@ export async function previewConfig(req: Request, res: Response) {
   const { provider, base, settings } = configPreviewSchema.parse(req.body);
   const { config } = resolveConfig({ global: base, repoSettings: settings });
   res.json(await previewPublication(config, provider));
+}
+
+// One answer per pattern, in order: null when it compiles, the same message a
+// save would give when it does not.
+export function checkRulePatterns(req: Request, res: Response) {
+  const { patterns } = checkRulePatternsSchema.parse(req.body);
+  res.json({ errors: patterns.map((pattern) => (pattern === "" || rulePatternCompiles(pattern) ? null : RULE_PATTERN_ERROR)) });
 }

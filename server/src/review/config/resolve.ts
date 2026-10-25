@@ -4,10 +4,12 @@ import {
   configOverrideSchema,
   configSchema,
   dashboardOverrideSchema,
+  rulesSchema,
   type Config,
   type ConfigOverride,
   type DashboardOverride,
   type ProfileName,
+  type Rule,
 } from "./schema.ts";
 
 export type LayerName = "default" | "profile" | "global" | "repoSettings" | "repoFile" | "trigger";
@@ -28,6 +30,8 @@ export interface ResolvedConfig {
   // Dotted leaf path to the layer that set it, so a result can say why a
   // setting has the value it does.
   sources: Record<string, LayerName>;
+  // Rules a layer could not add (rulesFrom); the config still resolves.
+  warnings: string[];
 }
 
 type Plain = Record<string, unknown>;
@@ -72,6 +76,51 @@ export function withLegacyTriggers<T extends ConfigOverride>(layer: T): T {
   return layer;
 }
 
+const LAYER_LABELS: Record<LayerName, string> = {
+  default: "the defaults",
+  profile: "the profile",
+  global: "the global config",
+  repoSettings: "the repository settings",
+  repoFile: "the repository file",
+  trigger: "the trigger",
+};
+
+// Rules combine across layers instead of replacing like other lists: each
+// layer adds to those below it and can never drop or redefine one of them, so
+// a repository file cannot loosen what the workspace requires. Every layer was
+// validated on its own, so only the combination can break a limit; then that
+// layer's additions are left out as a whole, never half of them.
+function rulesFrom(layers: [LayerName, ConfigOverride | undefined][], sources: Record<string, LayerName>, warnings: string[]): Rule[] {
+  let rules: Rule[] = [];
+  for (const [name, layer] of layers) {
+    if (!layer?.rules?.length) continue;
+    const added: Rule[] = [];
+    for (const rule of layer.rules) {
+      const owner = sources[`rules.${rule.id}`];
+      if (owner) warnings.push(`Rule ${rule.id} in ${LAYER_LABELS[name]} was ignored: a rule with that id is already set in ${LAYER_LABELS[owner]}`);
+      else added.push(rule);
+    }
+    if (!added.length) continue;
+    const combined = [...rules, ...added];
+    const checked = rulesSchema.safeParse(combined);
+    if (!checked.success) {
+      const reason = checked.error.issues[0]?.message ?? "too many rules";
+      warnings.push(`Rules in ${LAYER_LABELS[name]} were ignored: together with the rules below them, ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`);
+      continue;
+    }
+    rules = combined;
+    for (const rule of added) sources[`rules.${rule.id}`] = name;
+    sources.rules = name;
+  }
+  return rules;
+}
+
+function withoutRules<T extends ConfigOverride>(layer: T): T {
+  if (layer.rules === undefined) return layer;
+  const { rules: _rules, ...rest } = layer;
+  return rest as T;
+}
+
 // Precedence, lowest first: defaults, profile preset, global config,
 // repository settings, repository file, trigger. The profile itself is chosen by the highest layer
 // that names one.
@@ -101,11 +150,13 @@ export function resolveConfig(layers: ConfigLayers): ResolvedConfig {
     if (layer) stack.push([name, withLegacyTriggers(layer)]);
   }
   for (const [name, layer] of stack) {
-    merged = merge(merged, layer as Plain);
-    recordLeaves(layer, name, sources);
+    merged = merge(merged, withoutRules(layer) as Plain);
+    recordLeaves(withoutRules(layer), name, sources);
   }
   // `profile` is decided above, not merged; attribute it to whoever named it.
   sources.profile = naming?.[0] ?? "default";
+  const warnings: string[] = [];
+  merged.rules = rulesFrom(ordered, sources, warnings);
 
-  return { config: configSchema.parse(merged), sources };
+  return { config: configSchema.parse(merged), sources, warnings };
 }

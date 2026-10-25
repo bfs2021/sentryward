@@ -291,6 +291,19 @@ describe("runReview with rules", () => {
     expect(inlineBody(ruled, "github")).toContain("· rule no-b");
   });
 
+  it("spells out the broken rule in its inline comment, for rules not in the repository", async () => {
+    const result = await runReview(
+      { changeSet: makeChangeSet(), config: config({ review: { verify: "off" }, rules: [rule({ pattern: "const c", paths: ["src/**"] })] }) },
+      { generate: model(), now },
+    );
+    const ruled = result.findings.find((finding) => finding.source === "rule")!;
+
+    const body = inlineBody(ruled, "github", { rules: [rule({ description: "Ask @lead first.", paths: ["src/**"] })] });
+    expect(body).toContain("<summary>📏 Rule no-b</summary>\n\nAsk @​lead first.\n\nApplies to: `src/**`\n\n</details>");
+    expect(inlineBody(ruled, "github", { rules: [rule({ id: "other" })] })).not.toContain("📏");
+    expect(inlineBody(ruled, "github")).not.toContain("📏");
+  });
+
   it("reports a violation the model found under its rule", async () => {
     const result = await runReview(
       {

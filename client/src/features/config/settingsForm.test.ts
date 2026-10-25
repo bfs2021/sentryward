@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { ConfigSchema } from "./api"
-import { INHERIT, baseConfig, isDirty, toForm, toSettings, validateForm, withoutDefaults } from "./settingsForm"
+import { EMPTY_RULE, INHERIT, baseConfig, isDirty, ruleRowErrors, toForm, toSettings, validateForm, withoutDefaults } from "./settingsForm"
 
 const schema: ConfigSchema = {
   defaults: {
@@ -76,6 +76,7 @@ const schema: ConfigSchema = {
     ignorePaths: ["**/*.lock"],
     instructions: "",
     languageInstructions: {},
+    rules: [],
   },
   profiles: { balanced: {}, fast: { output: { walkthrough: false } }, strict: { review: { blockOn: "major" } } },
   severities: ["critical", "major", "minor"],
@@ -176,6 +177,23 @@ describe("toSettings", () => {
       ignorePaths: ["**/*.{png,svg}", "gen/**"],
       languageInstructions: { Go: "Wrap errors" },
     })
+  })
+
+  it("round-trips rules, leaving out empty optional fields and blank rows", () => {
+    const saved = {
+      rules: [
+        { id: "no-db", description: "No Prisma in controllers.", severity: "major", paths: ["src/controllers/**", "src/api/**"], pattern: "@prisma/client" },
+        { id: "thin", description: "Keep controllers thin.", severity: "minor", category: "style", good: "  return svc.run()\n", bad: "db.query()" },
+      ],
+    }
+    const form = toForm(saved)
+    expect(form.rules[0]).toMatchObject({ paths: "src/controllers/**\nsrc/api/**", category: "", good: "" })
+    expect(toSettings(saved, form)).toEqual(saved)
+    expect(isDirty(saved, form)).toBe(false)
+
+    const edited = { ...form, rules: [{ ...form.rules[1], id: " thin ", description: " Thin. ", good: " " }, { ...EMPTY_RULE }] }
+    expect(toSettings({}, edited)).toEqual({ rules: [{ id: "thin", description: "Thin.", severity: "minor", category: "style", bad: "db.query()" }] })
+    expect(toSettings(saved, { ...form, rules: [] })).toEqual({})
   })
 
   it("removes inherited values and empty sections but keeps keys the form does not show", () => {
@@ -309,6 +327,38 @@ describe("validateForm", () => {
       skipAuthors: "At most 50 entries",
       skipLabels: "At most 200 characters per entry",
     })
+  })
+
+  it("reports rule rows the server would reject, with RE2 answers for patterns", () => {
+    const rule = { ...EMPTY_RULE, id: "no-b", description: "No b.", severity: "major" }
+    const rows = [
+      rule,
+      { ...rule, pattern: "(?=b)" },
+      { ...rule, id: "Bad Id", severity: "" },
+      { ...rule, id: "", description: " " },
+      { ...EMPTY_RULE },
+    ]
+    const patternErrors = { "(?=b)": "Not a valid regular expression" }
+
+    expect(ruleRowErrors(rows, patternErrors)).toEqual([
+      {},
+      { id: "Duplicate rule id no-b", pattern: "Not a valid regular expression" },
+      {
+        id: "Use lowercase letters, digits, dots, dashes and underscores, e.g. no-db-in-controllers",
+        severity: "Choose a severity",
+      },
+      { id: "Enter an id", description: "Describe what the rule requires" },
+      {},
+    ])
+    expect(validateForm({ ...form, rules: rows }, false, undefined, patternErrors).rules).toBe("Fix the rules marked below")
+    // A pattern the server has not answered for yet does not hold the row back.
+    expect(validateForm({ ...form, rules: [{ ...rule, pattern: "(?=b)" }] })).toEqual({})
+    expect(
+      validateForm({ ...form, rules: Array.from({ length: 51 }, (_, i) => ({ ...rule, id: `r${i}`, pattern: "b" })) }).rules,
+    ).toBe("At most 50 rules")
+    expect(
+      validateForm({ ...form, rules: Array.from({ length: 17 }, (_, i) => ({ ...rule, id: `r${i}`, description: "x".repeat(1000) })) }).rules,
+    ).toMatch(/at most 16000 characters in total/)
   })
 
   it("accepts router model ids", () => {

@@ -9,6 +9,19 @@ export type SummaryTrigger = "manual" | "published"
 export type HighLevelSummaryPlacement = "description" | "walkthrough"
 export type VerifyMode = "off" | "blocking" | "all"
 
+// A team rule; mirrors ruleSchema in server/src/review/config/schema.ts.
+export interface Rule {
+  id: string
+  description: string
+  severity: string
+  category?: string
+  paths?: string[]
+  // Checked against added lines with RE2, without a model.
+  pattern?: string
+  good?: string
+  bad?: string
+}
+
 // A partial review config; mirrors server/src/review/config/schema.ts.
 export interface ConfigOverride {
   profile?: string
@@ -87,6 +100,8 @@ export interface ConfigOverride {
   ignorePaths?: string[]
   instructions?: string
   languageInstructions?: Record<string, string>
+  // Added to the rules of the layers below; never replaces one of them.
+  rules?: Rule[]
   [key: string]: unknown
 }
 
@@ -168,6 +183,8 @@ export interface EffectiveConfig {
   ignorePaths: string[]
   instructions: string
   languageInstructions: Record<string, string>
+  // Every layer's rules combined; sources["rules.<id>"] names each one's layer.
+  rules: Rule[]
 }
 
 // What a review of a repository's default branch would run with.
@@ -322,6 +339,31 @@ export function useConfigPreview(body: PreviewRequest | null) {
         .sort((a, b) => b.state.dataUpdatedAt - a.state.dataUpdatedAt)[0]
       return latest?.state.data as PreviewPublication | undefined
     },
+    staleTime: Infinity,
+  })
+}
+
+// Patterns are compiled with RE2 by the worker, which rejects lookarounds and
+// backreferences the browser accepts, so the server checks them as they are
+// typed. Answers are keyed by pattern so a check of the previous patterns
+// still covers the rows that did not change while the next one loads.
+export function useRulePatternErrors(patterns: string[]) {
+  // Within the server's bounds (50 patterns of 300 characters); the form
+  // reports anything past them itself.
+  const unique = [...new Set(patterns.filter((pattern) => pattern && pattern.length <= 300))].sort().slice(0, 50)
+  const settled = useDebounced(unique.length ? JSON.stringify(unique) : null, 300)
+  return useQuery({
+    queryKey: ["rule-patterns", settled],
+    queryFn: async () => {
+      const sent: string[] = JSON.parse(settled!)
+      const { errors } = await api<{ errors: (string | null)[] }>("/config/rules/check", {
+        method: "POST",
+        body: JSON.stringify({ patterns: sent }),
+      })
+      return Object.fromEntries(sent.map((pattern, i) => [pattern, errors[i] ?? null])) as Record<string, string | null>
+    },
+    enabled: settled !== null,
+    placeholderData: keepPreviousData,
     staleTime: Infinity,
   })
 }

@@ -4,7 +4,7 @@ import { toast } from "sonner"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { useApiKeys } from "@/features/llm-connections/api"
-import { useConfigSchema, useSaveGlobalConfig, type ConfigOverride, type GlobalConfig } from "./api"
+import { useConfigSchema, useRulePatternErrors, useSaveGlobalConfig, type ConfigOverride, type GlobalConfig } from "./api"
 import { ConfigFields } from "./ConfigFields"
 import type { ConfigTab } from "./tabs"
 import {
@@ -33,10 +33,12 @@ export function GlobalConfigForm(props: {
   const inherited = schema.data && baseConfig(schema.data, form.profile === INHERIT ? undefined : form.profile)
   const finish = (settings: ConfigOverride) => (schema.data ? withoutDefaults(settings, schema.data) : settings)
   const dirty = isDirty(global.settings, form, finish)
+  const patternErrors = useRulePatternErrors(form.rules.map((rule) => rule.pattern)).data
   const errors = validateForm(
     form,
     true,
     apiKeys.data?.keys.filter((key) => key.stored).map((key) => key.provider),
+    patternErrors,
   )
   const valid = Object.keys(errors).length === 0
   const resetSettings: ConfigOverride =
@@ -66,6 +68,7 @@ export function GlobalConfigForm(props: {
       sources={global.sources}
       inherited={inherited}
       errors={errors}
+      rulePatternErrors={patternErrors}
       notices={
         global.warnings.length > 0 && (
           <Alert>

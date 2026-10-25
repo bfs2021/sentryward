@@ -185,7 +185,9 @@ export const MAX_RULES_CHARS = 16_000;
 const compileResults = new Map<string, boolean>();
 const MAX_COMPILE_RESULTS = 500;
 
-function compiles(pattern: string): boolean {
+export const RULE_PATTERN_ERROR = "Not a valid regular expression (backreferences and lookarounds are not supported)";
+
+export function rulePatternCompiles(pattern: string): boolean {
   const known = compileResults.get(pattern);
   if (known !== undefined) return known;
   let ok: boolean;
@@ -217,16 +219,18 @@ export const ruleSchema = z.strictObject({
     .string()
     .min(1)
     .max(MAX_RULE_PATTERN_CHARS)
-    .refine(compiles, "Not a valid regular expression (backreferences and lookarounds are not supported)")
+    .refine(rulePatternCompiles, RULE_PATTERN_ERROR)
     .optional(),
   good: z.string().max(2000).optional(),
   bad: z.string().max(2000).optional(),
 });
 export type Rule = z.infer<typeof ruleSchema>;
 
-const rulesSchema = z
+export const MAX_RULES = 50;
+
+export const rulesSchema = z
   .array(ruleSchema)
-  .max(50)
+  .max(MAX_RULES)
   .superRefine((rules, ctx) => {
     const seen = new Set<string>();
     for (const [index, rule] of rules.entries()) {
@@ -256,8 +260,9 @@ const topLevelShape = {
   ignorePaths: z.array(z.string().min(1)).max(200),
   instructions: z.string().max(4000),
   languageInstructions: z.record(z.string().min(1), z.string().max(2000)),
-  // Team rules (rules.ts). Only the repository file sets them (see
-  // dashboardOverrideSchema), read from the base revision.
+  // Team rules (rules.ts). Unlike every other list they combine across
+  // layers instead of replacing, and a lower layer's rule always wins
+  // (resolve.ts), so a repository file cannot loosen workspace rules.
   rules: rulesSchema,
 };
 
@@ -284,14 +289,9 @@ export type ConfigOverride = z.infer<typeof configOverrideSchema>;
 // The global config and repository settings, saved by the repository owner in
 // the dashboard. Only these layers may set endpoints; the repository file and
 // triggers use configOverrideSchema, which rejects them as unknown settings.
-// Rules are the reverse: they live in the repository file alone, so a team
-// reads every rule it is held to in one place.
-export const REPOSITORY_ONLY_KEYS = { rules: true } as const;
-export const dashboardOverrideSchema = configOverrideSchema
-  .extend({
-    llm: z.strictObject(dashboardLlmShape).partial().optional(),
-  })
-  .omit(REPOSITORY_ONLY_KEYS);
+export const dashboardOverrideSchema = configOverrideSchema.extend({
+  llm: z.strictObject(dashboardLlmShape).partial().optional(),
+});
 export type DashboardOverride = z.infer<typeof dashboardOverrideSchema>;
 
 export const DEFAULT_CONFIG: Config = {

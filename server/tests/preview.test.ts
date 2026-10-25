@@ -145,19 +145,19 @@ describe("POST /api/config/preview", () => {
   });
 
   it("accepts a resolved config as the base, rules included", async () => {
-    // The forms send the defaults or the global config's effective config,
-    // which has `rules` even though dashboard settings cannot set them.
+    // The forms send the defaults or the global config's effective config.
+    const rule = { id: "no-b", description: "No b.", severity: "major" };
     const res = await request(app)
       .post("/api/config/preview")
       .set("Cookie", cookie)
-      .send({ provider: "github", base: { ...DEFAULT_CONFIG, rules: [] }, settings: {} });
+      .send({ provider: "github", base: { ...DEFAULT_CONFIG, rules: [rule] }, settings: { rules: [{ ...rule, id: "no-c" }] } });
     expect(res.status).toBe(200);
     expect(res.body.summaryComment).toMatch(/^## Summary\n/);
 
     const refused = await request(app)
       .post("/api/config/preview")
       .set("Cookie", cookie)
-      .send({ provider: "github", base: {}, settings: { rules: [] } });
+      .send({ provider: "github", base: {}, settings: { rules: [{ ...rule, pattern: "(?=b)" }] } });
     expect(refused.status).toBe(400);
   });
 
@@ -166,6 +166,39 @@ describe("POST /api/config/preview", () => {
       .post("/api/config/preview")
       .set("Cookie", cookie)
       .send({ provider: "github", base: {}, settings: { review: { maxFindings: 0 } } });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/config/rules/check", () => {
+  let cookie: string;
+
+  beforeEach(async () => {
+    await prisma.workspace.deleteMany();
+    await prisma.user.deleteMany();
+    ({ cookie } = await createUser());
+  });
+
+  it("requires a session", async () => {
+    const res = await request(app).post("/api/config/rules/check").send({ patterns: [] });
+    expect(res.status).toBe(401);
+  });
+
+  it("answers each pattern in order with what RE2 accepts", async () => {
+    const res = await request(app)
+      .post("/api/config/rules/check")
+      .set("Cookie", cookie)
+      .send({ patterns: ["\\bconsole\\.log\\(", "(?<=a)b", "(a)\\1", "[", ""] });
+    expect(res.status).toBe(200);
+    const invalid = "Not a valid regular expression (backreferences and lookarounds are not supported)";
+    expect(res.body.errors).toEqual([null, invalid, invalid, invalid, null]);
+  });
+
+  it("refuses patterns over the length limit", async () => {
+    const res = await request(app)
+      .post("/api/config/rules/check")
+      .set("Cookie", cookie)
+      .send({ patterns: ["a".repeat(301)] });
     expect(res.status).toBe(400);
   });
 });
