@@ -90,8 +90,27 @@ function compare(a: string | number | null, b: string | number | null) {
   return typeof a === "string" ? a.localeCompare(String(b)) : a - Number(b)
 }
 
-function DataTable<R>({ label, rows, columns, rowKey }: { label: string; rows: R[]; columns: Column<R>[]; rowKey: (row: R) => string }) {
-  const { sort, onSort } = useSort<string>()
+type Pagination = ReturnType<typeof usePagination>
+
+function DataTable<R>({
+  label,
+  rows,
+  columns,
+  rowKey,
+  pagination,
+}: {
+  label: string
+  rows: R[]
+  columns: Column<R>[]
+  rowKey: (row: R) => string
+  pagination: Pagination
+}) {
+  const { sort, onSort: toggleSort } = useSort<string>()
+  // A new order starts over at page 1, so the top of it is what shows.
+  function onSort(key: string) {
+    toggleSort(key)
+    pagination.setPage(1)
+  }
   const sorted = useMemo(() => {
     const column = sort && columns.find((c) => c.key === sort.key)
     if (!sort || !column) return rows
@@ -103,7 +122,6 @@ function DataTable<R>({ label, rows, columns, rowKey }: { label: string; rows: R
     })
   }, [rows, columns, sort])
   // Paged after sorting, so a sort orders every row and not just this page.
-  const pagination = usePagination(USAGE_PAGINATION)
   const page = paginate(sorted, pagination.page, pagination.size)
 
   return (
@@ -151,23 +169,21 @@ function DataTable<R>({ label, rows, columns, rowKey }: { label: string; rows: R
 export function UsageTable({ report }: { report: UsageReport }) {
   const [view, setView] = useState<View>("model")
   const [mode, setMode] = useState<Mode>("costs")
-  const { setPage } = usePagination(USAGE_PAGINATION)
+  // The one instance for this table; DataTable reads and sets it through props.
+  const pagination = usePagination(USAGE_PAGINATION)
 
   // Other rows (or the same rows by another measure) start over at page 1.
-  function onView(next: View) {
-    setView(next)
-    setPage(1)
-  }
-
-  function onMode(next: Mode) {
-    setMode(next)
-    setPage(1)
+  function startOver<T>(set: (value: T) => void) {
+    return (value: T) => {
+      set(value)
+      pagination.setPage(1)
+    }
   }
 
   return (
     <section aria-label="Usage table" className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Select value={view} onValueChange={(next) => onView(next as View)}>
+        <Select value={view} onValueChange={(next) => startOver(setView)(next as View)}>
           <SelectTrigger aria-label="Group usage by" className="w-56">
             <SelectValue />
           </SelectTrigger>
@@ -179,7 +195,7 @@ export function UsageTable({ report }: { report: UsageReport }) {
             ))}
           </SelectContent>
         </Select>
-        <Segmented label="Table values" options={MODES} value={mode} onChange={onMode} />
+        <Segmented label="Table values" options={MODES} value={mode} onChange={startOver(setMode)} />
       </div>
       <Card>
         <CardContent>
@@ -190,6 +206,7 @@ export function UsageTable({ report }: { report: UsageReport }) {
               rows={report.byModel}
               columns={modelColumns(mode)}
               rowKey={(row) => row.model}
+              pagination={pagination}
             />
           ) : (
             <DataTable
@@ -198,6 +215,7 @@ export function UsageTable({ report }: { report: UsageReport }) {
               rows={report.byRepository}
               columns={repositoryColumns(mode)}
               rowKey={(row) => row.repositoryId}
+              pagination={pagination}
             />
           )}
         </CardContent>

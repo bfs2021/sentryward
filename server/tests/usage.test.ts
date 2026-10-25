@@ -4,7 +4,7 @@ import { app } from "../src/app.ts";
 import { encrypt } from "../src/lib/crypto.ts";
 import { prisma } from "../src/lib/prisma.ts";
 import type { ModelUsage, UsageByModel } from "../src/review/core/pricing/pricing.ts";
-import { buildUsageReport, type UsageJob } from "../src/services/usage.ts";
+import { buildRecentUsage, buildUsageReport, type UsageJob } from "../src/services/usage.ts";
 import { createUser } from "./helpers/users.ts";
 
 const NOW = new Date("2026-10-23T12:30:00Z");
@@ -137,19 +137,16 @@ describe("buildUsageReport", () => {
   });
 
   it("counts a model with no price at $0, and older digests without cost the same way", () => {
-    const report = buildUsageReport(
-      [
-        job("2026-10-23T08:00:00Z", { [PROXY]: usage(10, 10) }),
-        job("2026-10-23T09:00:00Z", { [SONNET]: { calls: 1, inputTokens: 1_000_000, outputTokens: 0 } }),
-        job("2026-10-23T10:00:00Z", { [SONNET]: usage(1_000_000, 0, { input: 2, output: 0 }) }),
-      ],
-      "7d",
-      NOW,
-    );
+    const jobs = [
+      job("2026-10-23T08:00:00Z", { [PROXY]: usage(10, 10) }),
+      job("2026-10-23T09:00:00Z", { [SONNET]: { calls: 1, inputTokens: 1_000_000, outputTokens: 0 } }),
+      job("2026-10-23T10:00:00Z", { [SONNET]: usage(1_000_000, 0, { input: 2, output: 0 }) }),
+    ];
+    const report = buildUsageReport(jobs, "7d", NOW);
 
     expect(report.totals).toMatchObject({ reviews: 3, inputTokens: 2_000_010, cost: { usd: 2 } });
     expect(report.byModel.find((m) => m.model === PROXY)!.cost.total).toBe(0);
-    expect(report.recent.map((r) => r.usd)).toEqual([2, 0, 0]);
+    expect(buildRecentUsage(jobs, 1, 10).reviews.map((r) => r.usd)).toEqual([2, 0, 0]);
   });
 
   it("counts runs without usage as reviews but leaves their tokens out", () => {
@@ -160,13 +157,12 @@ describe("buildUsageReport", () => {
     );
 
     expect(report.totals).toMatchObject({ reviews: 2, inputTokens: 1_000_000, cost: { usd: 2 } });
-    expect(report.recent).toHaveLength(1);
     expect(report.byRepository).toEqual([
       expect.objectContaining({ fullPath: "team/web", reviews: 2, inputTokens: 1_000_000, usd: 2 }),
     ]);
   });
 
-  it("groups by repository and lists the newest reviews first", () => {
+  it("groups by repository", () => {
     const api = { id: "r2", fullPath: "team/api" };
     const report = buildUsageReport(
       [
@@ -178,8 +174,7 @@ describe("buildUsageReport", () => {
       NOW,
     );
 
-    expect(report.recent.map((r) => r.fullPath)).toEqual(["team/api", "team/web", "team/web"]);
-    expect(report.recent[0]).toMatchObject({ models: [HAIKU], inputTokens: 1_000_000, usd: 0.1 });
+    expect(report).not.toHaveProperty("recent");
     expect(report.byRepository.map((r) => [r.fullPath, r.reviews, r.usd, r.lastUsed])).toEqual(
       expect.arrayContaining([
         ["team/web", 2, 4, "2026-10-22T10:00:00.000Z"],
@@ -188,31 +183,53 @@ describe("buildUsageReport", () => {
     );
   });
 
-  it("lists every recent review in the period, not just the latest few", () => {
-    const jobs = Array.from({ length: 12 }, (_, i) =>
-      job(`2026-10-23T${String(i).padStart(2, "0")}:00:00Z`, { [SONNET]: usage(1_000, 0) }),
-    );
-
-    const report = buildUsageReport(jobs, "7d", NOW);
-
-    expect(report.recent).toHaveLength(12);
-    expect(report.recent.map((r) => r.id)).toEqual(jobs.map((j) => j.id).reverse());
-  });
-
-  it("titles a recent review from the stored column before the digest", () => {
-    const run = { ...job("2026-10-23T10:00:00Z", { [SONNET]: usage(1_000_000, 0, { input: 2, output: 0 }) }), title: "Fix login redirect" };
-    const older = job("2026-10-23T09:00:00Z", { [SONNET]: usage(1_000_000, 0, { input: 2, output: 0 }) });
-
-    const report = buildUsageReport([run, older], "7d", NOW);
-
-    expect(report.recent.map((r) => r.title)).toEqual(["Fix login redirect", `Change ${older.number}`]);
-  });
-
   it("is empty without runs", () => {
     const report = buildUsageReport([], "all", NOW);
     expect(report.totals).toMatchObject({ reviews: 0, calls: 0, cost: { usd: 0 } });
     expect(report.byModel).toEqual([]);
-    expect(report.recent).toEqual([]);
+  });
+});
+
+describe("buildRecentUsage", () => {
+  it("lists the reviews that used a model, newest first, with their totals", () => {
+    const api = { id: "r2", fullPath: "team/api" };
+    const jobs = [
+      job("2026-10-21T10:00:00Z", { [SONNET]: usage(1_000_000, 0, { input: 2, output: 0 }) }),
+      job("2026-10-23T10:00:00Z", { [HAIKU]: usage(1_000_000, 0, { input: 0.1, output: 0 }) }, api),
+      // No digest usage, or none that used tokens: not listed.
+      job("2026-10-23T11:00:00Z", null),
+      job("2026-10-23T11:30:00Z", { [SONNET]: usage(0, 0) }),
+      job("2026-10-22T10:00:00Z", { [SONNET]: usage(1_000_000, 0, { input: 2, output: 0 }) }),
+    ];
+
+    const recent = buildRecentUsage(jobs, 1, 10);
+
+    expect(recent.total).toBe(3);
+    expect(recent.reviews.map((r) => r.fullPath)).toEqual(["team/api", "team/web", "team/web"]);
+    expect(recent.reviews[0]).toMatchObject({ models: [HAIKU], inputTokens: 1_000_000, usd: 0.1 });
+  });
+
+  it("returns one page, clamping a page past the end to the last", () => {
+    const jobs = Array.from({ length: 12 }, (_, i) =>
+      job(`2026-10-23T${String(i).padStart(2, "0")}:00:00Z`, { [SONNET]: usage(1_000, 0) }),
+    );
+    const newestFirst = jobs.map((j) => j.id).reverse();
+
+    expect(buildRecentUsage(jobs, 1, 10)).toMatchObject({ total: 12, page: 1 });
+    expect(buildRecentUsage(jobs, 1, 10).reviews.map((r) => r.id)).toEqual(newestFirst.slice(0, 10));
+    const last = buildRecentUsage(jobs, 2, 10);
+    expect(last.reviews.map((r) => r.id)).toEqual(newestFirst.slice(10));
+    expect(buildRecentUsage(jobs, 9, 10)).toEqual(last);
+    expect(buildRecentUsage([], 3, 10)).toEqual({ reviews: [], total: 0, page: 1 });
+  });
+
+  it("titles a review from the stored column before the digest", () => {
+    const run = { ...job("2026-10-23T10:00:00Z", { [SONNET]: usage(1_000_000, 0, { input: 2, output: 0 }) }), title: "Fix login redirect" };
+    const older = job("2026-10-23T09:00:00Z", { [SONNET]: usage(1_000_000, 0, { input: 2, output: 0 }) });
+
+    const recent = buildRecentUsage([run, older], 1, 10);
+
+    expect(recent.reviews.map((r) => r.title)).toEqual(["Fix login redirect", `Change ${older.number}`]);
   });
 });
 
@@ -279,5 +296,35 @@ describe("GET /api/usage", () => {
 
     expect((await request(app).get("/api/usage?period=1y").set("Cookie", cookie)).status).toBe(400);
     expect((await request(app).get("/api/usage")).status).toBe(401);
+  });
+
+  it("pages the recent reviews apart from the report", async () => {
+    for (let n = 1; n <= 3; n += 1) await run(repoId, n, { [SONNET]: usage(1_000, 0) });
+    await run(otherRepoId, 4, { [SONNET]: usage(1_000, 0) });
+
+    const first = await request(app).get("/api/usage/recent?period=30d&limit=2").set("Cookie", cookie);
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ total: 4, page: 1 });
+    expect(first.body.reviews).toHaveLength(2);
+    const second = await request(app).get("/api/usage/recent?period=30d&page=2&limit=2").set("Cookie", cookie);
+    expect(second.body.reviews).toHaveLength(2);
+
+    const scoped = await request(app).get(`/api/usage/recent?repoId=${otherRepoId}`).set("Cookie", cookie);
+    expect(scoped.body.reviews.map((r: { number: number }) => r.number)).toEqual([4]);
+
+    const report = await request(app).get("/api/usage").set("Cookie", cookie);
+    expect(report.body).not.toHaveProperty("recent");
+  });
+
+  it("keeps recent reviews to the workspace and bounds the page size", async () => {
+    await run(repoId, 1, { [SONNET]: usage(10, 10) });
+    const other = await createUser("other@example.com");
+
+    const res = await request(app).get("/api/usage/recent").set("Cookie", other.cookie);
+    expect(res.body).toEqual({ reviews: [], total: 0, page: 1 });
+
+    expect((await request(app).get("/api/usage/recent?limit=101").set("Cookie", cookie)).status).toBe(400);
+    expect((await request(app).get("/api/usage/recent?page=0").set("Cookie", cookie)).status).toBe(400);
+    expect((await request(app).get("/api/usage/recent")).status).toBe(401);
   });
 });

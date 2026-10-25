@@ -170,6 +170,8 @@ export async function notifyJob(jobId: string): Promise<void> {
     const events = eventsFor(job);
     const workspaceId = job.repository.connection.workspaceId;
     // Paused targets are left out here only; a test delivery still reaches them.
+    // notifiedAt is already stamped, so a paused target misses this job for
+    // good rather than catching up when it is resumed.
     const targets = await prisma.notificationTarget.findMany({
       where: { workspaceId, active: true, events: { hasSome: events } },
     });

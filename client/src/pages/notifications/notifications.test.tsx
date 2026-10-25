@@ -216,15 +216,59 @@ describe("Notifications", () => {
 
     const toggle = await screen.findByRole("switch", { name: "Active: CI alerts" })
     expect(toggle).toBeChecked()
-    expect(screen.queryByText("Inactive")).not.toBeInTheDocument()
     await userEvent.click(toggle)
 
     expect(await screen.findByText("Paused CI alerts")).toBeInTheDocument()
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
     const [[, init]] = calls(fetchSpy, "PATCH", "/api/notifications/n1")
     expect(JSON.parse(String(init?.body))).toEqual({ active: false })
-    const row = (await screen.findByText("Inactive")).closest("tr")!
-    expect(within(row).getByRole("switch", { name: "Active: CI alerts" })).not.toBeChecked()
+    expect(screen.getByRole("switch", { name: "Active: CI alerts" })).not.toBeChecked()
+  })
+
+  it("moves the switch as soon as it is clicked, and back if saving fails", async () => {
+    let fail!: () => void
+    mockApi({
+      "GET /api/notifications": { targets: [webhook], mailConfigured: false },
+      // Held open, so the switch is checked while the request is in flight.
+      "PATCH /api/notifications/n1": (() =>
+        new Promise<Response>((resolve) => {
+          fail = () => resolve(jsonResponse(500, { message: "Could not save" }))
+        })) as unknown as () => Response,
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    const toggle = await screen.findByRole("switch", { name: "Active: CI alerts" })
+    await userEvent.click(toggle)
+    expect(toggle).not.toBeChecked()
+    expect(toggle).toBeDisabled()
+
+    fail()
+    expect(await screen.findByText("Could not save")).toBeInTheDocument()
+    expect(toggle).toBeChecked()
+  })
+
+  it("sorts and filters targets by whether they are active", async () => {
+    mockApi({
+      "GET /api/notifications": {
+        targets: [webhook, { ...emailTarget, active: false }, slackTarget],
+        mailConfigured: true,
+      },
+      [MEMBERS_ROUTE]: members,
+    })
+    renderWithProviders(<App />, { route: "/notifications" })
+
+    await screen.findByRole("cell", { name: "CI alerts" })
+    await userEvent.click(screen.getByRole("button", { name: "Active" }))
+    expect(rowNames()).toEqual(["CI alerts", "Team channel", "Leads"])
+    await userEvent.click(screen.getByRole("button", { name: "Active" }))
+    expect(rowNames()[0]).toBe("Leads")
+
+    await chooseFilter("Status", "Paused")
+    expect(rowNames()).toEqual(["Leads"])
+    await userEvent.click(screen.getByRole("button", { name: "Remove Status filter" }))
+    await chooseFilter("Status", "Active")
+    expect(rowNames()).toEqual(["CI alerts", "Team channel"])
   })
 
   it("shows members whether a target is active but does not let them change it", async () => {
@@ -240,7 +284,6 @@ describe("Notifications", () => {
     const toggle = await screen.findByRole("switch", { name: "Active: CI alerts" })
     expect(toggle).not.toBeChecked()
     expect(toggle).toBeDisabled()
-    expect(screen.getByText("Inactive")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Actions for CI alerts" })).not.toBeInTheDocument()
   })
 
