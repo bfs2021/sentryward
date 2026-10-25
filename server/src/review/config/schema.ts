@@ -228,6 +228,34 @@ export type Rule = z.infer<typeof ruleSchema>;
 
 export const MAX_RULES = 50;
 
+// What counts towards MAX_RULES_CHARS: everything the prompt prints of the
+// rules without a pattern.
+export function modelRuleChars(rules: Rule[]): number {
+  return rules
+    .filter((rule) => rule.pattern === undefined)
+    .reduce(
+      (sum, rule) =>
+        sum +
+        rule.id.length +
+        (rule.paths?.join(", ").length ?? 0) +
+        rule.description.length +
+        (rule.good?.length ?? 0) +
+        (rule.bad?.length ?? 0),
+      0,
+    );
+}
+
+// The limits on a list as a whole. Layers combine (config/resolve.ts), so a
+// list of rules that are each valid can still break them; this checks only
+// that, without parsing every rule again.
+export function combinedRulesError(rules: Rule[]): string | undefined {
+  if (rules.length > MAX_RULES) return `At most ${MAX_RULES} rules`;
+  if (modelRuleChars(rules) > MAX_RULES_CHARS) {
+    return `Rules without a pattern may hold at most ${MAX_RULES_CHARS} characters in total (ids, paths, descriptions and examples)`;
+  }
+  return undefined;
+}
+
 export const rulesSchema = z
   .array(ruleSchema)
   .max(MAX_RULES)
@@ -237,22 +265,22 @@ export const rulesSchema = z
       if (seen.has(rule.id)) ctx.addIssue({ code: "custom", path: [index, "id"], message: `Duplicate rule id ${rule.id}` });
       seen.add(rule.id);
     }
-    const chars = rules
-      .filter((rule) => rule.pattern === undefined)
-      .reduce(
-        (sum, rule) =>
-          sum +
-          rule.id.length +
-          (rule.paths?.join(", ").length ?? 0) +
-          rule.description.length +
-          (rule.good?.length ?? 0) +
-          (rule.bad?.length ?? 0),
-        0,
-      );
-    if (chars > MAX_RULES_CHARS) {
-      ctx.addIssue({ code: "custom", message: `Rules without a pattern may hold at most ${MAX_RULES_CHARS} characters in total (ids, paths, descriptions and examples)` });
+    if (modelRuleChars(rules) > MAX_RULES_CHARS) {
+      ctx.addIssue({ code: "custom", message: combinedRulesError(rules)! });
     }
   });
+
+// Set by resolution only, never by a layer: the override schemas are strict
+// and do not list it. A repository file or trigger may tighten the floor and
+// confidence for dashboard rules but not loosen them, and may not hide files
+// from their patterns, so it cannot silence what the workspace requires.
+const ruleGuardSchema = z.strictObject({
+  ids: z.array(z.string()),
+  severityFloor: severitySchema,
+  minConfidence: z.number().min(0).max(1),
+  ignorePaths: z.array(z.string()),
+});
+export type RuleGuard = z.infer<typeof ruleGuardSchema>;
 
 const topLevelShape = {
   version: z.literal(1),
@@ -262,12 +290,14 @@ const topLevelShape = {
   languageInstructions: z.record(z.string().min(1), z.string().max(2000)),
   // Team rules (rules.ts). Unlike every other list they combine across
   // layers instead of replacing, and a lower layer's rule always wins
-  // (resolve.ts), so a repository file cannot loosen workspace rules.
+  // (resolve.ts), so a repository file cannot loosen workspace rules. Their
+  // thresholds are held too (ruleGuard).
   rules: rulesSchema,
 };
 
 export const configSchema = z.strictObject({
   ...topLevelShape,
+  ruleGuard: ruleGuardSchema.optional(),
   llm: z.strictObject(dashboardLlmShape),
   review: z.strictObject(reviewShape),
   output: z.strictObject(outputShape),

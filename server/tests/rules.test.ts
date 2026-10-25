@@ -147,6 +147,22 @@ describe("checkPatternRules", () => {
     expect(dropped).toEqual({ previously_ignored: 1 });
   });
 
+  it("holds dashboard rules to the dashboard's floor and ignore paths, not the file's", () => {
+    const layered = resolveConfig({
+      global: { rules: [rule({ id: "workspace", pattern: "const b" })] },
+      repoFile: { review: { severityFloor: "critical" }, ignorePaths: ["lib/**"], rules: [rule({ id: "file", pattern: "const b" })] },
+    }).config;
+    const reviewed = changeSet.files.filter((file) => file.path === "src/app.ts");
+    const guardedOnly = changeSet.files.filter((file) => file.path === "lib/util.ts");
+    const { findings } = checkPatternRules(reviewed, changeSet, layered, undefined, guardedOnly);
+    // The file's own rule is below the floor it raised; the workspace rule is
+    // not, and also runs on the file the repository ignores.
+    expect(findings.map((finding) => [finding.ruleId, finding.file])).toEqual([
+      ["workspace", "src/app.ts"],
+      ["workspace", "lib/util.ts"],
+    ]);
+  });
+
   it("cannot be made to backtrack by the change's lines", () => {
     // Exponential for a backtracking engine: hours at this length.
     const patch = `@@ -1,0 +1,1 @@\n+${"a".repeat(1999)}!`;
@@ -193,7 +209,7 @@ describe("model-checked rules", () => {
     expect(prompt).toContain("applies to: src/**");
     expect(prompt).toContain("Violating example:\n      prisma.user.find()");
     expect(prompt).not.toContain("id: no-b");
-    expect(reviewSystemPrompt(config())).not.toContain("Repository rules");
+    expect(reviewSystemPrompt(config())).not.toContain("Team rules");
   });
 
   it("files a finding that names a rule under the rule", () => {
@@ -205,6 +221,23 @@ describe("model-checked rules", () => {
     );
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({ source: "rule", ruleId: "thin", severity: "critical", category: "style" });
+  });
+
+  it("holds a dashboard rule's finding to the dashboard's floor and confidence", () => {
+    const layered = resolveConfig({
+      global: { rules: [rule({ id: "workspace", severity: "minor" })] },
+      repoFile: { review: { severityFloor: "critical", minConfidence: 0.95 } },
+    }).config;
+    const { findings } = validateFindings(
+      [
+        modelFinding({ ruleId: "workspace", confidence: 0.6, evidence: "contract" }),
+        modelFinding({ title: "Unrelated", severity: "major", confidence: 0.6 }),
+      ],
+      changeSet,
+      changeSet.files,
+      layered,
+    );
+    expect(findings.map((finding) => finding.ruleId ?? null)).toEqual(["workspace"]);
   });
 
   it("drops a finding naming a rule the model was not given or that does not cover the file", () => {
@@ -300,6 +333,9 @@ describe("runReview with rules", () => {
 
     const body = inlineBody(ruled, "github", { rules: [rule({ description: "Ask @lead first.", paths: ["src/**"] })] });
     expect(body).toContain("<summary>📏 Rule no-b</summary>\n\nAsk @​lead first.\n\nApplies to: `src/**`\n\n</details>");
+    expect(inlineBody(ruled, "github", { rules: [rule({ description: "Never close </details> early." })] })).toContain(
+      "Never close &lt;/details&gt; early.",
+    );
     expect(inlineBody(ruled, "github", { rules: [rule({ id: "other" })] })).not.toContain("📏");
     expect(inlineBody(ruled, "github")).not.toContain("📏");
   });

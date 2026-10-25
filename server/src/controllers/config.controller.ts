@@ -3,6 +3,7 @@ import { HttpError } from "../lib/httpError.ts";
 import { prisma } from "../lib/prisma.ts";
 import { CATEGORIES, SEVERITIES } from "../review/core/severity.ts";
 import { PROFILES } from "../review/config/profiles.ts";
+import { repoSettingsRuleIssues } from "../review/config/load.ts";
 import { resolveConfig } from "../review/config/resolve.ts";
 import { DEFAULT_CONFIG, PROFILE_NAMES, RULE_PATTERN_ERROR, dashboardOverrideSchema, rulePatternCompiles } from "../review/config/schema.ts";
 import { previewPublication } from "../review/preview/preview.ts";
@@ -27,8 +28,23 @@ function globalConfigBody(saved: unknown) {
   const parsed = dashboardOverrideSchema.safeParse(saved);
   const warnings = parsed.success ? [] : ["Saved global settings are no longer valid and were ignored"];
   const settings = parsed.success ? parsed.data : {};
-  const resolved = resolveConfig({ global: settings });
+  const { ruleIssues: _ruleIssues, ...resolved } = resolveConfig({ global: settings });
   return { settings, ...resolved, warnings: [...warnings, ...resolved.warnings] };
+}
+
+// The global rules always win, so a save is not refused when they leave a
+// repository's own rules out; the owner is told which repositories lost them,
+// on every read until it is fixed.
+async function repositoryRuleWarnings(workspaceId: string, globalSettings: unknown): Promise<string[]> {
+  const repos = await prisma.repository.findMany({
+    where: { connection: { workspaceId }, followGlobal: false },
+    select: { fullPath: true, settings: true },
+  });
+  return repos.flatMap((repo) => {
+    const rules = (repo.settings as { rules?: unknown[] } | null)?.rules;
+    if (!Array.isArray(rules) || !rules.length) return [];
+    return repoSettingsRuleIssues({ globalSettings, repoSettings: repo.settings }).map((issue) => `${repo.fullPath}: ${issue.message}`);
+  });
 }
 
 export async function getGlobalConfig(req: Request, res: Response) {
@@ -36,7 +52,13 @@ export async function getGlobalConfig(req: Request, res: Response) {
     where: { id: req.workspaceId! },
     select: { reviewSettings: true },
   });
-  res.json(globalConfigBody(workspace.reviewSettings));
+  res.json(await globalConfigResponse(req.workspaceId!, workspace.reviewSettings));
+}
+
+async function globalConfigResponse(workspaceId: string, saved: unknown) {
+  const body = globalConfigBody(saved);
+  const repositories = await repositoryRuleWarnings(workspaceId, saved);
+  return { ...body, warnings: [...body.warnings, ...repositories] };
 }
 
 export async function updateGlobalConfig(req: Request, res: Response) {
@@ -50,7 +72,7 @@ export async function updateGlobalConfig(req: Request, res: Response) {
     data: { reviewSettings: settings },
     select: { reviewSettings: true },
   });
-  res.json(globalConfigBody(workspace.reviewSettings));
+  res.json(await globalConfigResponse(req.workspaceId!, workspace.reviewSettings));
 }
 
 // Renders what a review of a sample change would post with these settings. No

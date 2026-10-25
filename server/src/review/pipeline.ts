@@ -269,17 +269,22 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
   const toolDuplicates = (tools?.findings.length ?? 0) - toolFindings.length;
   // Pattern rules, like tool findings, skip verification (the match is the
   // evidence) and need only a file in scope, not a successful pass.
-  const patternRules = checkPatternRules(scoped, changeSet, config, input.ignoredFingerprints);
+  // Files only the repository file or trigger ignores still get the
+  // dashboard's pattern rules (ruleGuard); the model never saw them.
+  const guardReviewable = config.ruleGuard ? classifyFiles(changeSet.files, config.ruleGuard.ignorePaths).reviewable : [];
+  const reviewablePaths = new Set(reviewable.map((file) => file.path));
+  const guardedPaths = new Set(guardReviewable.map((file) => file.path).filter((path) => !reviewablePaths.has(path)));
+  const guardedOnly = guardReviewable.filter((file) => guardedPaths.has(file.path) && (!increment || increment.paths.has(file.path)));
+  const patternRules = checkPatternRules(scoped, changeSet, config, input.ignoredFingerprints, guardedOnly);
   const reviewed = [...verified.findings, ...toolFindings, ...patternRules.findings].sort(compareFindings);
   // The cap covers model, tool and rule findings together; the model's own
   // were already capped by the validator.
   const overLimit = Math.max(0, reviewed.length - config.review.maxFindings);
   const fresh = new Set(reviewed.map((finding) => finding.fingerprint));
-  const reviewablePaths = new Set(reviewable.map((file) => file.path));
   const carried = (increment?.carried ?? []).filter(
     (finding) =>
       !increment?.paths.has(finding.file) &&
-      reviewablePaths.has(finding.file) &&
+      (reviewablePaths.has(finding.file) || (finding.source === "rule" && guardedPaths.has(finding.file))) &&
       !fresh.has(finding.fingerprint) &&
       !input.ignoredFingerprints?.has(finding.fingerprint),
   );

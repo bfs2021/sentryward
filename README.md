@@ -546,6 +546,8 @@ Rules can also be set in the dashboard, on the Configuration page's Guidance tab
 
 - A layer can add rules but never remove or override one from a layer before it. A rule whose id is already set is ignored, the earlier rule applies, and the review lists a warning (for example, a file rule reusing a workspace rule's id). A pull request can therefore not loosen workspace rules either.
 - The limits (50 rules, 16000 characters of model-checked rule text) apply to the combined list. If a layer's rules would go past them, that layer's rules are all left out, with a warning, and the earlier layers still apply.
+- Saving repository settings is refused when their rules clash with a global rule or would not fit beside the global rules. The global config lists, as warnings, repositories whose saved rules it leaves out.
+- Dashboard rules (global config and repository settings) are held to the `severity_floor` and `min_confidence` the dashboard layers resolve to, profile included. A `.sentryward.yaml` or trigger can lower them for those rules but not raise them, so a repository cannot quiet workspace rules that way. Their patterns also run on files that only the file's `ignore_paths` leaves out; model-checked dashboard rules are not, since the model never sees ignored files.
 - A repository that follows the global config uses the global rules and the file's rules, without its own saved ones.
 - The effective config (`GET /api/repos/:id/config`) names each rule's layer as `sources["rules.<id>"]`.
 

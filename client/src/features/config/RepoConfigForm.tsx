@@ -4,6 +4,7 @@ import { toast } from "sonner"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
+import { ApiError } from "@/lib/api"
 import type { ForgeRepo } from "@/features/forge/api"
 import { useApiKeys } from "@/features/llm-connections/api"
 import { useGlobalConfig, useRepoConfig, useRulePatternErrors, useSaveRepoSettings, useSetFollowGlobal } from "./api"
@@ -53,6 +54,7 @@ export function RepoConfigForm(props: { repo: ForgeRepo; tab: ConfigTab; onTabCh
     false,
     apiKeys.data?.keys.filter((key) => key.stored).map((key) => key.provider),
     patternErrors,
+    global.data?.config.rules,
   )
   const valid = Object.keys(errors).length === 0
 
@@ -61,7 +63,10 @@ export function RepoConfigForm(props: { repo: ForgeRepo; tab: ConfigTab; onTabCh
       await save.mutateAsync({ repoId: repo.id, settings: toSettings(repo.settings, form) })
       toast.success("Settings saved")
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not save settings")
+      // The server checks rules against the global config as saved now, which
+      // may have changed since this page loaded.
+      const rulesError = err instanceof ApiError ? err.fieldErrors?.rules?.[0] : undefined
+      toast.error(rulesError ?? (err instanceof Error ? err.message : "Could not save settings"))
     }
   }
 

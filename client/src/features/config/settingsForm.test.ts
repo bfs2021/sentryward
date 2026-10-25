@@ -361,6 +361,28 @@ describe("validateForm", () => {
     ).toMatch(/at most 16000 characters in total/)
   })
 
+  it("drops and does not check the examples of a rule with a pattern", () => {
+    const rule = { ...EMPTY_RULE, id: "no-b", description: "No b.", severity: "major", pattern: "b", bad: "x".repeat(2001), good: "ok" }
+    expect(ruleRowErrors([rule])).toEqual([{}])
+    expect(validateForm({ ...form, rules: [rule] })).toEqual({})
+    expect(toSettings({}, { ...form, rules: [rule] })).toEqual({
+      rules: [{ id: "no-b", description: "No b.", severity: "major", pattern: "b" }],
+    })
+  })
+
+  it("holds a repository's rules to the limits and ids together with the global ones", () => {
+    const rule = { ...EMPTY_RULE, id: "no-b", description: "No b.", severity: "major" }
+    const inherited = Array.from({ length: 45 }, (_, i) => ({ id: `g${i}`, description: "G.", severity: "minor" as const }))
+    const own = Array.from({ length: 10 }, (_, i) => ({ ...rule, id: `r${i}` }))
+    expect(validateForm({ ...form, rules: own }, false, undefined, undefined, inherited).rules).toBe(
+      "At most 50 rules, together with the 45 global rules",
+    )
+    expect(validateForm({ ...form, rules: [{ ...rule, id: "g0" }] }, false, undefined, undefined, inherited).rules).toBe(
+      "Rule g0 is already set in the global config, which wins",
+    )
+    expect(validateForm({ ...form, rules: own.slice(0, 5) }, false, undefined, undefined, inherited)).toEqual({})
+  })
+
   it("accepts router model ids", () => {
     expect(
       validateForm({

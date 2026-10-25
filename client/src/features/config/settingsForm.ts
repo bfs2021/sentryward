@@ -231,15 +231,16 @@ function toRuleRow(rule: Rule): RuleRow {
 }
 
 // Optional fields are left out when empty, as a hand-written file would.
-// Examples keep their indentation: they are code.
+// Examples keep their indentation: they are code. A rule with a pattern is
+// never shown to the model, so its examples (hidden in the editor) are not kept.
 function toRule(row: RuleRow): Rule {
   const paths = pathList(row.paths)
   const rule: Rule = { id: row.id.trim(), description: row.description.trim(), severity: row.severity }
   if (row.category) rule.category = row.category
   if (paths.length) rule.paths = paths
   if (row.pattern) rule.pattern = row.pattern
-  if (row.good.trim()) rule.good = row.good
-  if (row.bad.trim()) rule.bad = row.bad
+  if (!row.pattern && row.good.trim()) rule.good = row.good
+  if (!row.pattern && row.bad.trim()) rule.bad = row.bad
   return rule
 }
 
@@ -382,7 +383,7 @@ export function ruleRowErrors(
     if (row.pattern.length > MAX_RULE_PATTERN) errors.pattern = `At most ${MAX_RULE_PATTERN} characters`
     else if (row.pattern && patternErrors[row.pattern]) errors.pattern = patternErrors[row.pattern]!
     for (const field of ["good", "bad"] as const) {
-      if (row[field].length > MAX_RULE_EXAMPLE) errors[field] = `At most ${MAX_RULE_EXAMPLE} characters`
+      if (!row.pattern && row[field].length > MAX_RULE_EXAMPLE) errors[field] = `At most ${MAX_RULE_EXAMPLE} characters`
     }
     return errors
   })
@@ -406,11 +407,14 @@ function modelRuleChars(rules: Rule[]): number {
 }
 
 // Mirrors the server's bounds; a save is held back while anything is listed.
+// inheritedRules are the global config's, under a repository's own: the server
+// combines the two, so the limits and ids hold for both together.
 export function validateForm(
   form: FormState,
   connectionRequired = false,
   savedConnections?: string[],
   patternErrors?: Record<string, string | null>,
+  inheritedRules: Rule[] = [],
 ): FormErrors {
   const errors: FormErrors = {}
   for (const spec of NUMBERS) {
@@ -463,12 +467,17 @@ export function validateForm(
   else if (form.languageInstructions.some((row) => row.text.trim().length > MAX_LANGUAGE_INSTRUCTIONS))
     errors.languageInstructions = `At most ${MAX_LANGUAGE_INSTRUCTIONS} characters per language`
 
-  const rules = form.rules.filter((row) => !isBlankRule(row))
+  const rules = form.rules.filter((row) => !isBlankRule(row)).map(toRule)
+  const combined = [...inheritedRules, ...rules]
+  const inheritedIds = new Set(inheritedRules.map((rule) => rule.id))
+  const clash = rules.find((rule) => inheritedIds.has(rule.id))
+  const withGlobal = inheritedRules.length ? `, together with the ${inheritedRules.length} global rules` : ""
   if (ruleRowErrors(form.rules, patternErrors).some((row) => Object.keys(row).length > 0))
     errors.rules = "Fix the rules marked below"
-  else if (rules.length > MAX_RULES) errors.rules = `At most ${MAX_RULES} rules`
-  else if (modelRuleChars(rules.map(toRule)) > MAX_RULES_CHARS)
-    errors.rules = `Rules without a pattern may hold at most ${MAX_RULES_CHARS} characters in total (ids, paths, descriptions and examples)`
+  else if (clash) errors.rules = `Rule ${clash.id} is already set in the global config, which wins`
+  else if (combined.length > MAX_RULES) errors.rules = `At most ${MAX_RULES} rules${withGlobal}`
+  else if (modelRuleChars(combined) > MAX_RULES_CHARS)
+    errors.rules = `Rules without a pattern may hold at most ${MAX_RULES_CHARS} characters in total (ids, paths, descriptions and examples)${withGlobal}`
   return errors
 }
 

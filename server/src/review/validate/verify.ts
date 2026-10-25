@@ -11,6 +11,7 @@ import { renderFileDiff } from "../context/diffText.ts";
 import { VERIFY_SYSTEM_PROMPT } from "../llm/prompt.ts";
 import { failedUsage, spentBy, type Generate } from "../llm/providers.ts";
 import { verifyFinding, type FindingVerification } from "../llm/verify.ts";
+import { ruleFloor } from "../rules.ts";
 import { compareFindings, demoteFinding, stronger, type DropReason } from "./validator.ts";
 
 export interface VerifyInput {
@@ -129,7 +130,7 @@ export async function verifyFindings(input: VerifyInput): Promise<VerifyResult> 
       if (outcome.verdict === "uncertain" && finding.kind !== "verification_needed") {
         next = demoteFinding(next, input.changeSet);
         result.demoted += 1;
-        if (!atLeast(next.severity, config.review.severityFloor)) {
+        if (!atLeast(next.severity, ruleFloor(config, next.source === "rule" ? next.ruleId : undefined))) {
           drop("below_floor");
           continue;
         }

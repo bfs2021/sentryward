@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { loadReviewConfig } from "../src/review/config/load.ts";
 import { parseRepoFile } from "../src/review/config/repoFile.ts";
 import { resolveConfig } from "../src/review/config/resolve.ts";
-import { DEFAULT_CONFIG, configSchema, dashboardOverrideSchema } from "../src/review/config/schema.ts";
+import { DEFAULT_CONFIG, configOverrideSchema, configSchema, dashboardOverrideSchema } from "../src/review/config/schema.ts";
 import type { ForgeAdapter } from "../src/review/forge/types.ts";
 
 describe("DEFAULT_CONFIG", () => {
@@ -194,6 +194,44 @@ describe("resolveConfig", () => {
       expect(sources.rules).toBe("global");
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toMatch(/^Rules in the repository file were ignored: together with the rules below them/);
+    });
+
+    it("report clashes and limits by layer", () => {
+      const { ruleIssues } = resolveConfig({
+        global: { rules: [rule("shared")] },
+        repoSettings: { rules: [rule("shared")] },
+      });
+      expect(ruleIssues).toEqual([expect.objectContaining({ layer: "repoSettings", kind: "clash" })]);
+    });
+
+    it("hold dashboard rules to the dashboard's thresholds, which a file can only tighten", () => {
+      const raised = resolveConfig({
+        global: { review: { severityFloor: "minor", minConfidence: 0.5 }, ignorePaths: ["dist/**"], rules: [rule("global")] },
+        repoFile: { review: { severityFloor: "critical", minConfidence: 0.9 }, ignorePaths: ["**"], rules: [rule("file")] },
+      }).config;
+      expect(raised.review.severityFloor).toBe("critical");
+      expect(raised.ruleGuard).toEqual({ ids: ["global"], severityFloor: "minor", minConfidence: 0.5, ignorePaths: ["dist/**"] });
+
+      const lowered = resolveConfig({
+        global: { review: { severityFloor: "major", minConfidence: 0.7 }, rules: [rule("global")] },
+        repoFile: { review: { severityFloor: "info", minConfidence: 0.2 } },
+      }).config;
+      expect(lowered.ruleGuard).toMatchObject({ severityFloor: "info", minConfidence: 0.2 });
+
+      // A file's profile does not change the dashboard's thresholds either.
+      const profiled = resolveConfig({ global: { rules: [rule("global")] }, repoFile: { profile: "strict" } }).config;
+      expect(profiled.review.minConfidence).toBe(0.6);
+      expect(profiled.ruleGuard?.minConfidence).toBe(DEFAULT_CONFIG.review.minConfidence);
+    });
+
+    it("need no guard without a dashboard rule or a layer above the dashboard", () => {
+      expect(resolveConfig({ global: { rules: [rule("global")] } }).config.ruleGuard).toBeUndefined();
+      expect(resolveConfig({ global: {}, repoFile: { rules: [rule("file")] } }).config.ruleGuard).toBeUndefined();
+    });
+
+    it("cannot have the guard set by a layer", () => {
+      expect(configOverrideSchema.safeParse({ ruleGuard: { ids: [], severityFloor: "info", minConfidence: 0, ignorePaths: [] } }).success).toBe(false);
+      expect(dashboardOverrideSchema.safeParse({ ruleGuard: { ids: [], severityFloor: "info", minConfidence: 0, ignorePaths: [] } }).success).toBe(false);
     });
 
     it("default to none, attributed to the defaults", () => {

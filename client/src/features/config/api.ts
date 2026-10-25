@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import type { ForgeRepo, SavedRepo } from "@/features/forge/api"
+import { MAX_RULE_PATTERN, MAX_RULES } from "./settingsForm"
 
 export type LlmProviderName = "anthropic" | "openai" | "google" | "ollama"
 export type ReviewTrigger = "manual" | "published" | "all"
@@ -348,9 +349,10 @@ export function useConfigPreview(body: PreviewRequest | null) {
 // typed. Answers are keyed by pattern so a check of the previous patterns
 // still covers the rows that did not change while the next one loads.
 export function useRulePatternErrors(patterns: string[]) {
-  // Within the server's bounds (50 patterns of 300 characters); the form
-  // reports anything past them itself.
-  const unique = [...new Set(patterns.filter((pattern) => pattern && pattern.length <= 300))].sort().slice(0, 50)
+  // Within the server's bounds; the form reports anything past them itself.
+  const unique = [...new Set(patterns.filter((pattern) => pattern && pattern.length <= MAX_RULE_PATTERN))]
+    .sort()
+    .slice(0, MAX_RULES)
   const settled = useDebounced(unique.length ? JSON.stringify(unique) : null, 300)
   return useQuery({
     queryKey: ["rule-patterns", settled],

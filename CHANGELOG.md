@@ -118,7 +118,12 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   `.sentryward.yaml`: a later layer can add rules but never remove or override
   an earlier one, so a rule reusing an id is ignored with a review warning,
   and a layer whose rules would take the combined list past the limits is left
-  out as a whole, with a warning. The effective config names each rule's layer
+  out as a whole, with a warning. Repository settings whose rules clash with
+  or do not fit beside the global ones are refused on save, and the global
+  config lists repositories whose rules it leaves out. Dashboard rules keep the
+  dashboard's `severity_floor` and `min_confidence` (a repository file can only
+  lower them for those rules), and their patterns still run on files only the
+  repository file ignores. The effective config names each rule's layer
   (`sources["rules.<id>"]`). The editor checks patterns with the server's RE2
   as they are typed (`POST /api/config/rules/check`), and inline comments for
   rule findings include the rule's description and paths, since dashboard

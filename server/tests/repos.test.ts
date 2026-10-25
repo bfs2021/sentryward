@@ -579,6 +579,44 @@ describe("GET and PUT /api/config/global", () => {
     expect(duplicate.status).toBe(400);
   });
 
+  it("refuses repository rules the global rules would leave out, and warns when global rules grow", async () => {
+    const many = (prefix: string, count: number) =>
+      Array.from({ length: count }, (_, i) => ({ id: `${prefix}-${i}`, description: "Rule.", severity: "minor" }));
+    const global = await request(app)
+      .put("/api/config/global")
+      .set("Cookie", cookie)
+      .send({ settings: { llm: { connection: "openai" }, rules: many("global", 45) } });
+    expect(global.status).toBe(200);
+
+    const repo = await prisma.repository.create({
+      data: { connectionId, provider: "gitlab", host: "gitlab.com", fullPath: "team/limits", externalId: "10", defaultBranch: "main", followGlobal: false },
+    });
+    const over = await request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ settings: { rules: many("repo", 10) } });
+    expect(over.status).toBe(400);
+    expect(over.body.errors.rules[0]).toMatch(/^Rules in the repository settings were ignored: together with the rules below them, at most 50 rules/);
+
+    const clash = await request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ settings: { rules: many("global", 1) } });
+    expect(clash.status).toBe(400);
+    expect(clash.body.errors.rules).toEqual([
+      "Rule global-0 in the repository settings was ignored: a rule with that id is already set in the global config",
+    ]);
+
+    // Following the global config, its own rules are not applied, so not checked.
+    const following = await request(app)
+      .patch(`/api/repos/${repo.id}`)
+      .set("Cookie", cookie)
+      .send({ settings: { rules: many("repo", 10) }, followGlobal: true });
+    expect(following.status).toBe(200);
+    await prisma.repository.update({ where: { id: repo.id }, data: { followGlobal: false } });
+
+    const grown = await request(app)
+      .put("/api/config/global")
+      .set("Cookie", cookie)
+      .send({ settings: { llm: { connection: "openai" }, rules: many("global", 45) } });
+    expect(grown.status).toBe(200);
+    expect(grown.body.warnings).toEqual([expect.stringMatching(/^team\/limits: Rules in the repository settings were ignored/)]);
+  });
+
   it("requires a saved connection for global configuration", async () => {
     const missing = await request(app)
       .put("/api/config/global")

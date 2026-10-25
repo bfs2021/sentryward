@@ -1,7 +1,7 @@
 import { cacheKey, cached, type ForgeCache } from "../forge/cache.ts";
 import type { ForgeAdapter } from "../forge/types.ts";
 import { parseRepoFile, REPO_CONFIG_FILES } from "./repoFile.ts";
-import { resolveConfig, type ResolvedConfig } from "./resolve.ts";
+import { resolveConfig, type ResolvedConfig, type RuleIssue } from "./resolve.ts";
 import { dashboardOverrideSchema, type Config, type ConfigOverride, type DashboardOverride } from "./schema.ts";
 
 export interface LoadConfigInput {
@@ -48,6 +48,13 @@ function savedLayers(input: SavedSettings, warnings: string[]) {
 // cancel a review without a forge call.
 export function loadDashboardConfig(input: SavedSettings): Config {
   return resolveConfig(savedLayers(input, [])).config;
+}
+
+// Rules a repository's own settings could not add on top of the global
+// config, so a save can be refused instead of the rules being left out of
+// every review with only a warning.
+export function repoSettingsRuleIssues(input: SavedSettings): RuleIssue[] {
+  return resolveConfig(savedLayers(input, [])).ruleIssues.filter((issue) => issue.layer === "repoSettings");
 }
 
 export async function loadReviewConfig(input: LoadConfigInput): Promise<LoadedConfig> {
