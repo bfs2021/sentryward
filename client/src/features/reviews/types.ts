@@ -51,6 +51,9 @@ export interface Finding {
   verification?: Verification
   source: "llm" | "tool" | "rule"
   tool?: string
+  // The `.sentryward.yaml` rule a rule finding violates, or an analyzer's rule
+  // on a tool finding.
+  ruleId?: string
   fingerprint: string
   // The model of the review pass that raised it; absent for tool and rule
   // findings and older results.

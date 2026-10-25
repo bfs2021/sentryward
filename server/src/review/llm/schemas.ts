@@ -40,6 +40,7 @@ export const modelFindingSchema = z.object({
     .string()
     .describe("One sentence: the trigger and failure path, violated contract, or reproduction"),
   evidenceFiles: z.array(z.string()).describe("Other files the evidence relies on, if any"),
+  ruleId: z.string().nullable().describe("The id of the repository rule this finding violates, or null"),
 });
 export type ModelFinding = z.infer<typeof modelFindingSchema>;
 
@@ -175,6 +176,7 @@ function repairFinding(value: unknown): unknown {
     evidenceFiles: Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles : [],
     suggestion: typeof entry.suggestion === "string" && entry.suggestion.trim() ? entry.suggestion : null,
     confidence: numberValue(entry.confidence),
+    ruleId: typeof entry.ruleId === "string" && entry.ruleId.trim() ? entry.ruleId.trim() : null,
   };
 }
 

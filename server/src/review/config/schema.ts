@@ -1,3 +1,4 @@
+import RE2 from "re2";
 import { z } from "zod";
 import { categorySchema, severitySchema } from "../core/severity.ts";
 
@@ -165,12 +166,77 @@ const triggersShape = {
   skipTargetBranches: skipList,
 };
 
+// A pattern runs against every added line of the files a rule covers, inside
+// the worker, and those lines are written by the change author. JavaScript
+// regexes can backtrack exponentially and Node has no regex timeout, so
+// patterns are compiled with RE2, which matches in linear time; that, not this
+// cap, is what bounds the cost. The cap only keeps the file readable.
+export const MAX_RULE_PATTERN_CHARS = 300;
+// Model-checked rules are listed in every pass's system prompt, so their text
+// as a whole is capped, not just each field.
+export const MAX_RULES_CHARS = 16_000;
+
+// RE2 rejects what it cannot match in linear time (backreferences,
+// lookarounds), so such a pattern fails here rather than mid-review.
+function compiles(pattern: string): boolean {
+  try {
+    new RE2(pattern);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const ruleSchema = z.strictObject({
+  id: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9_.-]{0,63}$/, "Use lowercase letters, digits, dots, dashes and underscores, e.g. no-db-in-controllers"),
+  description: z.string().trim().min(1).max(1000),
+  severity: severitySchema,
+  // Rule findings are reported whatever review.categories says: the team asked
+  // for them by writing the rule. The category only files them.
+  category: categorySchema.optional(),
+  // Globs over the file path; absent means every reviewed file.
+  paths: z.array(z.string().min(1)).max(50).optional(),
+  // Checked without a model, on added lines only, so the same diff always
+  // gives the same findings. A rule with a pattern is never shown to the model.
+  pattern: z
+    .string()
+    .min(1)
+    .max(MAX_RULE_PATTERN_CHARS)
+    .refine(compiles, "Not a valid regular expression (backreferences and lookarounds are not supported)")
+    .optional(),
+  good: z.string().max(2000).optional(),
+  bad: z.string().max(2000).optional(),
+});
+export type Rule = z.infer<typeof ruleSchema>;
+
+const rulesSchema = z
+  .array(ruleSchema)
+  .max(50)
+  .superRefine((rules, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, rule] of rules.entries()) {
+      if (seen.has(rule.id)) ctx.addIssue({ code: "custom", path: [index, "id"], message: `Duplicate rule id ${rule.id}` });
+      seen.add(rule.id);
+    }
+    const chars = rules
+      .filter((rule) => rule.pattern === undefined)
+      .reduce((sum, rule) => sum + rule.description.length + (rule.good?.length ?? 0) + (rule.bad?.length ?? 0), 0);
+    if (chars > MAX_RULES_CHARS) {
+      ctx.addIssue({ code: "custom", message: `Rules without a pattern may hold at most ${MAX_RULES_CHARS} characters of text in total` });
+    }
+  });
+
 const topLevelShape = {
   version: z.literal(1),
   profile: profileNameSchema,
   ignorePaths: z.array(z.string().min(1)).max(200),
   instructions: z.string().max(4000),
   languageInstructions: z.record(z.string().min(1), z.string().max(2000)),
+  // Team rules (rules.ts). Only the repository file sets them (see
+  // dashboardOverrideSchema), read from the base revision.
+  rules: rulesSchema,
 };
 
 export const configSchema = z.strictObject({
@@ -196,9 +262,13 @@ export type ConfigOverride = z.infer<typeof configOverrideSchema>;
 // The global config and repository settings, saved by the repository owner in
 // the dashboard. Only these layers may set endpoints; the repository file and
 // triggers use configOverrideSchema, which rejects them as unknown settings.
-export const dashboardOverrideSchema = configOverrideSchema.extend({
-  llm: z.strictObject(dashboardLlmShape).partial().optional(),
-});
+// Rules are the reverse: they live in the repository file alone, so a team
+// reads every rule it is held to in one place.
+export const dashboardOverrideSchema = configOverrideSchema
+  .extend({
+    llm: z.strictObject(dashboardLlmShape).partial().optional(),
+  })
+  .omit({ rules: true });
 export type DashboardOverride = z.infer<typeof dashboardOverrideSchema>;
 
 export const DEFAULT_CONFIG: Config = {
@@ -287,4 +357,5 @@ export const DEFAULT_CONFIG: Config = {
   ],
   instructions: "",
   languageInstructions: {},
+  rules: [],
 };

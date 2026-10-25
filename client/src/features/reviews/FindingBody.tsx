@@ -21,10 +21,11 @@ export function FindingBody({ finding, change }: { finding: Finding; change: Rev
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="outline">{finding.category}</Badge>
         {finding.kind !== "potential_issue" && <Badge variant="outline">{finding.kind.replace(/_/g, " ")}</Badge>}
-        {/* An analyzer's result has no confidence of its own; name the analyzer instead. */}
+        {finding.source === "rule" && finding.ruleId && <Badge variant="secondary">Rule {finding.ruleId}</Badge>}
+        {/* An analyzer's result, or a rule's pattern match (no model behind it), has no confidence of its own. */}
         {finding.source === "tool" ? (
           <Badge variant="secondary">via {finding.tool ?? "static analysis"}</Badge>
-        ) : (
+        ) : finding.source === "rule" && !finding.model ? null : (
           <>
             <Badge variant={VERIFICATION[verification].variant} title={VERIFICATION[verification].title}>
               {VERIFICATION[verification].label}

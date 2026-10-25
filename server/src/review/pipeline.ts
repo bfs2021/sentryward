@@ -24,6 +24,7 @@ import { reviewChunk } from "./llm/review.ts";
 import { generateWalkthrough, type WalkthroughIssues } from "./llm/walkthrough.ts";
 import { compareFindings, validateFindings, validateToolFindings, type DropReason, type TaggedFinding } from "./validate/validator.ts";
 import { verifyFindings } from "./validate/verify.ts";
+import { checkPatternRules } from "./rules.ts";
 
 export interface ReviewDeps {
   generate: Generate;
@@ -266,9 +267,12 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
     (finding) => !verified.findings.some((model) => sameProblem(model, finding)),
   );
   const toolDuplicates = (tools?.findings.length ?? 0) - toolFindings.length;
-  const reviewed = [...verified.findings, ...toolFindings].sort(compareFindings);
-  // The cap covers model and tool findings together; the model's own were
-  // already capped by the validator.
+  // Pattern rules, like tool findings, skip verification (the match is the
+  // evidence) and need only a file in scope, not a successful pass.
+  const patternRules = checkPatternRules(scoped, changeSet, config, input.ignoredFingerprints);
+  const reviewed = [...verified.findings, ...toolFindings, ...patternRules.findings].sort(compareFindings);
+  // The cap covers model, tool and rule findings together; the model's own
+  // were already capped by the validator.
   const overLimit = Math.max(0, reviewed.length - config.review.maxFindings);
   const fresh = new Set(reviewed.map((finding) => finding.fingerprint));
   const reviewablePaths = new Set(reviewable.map((file) => file.path));
@@ -285,6 +289,7 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
   const extra: [DropReason, number][] = [
     ...(Object.entries(verified.dropped) as [DropReason, number][]),
     ...(Object.entries(tools?.dropped ?? {}) as [DropReason, number][]),
+    ...(Object.entries(patternRules.dropped) as [DropReason, number][]),
     ["duplicate", toolDuplicates],
     ["over_limit", overLimit],
   ];

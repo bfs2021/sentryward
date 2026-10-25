@@ -36,6 +36,7 @@ function reviewSettings(config: Config) {
       ignorePaths: config.ignorePaths,
       instructions: config.instructions,
       languageInstructions: config.languageInstructions,
+      rules: config.rules,
     }),
   ) as unknown;
 }

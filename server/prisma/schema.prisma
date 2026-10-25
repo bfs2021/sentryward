@@ -442,6 +442,10 @@ model Finding {
   // Self-reported, so never a probability by itself. Null for tool and rule
   // findings.
   confidence   Float?
+  // The `.sentryward.yaml` rule a rule finding violates, for the per-rule
+  // breakdown. Null for model and tool findings (an analyzer's own rule id is
+  // not kept here).
+  ruleId       String?         @map("rule_id")
   lastJobId    String?         @map("last_job_id") @db.Uuid
   firstSeenAt  DateTime        @default(now()) @map("first_seen_at") @db.Timestamptz
   lastSeenAt   DateTime        @default(now()) @map("last_seen_at") @db.Timestamptz

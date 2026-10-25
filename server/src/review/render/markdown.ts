@@ -84,6 +84,12 @@ export function toolSuffix(finding: Finding): string {
   return finding.source === "tool" && finding.tool ? ` · via ${codeCell(finding.tool.replace(/[\\*_`]/g, "\\$&"))}` : "";
 }
 
+// Names the team rule behind a rule finding. The id is constrained by the
+// config schema, but is escaped like a tool name all the same.
+export function ruleSuffix(finding: Finding): string {
+  return finding.source === "rule" && finding.ruleId ? ` · rule ${codeCell(finding.ruleId.replace(/[\\*_`]/g, "\\$&"))}` : "";
+}
+
 // Only an outcome is worth a word: "not checked" on every finding would be
 // noise whenever review.verify is off.
 export function verificationSuffix(finding: Finding): string {
@@ -264,7 +270,7 @@ function findingDetail(finding: Finding): string[] {
   const lines = [
     `#### ${location(finding)}: ${inline(finding.title)}`,
     "",
-    `${SEVERITY_ICON[finding.severity]} *${finding.severity} · ${finding.category} · ${finding.kind.replace(/_/g, " ")}${toolSuffix(finding)}${verificationSuffix(finding)}*`,
+    `${SEVERITY_ICON[finding.severity]} *${finding.severity} · ${finding.category} · ${finding.kind.replace(/_/g, " ")}${toolSuffix(finding)}${ruleSuffix(finding)}${verificationSuffix(finding)}*`,
     "",
     sanitize(finding.body),
     ...impactLines(finding),

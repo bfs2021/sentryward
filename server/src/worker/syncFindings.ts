@@ -220,13 +220,19 @@ export async function syncFindings({ repositoryId, number, jobId, author, result
         // Backfilled rows have no author; keep a known one if the forge stops saying.
         ...(author ? { author } : {}),
       };
-      const source = { model: finding.model ?? null, lastJobId: jobId };
+      // Only team rules are counted per rule; an analyzer's rule id is the
+      // analyzer's business.
+      const source = {
+        model: finding.model ?? null,
+        ruleId: finding.source === "rule" ? (finding.ruleId ?? null) : null,
+        lastJobId: jobId,
+      };
       const row = known.get(finding.fingerprint);
       // Calibration buckets a finding by the confidence it was first reported
       // with, matching its first_seen_at window, so a later run only fills a
-      // gap. Confidence is only a model's to report; tool and rule findings
-      // carry a fixed one.
-      const reportedConfidence = finding.source === "llm" ? finding.confidence : null;
+      // gap. Confidence is only a model's to report, including for a rule
+      // violation it found; tool and pattern rule findings carry a fixed one.
+      const reportedConfidence = finding.source === "llm" || (finding.source === "rule" && finding.model) ? finding.confidence : null;
       const confidence = row?.confidence ?? reportedConfidence;
       if (!row) {
         // A finding that moved here from another file is the same problem, still open.

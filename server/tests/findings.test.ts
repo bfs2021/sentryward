@@ -85,6 +85,23 @@ describe("syncFindings", () => {
     expect(await byTitle(kept!.title)).toMatchObject({ model: "openai/gpt-x", lastJobId: second });
   });
 
+  it("records the rule of a rule finding, and no analyzer's rule id", async () => {
+    const [first, second, third, ...rest] = base.findings;
+    await sync({
+      ...base,
+      findings: [
+        { ...first!, source: "rule", ruleId: "no-db-in-controllers", model: undefined, confidence: 1 },
+        { ...second!, source: "rule", ruleId: "thin-controllers", confidence: 0.6 },
+        { ...third!, source: "tool", tool: "eslint", ruleId: "no-unused-vars", model: undefined },
+        ...rest,
+      ],
+    });
+    // A pattern match has no confidence of its own; a model that found a violation does.
+    expect(await byTitle(first!.title)).toMatchObject({ ruleId: "no-db-in-controllers", confidence: null });
+    expect(await byTitle(second!.title)).toMatchObject({ ruleId: "thin-controllers", confidence: 0.6 });
+    expect((await byTitle(third!.title)).ruleId).toBeNull();
+  });
+
   it("records the confidence a model reported, none for a tool finding, and keeps it on ignored rows", async () => {
     const [first, second, ...rest] = base.findings;
     await sync({
@@ -710,6 +727,19 @@ describe("GET /api/findings/stats", () => {
       expect(res.body.falsePositivesBy.model).toEqual([
         { key: null, found: 1, falsePositives: 1, rate: 100 },
         { key: model, found: found - 1, falsePositives: 1, rate: Math.round((1 / (found - 1)) * 100) },
+      ]);
+    });
+
+    it("counts findings per rule, leaving out findings without one", async () => {
+      await seed();
+      const [a, b, c] = (await rows()).filter((row) => row.firstSeenAt.getTime() > Date.now() - 86_400_000);
+      await prisma.finding.update({ where: { id: a!.id }, data: { ruleId: "no-db", ...fp } });
+      await prisma.finding.update({ where: { id: b!.id }, data: { ruleId: "no-db", state: "open", ignoreReason: null } });
+      await prisma.finding.update({ where: { id: c!.id }, data: { ruleId: "naming", state: "open", ignoreReason: null } });
+      const res = await request(app).get("/api/findings/stats").set("Cookie", cookie);
+      expect(res.body.falsePositivesBy.rule).toEqual([
+        { key: "no-db", found: 2, falsePositives: 1, rate: 50 },
+        { key: "naming", found: 1, falsePositives: 0, rate: 0 },
       ]);
     });
 

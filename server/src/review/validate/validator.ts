@@ -4,6 +4,7 @@ import { fingerprint } from "../core/fingerprint.ts";
 import { isAddedLine, type ChangedFile, type ChangeSet, type Finding, type ToolAnnotation } from "../core/models.ts";
 import { atLeast, severityRank } from "../core/severity.ts";
 import type { ModelFinding } from "../llm/schemas.ts";
+import { DEFAULT_RULE_CATEGORY, modelRuleFor } from "../rules.ts";
 
 // A model finding plus the model of the pass that produced it.
 export type TaggedFinding = ModelFinding & { model?: string };
@@ -55,9 +56,9 @@ function clampEnd(file: ChangedFile, start: number, end: number): number {
   return hunk && hunk.newLineToPosition[String(end)] !== undefined ? end : start;
 }
 
-function isUnprovenBlocker(finding: ModelFinding): boolean {
+function isUnprovenBlocker(finding: ModelFinding, severity: Finding["severity"]): boolean {
   return (
-    (finding.severity === "critical" || finding.severity === "major") &&
+    (severity === "critical" || severity === "major") &&
     (finding.evidence === "unverified" || finding.evidenceNote.trim() === "")
   );
 }
@@ -134,7 +135,11 @@ export function validateFindings(
       drop("unknown_file");
       continue;
     }
-    if (!categories.has(candidate.category)) {
+    // A violation of a team rule is filed and weighed as the rule says, and is
+    // reported whatever review.categories holds: the team asked for it.
+    const rule = modelRuleFor(config, candidate.ruleId, file.path);
+    const category = rule ? (rule.category ?? DEFAULT_RULE_CATEGORY) : candidate.category;
+    if (!rule && !categories.has(candidate.category)) {
       drop("category");
       continue;
     }
@@ -157,9 +162,10 @@ export function validateFindings(
       continue;
     }
 
-    let { severity, kind } = candidate as { severity: Finding["severity"]; kind: Finding["kind"] };
+    let severity: Finding["severity"] = rule ? rule.severity : candidate.severity;
+    let kind: Finding["kind"] = candidate.kind;
     // Blocking takes evidence. Self-reported confidence is not evidence.
-    if (config.review.requireEvidence && isUnprovenBlocker(candidate)) {
+    if (config.review.requireEvidence && isUnprovenBlocker(candidate, severity)) {
       severity = "minor";
       kind = "verification_needed";
       demoted += 1;
@@ -187,7 +193,7 @@ export function validateFindings(
       startLine: start,
       endLine: end,
       severity,
-      category: candidate.category,
+      category,
       kind,
       effort: candidate.effort,
       title,
@@ -201,8 +207,9 @@ export function validateFindings(
       evidenceFiles: candidate.evidenceFiles.filter((path) => path !== file.path),
       // review.verify, when on, decides this afterwards.
       verification: "not_checked",
-      source: "llm",
-      fingerprint: fingerprint({ file: file.path, category: candidate.category, kind, title }),
+      source: rule ? "rule" : "llm",
+      ...(rule ? { ruleId: rule.id } : {}),
+      fingerprint: fingerprint({ file: file.path, category, kind, title, ruleId: rule?.id }),
       ...(candidate.model ? { model: candidate.model } : {}),
       bucket: bucketFor({ file: file.path, startLine: start, kind }, changeSet),
     };

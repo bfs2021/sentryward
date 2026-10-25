@@ -7,6 +7,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { SeverityBadge } from "@/features/reviews/badges"
+import { cn } from "@/lib/utils"
 import { useFindingStats } from "./api"
 import { CATEGORY_LABEL } from "./options"
 import type { FalsePositiveRow, FindingCategory } from "./types"
@@ -148,7 +149,8 @@ export function FalsePositiveBreakdown({ repoId, repoName }: FalsePositiveBreakd
           Findings first seen in the last {data.days} days{repoName ? ` in ${repoName}` : ""}, ignored ones included.
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-6 lg:grid-cols-3">
+      {/* The rule table only appears for repositories with rules, so the grid makes room for it then. */}
+      <CardContent className={cn("grid gap-6", by.rule.length > 0 ? "lg:grid-cols-2" : "lg:grid-cols-3")}>
         <GroupTable
           label="Category"
           rows={by.category}
@@ -173,6 +175,15 @@ export function FalsePositiveBreakdown({ repoId, repoName }: FalsePositiveBreakd
           name={(key) => (key === null ? <span className="text-muted-foreground">Analyzer or unrecorded</span> : <code className="text-xs">{key}</code>)}
           hint={(key) => (key === null ? null : { text: "Try another model", to: configLink("llm", repoId) })}
         />
+        {by.rule.length > 0 && (
+          <GroupTable
+            label="Rule"
+            rows={by.rule}
+            name={(key) => <code className="text-xs">{key}</code>}
+            // Rules live in the repository's .sentryward.yaml, which no setting here can change.
+            hint={() => null}
+          />
+        )}
       </CardContent>
     </Card>
   )
