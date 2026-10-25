@@ -20,6 +20,34 @@ describe("agent prompts", () => {
     )
   })
 
+  // Same finding and text as the server's render test, so the two copies cannot drift apart.
+  it("orders impact and fix rationale the way the forge comment does", () => {
+    const finding = {
+      ...result.findings[0],
+      startLine: 11,
+      endLine: 14,
+      impact: "Every row can be read.",
+      fixRationale: "A bound parameter cannot change the query.",
+    }
+    expect(findingPrompt(finding)).toBe(
+      [
+        "In src/app.ts around lines 11-14: SQL injection in search",
+        "",
+        "Why it matters.",
+        "",
+        "Impact: Every row can be read.",
+        "",
+        "Suggested replacement for those lines:",
+        "",
+        "db.query(sql, [q])",
+        "",
+        "Why this fix works: A bound parameter cannot change the query.",
+        "",
+        "Verify this against the current code first; it may already be fixed.",
+      ].join("\n"),
+    )
+  })
+
   it("numbers every finding by severity, then file and line", () => {
     const prompt = allFindingsPrompt([...result.findings].reverse())
     expect(prompt.startsWith("Verify each finding against the current code")).toBe(true)

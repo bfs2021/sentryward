@@ -5,6 +5,7 @@ import {
   evidenceSchema,
   kindSchema,
   severitySchema,
+  verificationSchema,
   type Category,
   type Severity,
 } from "./severity.ts";
@@ -111,12 +112,21 @@ export const findingSchema = z.object({
   effort: effortSchema,
   title: z.string(),
   body: z.string(),
+  // What breaks if it ships, and why the suggested fix works. Kept apart from
+  // the body so every surface can show them as such. Absent when the model gave
+  // none, on tool and rule findings, and in results stored before they existed.
+  impact: z.string().optional(),
+  fixRationale: z.string().optional(),
   // Verbatim replacement for startLine..endLine.
   suggestion: z.string().optional(),
+  // The model's own estimate, never checked against outcomes by itself; the
+  // calibration endpoint is what measures it. Never shown as a probability.
   confidence: z.number().min(0).max(1),
   evidence: evidenceSchema,
   evidenceNote: z.string(),
   evidenceFiles: z.array(z.string()),
+  // Absent in results stored before it was recorded, which means not checked.
+  verification: verificationSchema.optional(),
   // "tool" findings come from analyzers that already ran on the forge (check
   // run annotations, GitLab report artifacts), named by `tool`.
   source: z.enum(["llm", "tool", "rule"]),

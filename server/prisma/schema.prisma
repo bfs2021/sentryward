@@ -436,6 +436,12 @@ model Finding {
   // backfilled for. Frozen with lastJobId while ignored, so a dismissal stays
   // with the model and run that were dismissed.
   model        String?
+  // The confidence first reported for it, for the calibration endpoint, which
+  // windows by firstSeenAt. Later runs only fill it while null, so with model
+  // changing between runs the two can come from different models (rare).
+  // Self-reported, so never a probability by itself. Null for tool and rule
+  // findings.
+  confidence   Float?
   lastJobId    String?         @map("last_job_id") @db.Uuid
   firstSeenAt  DateTime        @default(now()) @map("first_seen_at") @db.Timestamptz
   lastSeenAt   DateTime        @default(now()) @map("last_seen_at") @db.Timestamptz

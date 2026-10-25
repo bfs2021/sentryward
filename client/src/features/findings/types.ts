@@ -80,6 +80,31 @@ export interface FalsePositiveRow<K> {
   rate: number | null
 }
 
+export type CalibrationGroupBy = "none" | "model" | "category"
+
+// One tenth of the confidence range. confirmed: fixed; falsePositives:
+// dismissed as one; the rates are over `decided` (the two together) and null
+// while nothing in the bucket is decided.
+export interface CalibrationBucket {
+  min: number
+  max: number
+  found: number
+  confirmed: number
+  falsePositives: number
+  decided: number
+  confirmedRate: number | null
+  falsePositiveRate: number | null
+}
+
+// GET /api/findings/calibration. One group with a null key unless grouped.
+export interface FindingCalibration {
+  days: number
+  groupBy: CalibrationGroupBy
+  selfReported: true
+  note: string
+  groups: { key: string | null; found: number; buckets: CalibrationBucket[] }[]
+}
+
 // GET /api/findings/:id: the row, plus the full finding and its change from the
 // run that last reported it, when that run and its result are still readable.
 export interface FindingDetail {

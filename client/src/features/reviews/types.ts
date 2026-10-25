@@ -25,6 +25,8 @@ export const BUCKET_TITLE: Record<Bucket, string> = {
   nitpick: "Nitpick comments",
 }
 
+export type Verification = "verified" | "uncertain" | "not_checked"
+
 export interface Finding {
   file: string
   startLine: number
@@ -35,11 +37,18 @@ export interface Finding {
   effort: string
   title: string
   body: string
+  // What breaks if it ships, and why the suggested fix works; absent when the
+  // model gave none, on tool findings and in older results.
+  impact?: string
+  fixRationale?: string
   suggestion?: string
+  // The model's own estimate. Never show it as a calibrated probability.
   confidence: number
   evidence: string
   evidenceNote: string
   evidenceFiles: string[]
+  // What review.verify made of it; absent on older results, meaning not checked.
+  verification?: Verification
   source: "llm" | "tool" | "rule"
   tool?: string
   fingerprint: string

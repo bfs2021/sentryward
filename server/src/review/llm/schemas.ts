@@ -25,12 +25,16 @@ export const modelFindingSchema = z.object({
   kind: z.enum(MODEL_KINDS),
   effort: effortSchema,
   title: z.string().describe("One short sentence naming the problem"),
-  body: z.string().describe("Why it is a problem and what to do; markdown"),
+  body: z.string().describe("What is wrong and what to do; markdown"),
+  impact: z.string().describe("What breaks, and for whom, if this ships; one or two sentences"),
+  fixRationale: z
+    .string()
+    .describe("Why the suggestion or recommended change fixes it; one sentence, or an empty string when there is no fix"),
   suggestion: z
     .string()
     .nullable()
     .describe("Exact replacement code for startLine..endLine, or null"),
-  confidence: z.number().describe("0 to 1"),
+  confidence: z.number().describe("Your own estimate, 0 to 1, that the finding is correct"),
   evidence: evidenceSchema,
   evidenceNote: z
     .string()
@@ -166,6 +170,8 @@ function repairFinding(value: unknown): unknown {
     // Unverified is what the validator demotes, so it is the safe default.
     evidence: enumValue(entry.evidence, EVIDENCE, "unverified"),
     evidenceNote: entry.evidenceNote ?? "",
+    impact: typeof entry.impact === "string" ? entry.impact : "",
+    fixRationale: typeof entry.fixRationale === "string" ? entry.fixRationale : "",
     evidenceFiles: Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles : [],
     suggestion: typeof entry.suggestion === "string" && entry.suggestion.trim() ? entry.suggestion : null,
     confidence: numberValue(entry.confidence),

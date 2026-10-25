@@ -25,7 +25,9 @@ function suggestion(finding: Finding) {
 
 function describe(finding: Finding) {
   const parts = [`In ${finding.file} around ${lines(finding)}: ${finding.title.trim()}`, "", finding.body.trim()]
+  if (finding.impact) parts.push("", `Impact: ${finding.impact.trim()}`)
   if (finding.suggestion) parts.push("", "Suggested replacement for those lines:", "", suggestion(finding))
+  if (finding.fixRationale) parts.push("", `Why this fix works: ${finding.fixRationale.trim()}`)
   return parts
 }
 

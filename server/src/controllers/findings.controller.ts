@@ -2,10 +2,11 @@ import type { Request, Response } from "express";
 import { HttpError } from "../lib/httpError.ts";
 import { prisma } from "../lib/prisma.ts";
 import { median } from "../lib/stats.ts";
-import type { Prisma } from "../generated/prisma/client.ts";
+import { Prisma } from "../generated/prisma/client.ts";
 import { reviewResultSchema } from "../review/core/models.ts";
 import { CATEGORIES, SEVERITIES, type Category } from "../review/core/severity.ts";
 import {
+  findingCalibrationQuerySchema,
   findingIdParamSchema,
   findingStatsQuerySchema,
   listFindingsQuerySchema,
@@ -195,6 +196,77 @@ export async function getFindingStats(req: Request, res: Response) {
       model: tally((row) => row.model).sort(byRate),
     },
   });
+}
+
+const CALIBRATION_NOTE =
+  "Confidence is the model's own estimate, as first reported. Each bucket shows how findings reported at that confidence turned out: confirmed (a later run that read the file no longer reported it) or dismissed as false positives. A false positive that a later run stops reporting also counts as confirmed, so the confirmed rate is an upper bound.";
+
+// How the confidence models report has matched what happened to their
+// findings, in tenths. A finding is confirmed once a later run that read its
+// file stopped reporting it, and a false positive once someone dismissed it as
+// one. "Stopped reporting" also catches false positives that drop out (a
+// reworded title, a verify demotion, plain nondeterminism), and nothing stored
+// tells those apart, so confirmed is an upper bound. Open findings, other
+// dismissals and invalidated ones decided nothing, so the rates are over
+// `decided`. Raw because Prisma cannot group by an expression.
+export async function getFindingCalibration(req: Request, res: Response) {
+  const { repoId, days, groupBy } = findingCalibrationQuerySchema.parse(req.query);
+  const since = new Date(Date.now() - days * 86_400_000);
+  const key = { none: Prisma.sql`NULL::text`, model: Prisma.sql`f.model`, category: Prisma.sql`f.category` }[groupBy];
+  const conditions = [
+    Prisma.sql`c.workspace_id = ${req.workspaceId!}::uuid`,
+    Prisma.sql`f.confidence IS NOT NULL`,
+    Prisma.sql`f.first_seen_at >= ${since}`,
+  ];
+  if (repoId) conditions.push(Prisma.sql`f.repository_id = ${repoId}::uuid`);
+  const rows = await prisma.$queryRaw<{ key: string | null; bucket: number; found: number; confirmed: number; falsePositives: number }[]>`
+    SELECT ${key} AS key,
+      LEAST(floor(f.confidence * 10), 9)::int AS bucket,
+      count(*)::int AS found,
+      count(*) FILTER (WHERE f.state = 'resolved' AND f.lifecycle <> 'invalidated')::int AS confirmed,
+      count(*) FILTER (WHERE f.state = 'ignored' AND f.ignore_reason = 'false_positive')::int AS "falsePositives"
+    FROM findings f
+    JOIN repositories r ON r.id = f.repository_id
+    JOIN forge_connections c ON c.id = r.connection_id
+    WHERE ${Prisma.join(conditions, " AND ")}
+    GROUP BY 1, 2
+  `;
+  type Bucket = { min: number; max: number; found: number; confirmed: number; falsePositives: number };
+  const groups = new Map<string | null, Map<number, Bucket>>();
+  for (const row of rows) {
+    const groupKey =
+      groupBy === "category" && !CATEGORIES.includes(row.key as Category) ? OTHER_CATEGORY : row.key;
+    const buckets = groups.get(groupKey) ?? new Map<number, Bucket>();
+    const bucket = buckets.get(row.bucket) ?? {
+      min: row.bucket / 10,
+      max: (row.bucket + 1) / 10,
+      found: 0,
+      confirmed: 0,
+      falsePositives: 0,
+    };
+    bucket.found += row.found;
+    bucket.confirmed += row.confirmed;
+    bucket.falsePositives += row.falsePositives;
+    buckets.set(row.bucket, bucket);
+    groups.set(groupKey, buckets);
+  }
+  const result = [...groups].map(([groupKey, buckets]) => {
+    const rowsOut = [...buckets.values()]
+      .sort((a, b) => a.min - b.min)
+      .map((bucket) => {
+        const decided = bucket.confirmed + bucket.falsePositives;
+        return {
+          ...bucket,
+          decided,
+          confirmedRate: percent(bucket.confirmed, decided),
+          falsePositiveRate: percent(bucket.falsePositives, decided),
+        };
+      });
+    return { key: groupKey, found: rowsOut.reduce((sum, b) => sum + b.found, 0), buckets: rowsOut };
+  });
+  // Largest groups first; how few is too few to trust is the reader's call.
+  result.sort((a, b) => b.found - a.found);
+  res.json({ days, groupBy, selfReported: true, note: CALIBRATION_NOTE, groups: result });
 }
 
 // The row plus the full finding from the run that last reported it. A result

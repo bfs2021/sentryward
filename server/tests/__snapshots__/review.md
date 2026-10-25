@@ -74,7 +74,11 @@ Adds b and c.
 
 Adding one can exceed the safe integer range.
 
+**💥 Impact:** A failed save is reported as a success.
+
 **🔎 Evidence:** x | y
+
+**🛠️ Why this fix works:** Checking the result makes the caller see the failure.
 
 </details>
 

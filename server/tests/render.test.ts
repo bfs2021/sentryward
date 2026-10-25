@@ -318,6 +318,85 @@ describe("agent prompts", () => {
 
 const ALL_OUTPUTS = { walkthrough: true, inline: true, status: true };
 
+describe("structured evidence", () => {
+  const finding = async () => {
+    const [first] = (await sampleResult()).findings;
+    return {
+      ...first!,
+      impact: "Every row can be read.",
+      fixRationale: "A bound parameter cannot change the query.",
+      suggestion: "db.query(sql, [b]);\n",
+    };
+  };
+
+  it("puts the impact under the explanation and the rationale under the fix, inline", async () => {
+    const body = inlineBody(await finding(), "github");
+    const impact = body.indexOf("**💥 Impact:** Every row can be read.");
+    const rationale = body.indexOf("**🛠️ Why this fix works:** A bound parameter cannot change the query.");
+    expect(impact).toBeGreaterThan(body.indexOf("Adding one can exceed"));
+    expect(impact).toBeLessThan(body.indexOf("```suggestion"));
+    expect(rationale).toBeGreaterThan(body.indexOf("```suggestion"));
+    expect(rationale).toBeLessThan(body.indexOf("Prompt for AI agents"));
+  });
+
+  it("details them in the summary and carries them in the agent prompt", async () => {
+    const markdown = toMarkdown(await sampleResult());
+    expect(markdown).toContain("**💥 Impact:** A failed save is reported as a success.");
+    expect(markdown).toContain("**🛠️ Why this fix works:** Checking the result makes the caller see the failure.");
+    const prompt = findingPrompt(await finding());
+    expect(prompt).toContain("Impact: Every row can be read.");
+    expect(prompt).toContain("Why this fix works: A bound parameter cannot change the query.");
+  });
+
+  // The dashboard builds this prompt separately (client/src/features/reviews/agentPrompt.ts);
+  // its test expects the same text for the same finding, so the copies cannot drift apart.
+  it("orders the structured fields in the agent prompt as the dashboard does", async () => {
+    const prompt = findingPrompt({
+      ...(await finding()),
+      file: "src/app.ts",
+      startLine: 11,
+      endLine: 14,
+      title: "SQL injection in search",
+      body: "Why it matters.",
+      suggestion: "db.query(sql, [q])",
+    });
+    expect(prompt).toBe(
+      [
+        "In src/app.ts around lines 11-14: SQL injection in search",
+        "",
+        "Why it matters.",
+        "",
+        "Impact: Every row can be read.",
+        "",
+        "Suggested replacement for those lines:",
+        "",
+        "db.query(sql, [q])",
+        "",
+        "Why this fix works: A bound parameter cannot change the query.",
+        "",
+        "Verify this against the current code first; it may already be fixed.",
+      ].join("\n"),
+    );
+  });
+
+  it("names a verification outcome but says nothing for an unchecked finding", async () => {
+    const base = await finding();
+    expect(inlineBody({ ...base, verification: "verified" }, "github")).toContain(" · ✅ verified");
+    expect(inlineBody({ ...base, verification: "uncertain" }, "github")).toContain(" · ❔ uncertain after verification");
+    for (const verification of ["not_checked", undefined] as const) {
+      const body = inlineBody({ ...base, verification }, "github");
+      expect(body).not.toContain("verified");
+      expect(body).not.toContain("verification");
+    }
+  });
+
+  it("never shows confidence in a forge comment", async () => {
+    const result = await sampleResult();
+    expect(toMarkdown(result)).not.toMatch(/confidence/i);
+    for (const f of result.findings) expect(inlineBody(f, "github")).not.toMatch(/confidence/i);
+  });
+});
+
 describe("progressMarkdown", () => {
   it("is a status line with no heading, linking the short SHA to the commit", () => {
     const body = progressMarkdown({ ...makeChangeSet(), forgeRef: { ...makeChangeSet().forgeRef, headSha: "abcdef1234567" } }, ALL_OUTPUTS);

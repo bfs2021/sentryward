@@ -123,8 +123,11 @@ export async function verifyFindings(input: VerifyInput): Promise<VerifyResult> 
         drop("refuted");
         continue;
       }
+      // Recorded so readers can see a finding survived a second look; a failed
+      // call leaves it not_checked, as reported.
+      next = { ...finding, verification: outcome.verdict === "confirmed" ? "verified" : "uncertain" };
       if (outcome.verdict === "uncertain" && finding.kind !== "verification_needed") {
-        next = demoteFinding(finding, input.changeSet);
+        next = demoteFinding(next, input.changeSet);
         result.demoted += 1;
         if (!atLeast(next.severity, config.review.severityFloor)) {
           drop("below_floor");

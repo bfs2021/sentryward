@@ -4,11 +4,18 @@ import { Button } from "@/components/ui/button"
 import { copyToClipboard } from "@/lib/clipboard"
 import { findingPrompt } from "./agentPrompt"
 import { findingLines, forgeFileUrl } from "./links"
-import type { Finding, ReviewResult } from "./types"
+import type { Finding, ReviewResult, Verification } from "./types"
+
+const VERIFICATION: Record<Verification, { label: string; title: string; variant: "secondary" | "outline" }> = {
+  verified: { label: "Verified", title: "Confirmed by a second, independent model check", variant: "secondary" },
+  uncertain: { label: "Uncertain", title: "A second model check could not confirm or rule it out", variant: "outline" },
+  not_checked: { label: "Not verified", title: "No second model check ran for this finding", variant: "outline" },
+}
 
 // A finding's full text, shared by the review page's cards and the findings sheet.
 export function FindingBody({ finding, change }: { finding: Finding; change: ReviewResult["change"] }) {
   const lines = findingLines(finding)
+  const verification = finding.verification ?? "not_checked"
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
@@ -18,9 +25,15 @@ export function FindingBody({ finding, change }: { finding: Finding; change: Rev
         {finding.source === "tool" ? (
           <Badge variant="secondary">via {finding.tool ?? "static analysis"}</Badge>
         ) : (
-          <span className="text-xs text-muted-foreground">
-            Confidence {Math.round(finding.confidence * 100)}% · {finding.effort.replace(/_/g, " ")}
-          </span>
+          <>
+            <Badge variant={VERIFICATION[verification].variant} title={VERIFICATION[verification].title}>
+              {VERIFICATION[verification].label}
+            </Badge>
+            {/* Self-reported and uncalibrated: labelled so it never reads as a probability. */}
+            <span className="text-xs text-muted-foreground" title="The model's own estimate, not a calibrated probability">
+              Self-reported confidence {Math.round(finding.confidence * 100)}% · {finding.effort.replace(/_/g, " ")}
+            </span>
+          </>
         )}
         <a
           href={forgeFileUrl(change, finding.file, finding.startLine, finding.endLine)}
@@ -34,6 +47,11 @@ export function FindingBody({ finding, change }: { finding: Finding; change: Rev
       </div>
       {/* Model text is shown as plain text; it is never rendered as HTML. */}
       <p className="text-sm whitespace-pre-wrap">{finding.body}</p>
+      {finding.impact && (
+        <p className="text-sm">
+          <span className="font-medium">Impact:</span> {finding.impact}
+        </p>
+      )}
       {finding.evidenceNote && (
         <p className="text-sm text-muted-foreground">
           <span className="font-medium text-foreground">Evidence ({finding.evidence.replace(/_/g, " ")}):</span>{" "}
@@ -55,6 +73,11 @@ export function FindingBody({ finding, change }: { finding: Finding; change: Rev
             <Copy />
           </Button>
         </div>
+      )}
+      {finding.fixRationale && (
+        <p className="text-sm">
+          <span className="font-medium">Why this fix works:</span> {finding.fixRationale}
+        </p>
       )}
       <div>
         <Button variant="outline" size="sm" onClick={() => copyToClipboard(findingPrompt(finding), "Agent prompt")}>

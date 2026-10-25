@@ -83,6 +83,21 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   `finding_lifecycle` enum and column, backfilled from each finding's state,
   and an `end_line` column so gone findings keep their line range). Closes
   #104.
+- Structured evidence on findings. The model now returns a finding's
+  `impact` (what breaks, and for whom) and `fixRationale` (why the suggested
+  fix works) as separate fields instead of folding them into the body; inline
+  comments, the summary comment, agent prompts and the dashboard show them
+  under their own headings. Each finding also records what `review.verify`
+  made of it (`verified`, `uncertain` or `not_checked`): forge comments mark
+  verified and uncertain findings, and the dashboard shows a badge for all
+  three. Results stored earlier have none of these and read as not checked.
+- `GET /api/findings/calibration?repoId=&days=&groupBy=` measures how the
+  confidence models self-report has matched outcomes: findings bucketed by
+  reported confidence in tenths, with confirmed (fixed) and false-positive
+  rates over the findings that were decided, overall or by `model` or
+  `category`. The False positives tab gains a card showing it. Includes a
+  migration adding a `confidence` column to findings, backfilled from each
+  finding's last run (null for tool and rule findings). Closes #105.
 
 ### Changed
 
@@ -97,6 +112,10 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   client, so the review page and the Reviews table row menu fetch it, report
   failures and track pending state the same way. The row menu's copy now
   goes through the same clipboard path as the review page. Closes #95.
+- Confidence is labelled as self-reported wherever it appears: the dashboard
+  shows "Self-reported confidence" instead of a bare percentage, the minimum
+  confidence setting says it is the model's own estimate, and forge comments
+  still never show it.
 
 ### Fixed
 

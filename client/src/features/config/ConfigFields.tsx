@@ -295,7 +295,10 @@ const NUMBER_INFO: Record<NumberName, { label: string; description: string }> = 
   },
   maxFindings: { label: "Max findings", description: "The most findings a review reports." },
   maxChunks: { label: "Max chunks", description: "Large changes are split into at most this many passes." },
-  minConfidence: { label: "Min confidence", description: "Findings the model is less sure of are dropped (0 to 1)." },
+  minConfidence: {
+    label: "Min confidence",
+    description: "Findings below this self-reported confidence (0 to 1) are dropped. It is the model's own estimate, not a measured probability.",
+  },
 }
 
 // "x (from y)" for any config value, e.g. "critical (from global config)".
