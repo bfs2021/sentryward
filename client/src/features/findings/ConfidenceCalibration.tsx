@@ -6,9 +6,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useFindingCalibration } from "./api"
-import { MIN_FOUND } from "./FalsePositiveBreakdown"
 import { CATEGORY_LABEL } from "./options"
 import type { CalibrationBucket, CalibrationGroupBy, FindingCategory } from "./types"
+
+// Rows with fewer decided findings (fixed or dismissed as false positives, not
+// everything found) are muted: a rate over so few is mostly noise.
+const MIN_DECIDED = 5
 
 const GROUP_LABEL: Record<CalibrationGroupBy, string> = {
   none: "All findings",
@@ -33,14 +36,13 @@ function BucketTable({ label, buckets }: { label: string; buckets: CalibrationBu
         <TableRow>
           <TableHead>Reported confidence</TableHead>
           <TableHead className="text-right">Found</TableHead>
-          <TableHead className="text-right">Confirmed</TableHead>
+          <TableHead className="text-right">Not re-reported</TableHead>
           <TableHead className="text-right">False positives</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {buckets.map((bucket) => (
-          // Too few decided findings and a rate is mostly noise; still shown, but muted.
-          <TableRow key={bucket.min} className={bucket.decided < MIN_FOUND ? "text-muted-foreground" : undefined}>
+          <TableRow key={bucket.min} className={bucket.decided < MIN_DECIDED ? "text-muted-foreground" : undefined}>
             <TableCell className="tabular-nums">
               {Math.round(bucket.min * 100)}-{Math.round(bucket.max * 100)}%
             </TableCell>
@@ -67,8 +69,9 @@ export function ConfidenceCalibration({ repoId, repoName }: { repoId?: string; r
         <CardTitle>How self-reported confidence holds up</CardTitle>
         <CardDescription>
           Confidence is self-reported by the model; this table shows how it has matched outcomes for findings first
-          seen in the last {data?.days ?? 30} days{repoName ? ` in ${repoName}` : ""}. Confirmed means fixed; rates are
-          over findings that were fixed or dismissed as false positives. Muted rows have fewer than {MIN_FOUND} of those.
+          seen in the last {data?.days ?? 30} days{repoName ? ` in ${repoName}` : ""}. Not re-reported means a later run
+          that read the file stopped reporting it, so it is an upper bound on how many were real. Rates are over findings
+          that were not re-reported or dismissed as false positives; muted rows have fewer than {MIN_DECIDED} of those.
         </CardDescription>
         <CardAction>
           <Select value={groupBy} onValueChange={(value) => setGroupBy(value as CalibrationGroupBy)}>
@@ -97,7 +100,8 @@ export function ConfidenceCalibration({ repoId, repoName }: { repoId?: string; r
           <p className="text-sm text-muted-foreground">No model findings with a reported confidence yet.</p>
         ) : (
           data.groups.map((group) => {
-            const name = groupName(groupBy, group.key)
+            // The grouping the data was fetched with: while a new one loads, the previous table stays up.
+            const name = groupName(data.groupBy, group.key)
             return (
               <div key={String(group.key)} className="flex flex-col gap-2">
                 {name && <h3 className="text-sm font-medium">{name}</h3>}

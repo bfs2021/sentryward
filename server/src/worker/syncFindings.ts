@@ -190,7 +190,7 @@ export async function syncFindings({ repositoryId, number, jobId, author, result
   await prisma.$transaction(async (tx) => {
     const existing = await tx.finding.findMany({
       where: { repositoryId, number },
-      select: { id: true, ...KNOWN_FINDING },
+      select: { id: true, confidence: true, ...KNOWN_FINDING },
     });
     const known = new Map(existing.map((row) => [row.fingerprint, row]));
     // The worker worked the lifecycle out before publishing and the summary
@@ -220,13 +220,14 @@ export async function syncFindings({ repositoryId, number, jobId, author, result
         // Backfilled rows have no author; keep a known one if the forge stops saying.
         ...(author ? { author } : {}),
       };
-      // Confidence is only a model's to report; tool and rule findings carry a fixed one.
-      const source = {
-        model: finding.model ?? null,
-        confidence: finding.source === "llm" ? finding.confidence : null,
-        lastJobId: jobId,
-      };
+      const source = { model: finding.model ?? null, lastJobId: jobId };
       const row = known.get(finding.fingerprint);
+      // Calibration buckets a finding by the confidence it was first reported
+      // with, matching its first_seen_at window, so a later run only fills a
+      // gap. Confidence is only a model's to report; tool and rule findings
+      // carry a fixed one.
+      const reportedConfidence = finding.source === "llm" ? finding.confidence : null;
+      const confidence = row?.confidence ?? reportedConfidence;
       if (!row) {
         // A finding that moved here from another file is the same problem, still open.
         await tx.finding.create({
@@ -236,13 +237,14 @@ export async function syncFindings({ repositoryId, number, jobId, author, result
             fingerprint: finding.fingerprint,
             ...snapshot,
             ...source,
+            confidence,
             lifecycle: stillOpen.has(finding.fingerprint) ? "still_open" : "new",
           },
         });
       } else if (row.state === "resolved") {
         await tx.finding.update({
           where: { id: row.id },
-          data: { ...snapshot, ...source, state: "open", resolvedAt: null, lifecycle: "reopened" },
+          data: { ...snapshot, ...source, confidence, state: "open", resolvedAt: null, lifecycle: "reopened" },
         });
       } else if (row.state === "ignored") {
         // The dismissal belongs to the run (and model) the user dismissed: a
@@ -250,7 +252,7 @@ export async function syncFindings({ repositoryId, number, jobId, author, result
         // and the details sheet keeps showing what was dismissed.
         await tx.finding.update({ where: { id: row.id }, data: { ...snapshot, lifecycle: "still_open" } });
       } else {
-        await tx.finding.update({ where: { id: row.id }, data: { ...snapshot, ...source, lifecycle: "still_open" } });
+        await tx.finding.update({ where: { id: row.id }, data: { ...snapshot, ...source, confidence, lifecycle: "still_open" } });
       }
     }
 

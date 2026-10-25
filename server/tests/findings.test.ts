@@ -100,6 +100,22 @@ describe("syncFindings", () => {
     expect((await byTitle(first!.title)).confidence).toBe(0.72);
   });
 
+  it("keeps the confidence first reported, and fills one only while it is missing", async () => {
+    const [first, second, ...rest] = base.findings;
+    await sync({ ...base, findings: [{ ...first!, confidence: 0.95 }, { ...second!, confidence: 0.6 }, ...rest] });
+    // A row backfilled with nothing to go on.
+    await prisma.finding.update({ where: { id: (await byTitle(second!.title)).id }, data: { confidence: null } });
+
+    await sync({ ...base, findings: [{ ...first!, confidence: 0.55 }, { ...second!, confidence: 0.4 }, ...rest] });
+    expect((await byTitle(first!.title)).confidence).toBe(0.95);
+    expect((await byTitle(second!.title)).confidence).toBe(0.4);
+
+    // Reopening is the same finding again, not a new claim.
+    await sync({ ...base, findings: [second!, ...rest] });
+    await sync({ ...base, findings: [{ ...first!, confidence: 0.2 }, second!, ...rest] });
+    expect(await byTitle(first!.title)).toMatchObject({ lifecycle: "reopened", confidence: 0.95 });
+  });
+
   it("resolves a finding a later run no longer reports, and reopens it if it returns", async () => {
     await sync(base);
     const [gone, ...rest] = base.findings;

@@ -9,7 +9,7 @@ import { diffTokenBudget } from "../src/review/context/budget.ts";
 import { planChunks } from "../src/review/context/chunk.ts";
 import { renderHunk } from "../src/review/context/diffText.ts";
 import { classifyFiles } from "../src/review/context/ignore.ts";
-import { MAX_MANIFEST_CHARS, reviewUserPrompt } from "../src/review/llm/prompt.ts";
+import { MAX_MANIFEST_CHARS, reviewUserPrompt, threadAnswerUserPrompt } from "../src/review/llm/prompt.ts";
 import { generateWithFallback, ModelCallError } from "../src/review/llm/providers.ts";
 import { runReview } from "../src/review/pipeline.ts";
 import { validateFindings } from "../src/review/validate/validator.ts";
@@ -180,6 +180,18 @@ describe("validateFindings", () => {
     const raw = [modelFinding({ suggestion: "const b = a + 1n;" })];
     expect(validate(raw).findings[0]!.suggestion).toBe("const b = a + 1n;");
     expect(validate(raw, { review: { committableSuggestions: false } }).findings[0]!.suggestion).toBeUndefined();
+  });
+
+  it("drops the fix rationale with a stripped suggestion, but keeps one written without a suggestion", () => {
+    const fixRationale = "Widening first keeps the sum in range.";
+    const off = { review: { committableSuggestions: false } };
+    const stripped = validate([modelFinding({ suggestion: "const b = a + 1n;", fixRationale })], off).findings[0]!;
+    expect(stripped.fixRationale).toBeUndefined();
+    const prose = validate([modelFinding({ suggestion: null, fixRationale })], off).findings[0]!;
+    expect(prose.fixRationale).toBe(fixRationale);
+    expect(validate([modelFinding({ suggestion: "const b = a + 1n;", fixRationale })]).findings[0]!.fixRationale).toBe(
+      fixRationale,
+    );
   });
 
   it("drops a finding whose fingerprint this team dismissed, but not otherwise", () => {
@@ -592,5 +604,34 @@ describe("runReview", () => {
 
     expect(result.status).toBe("partial");
     expect(result.verdict.verdict).toBe("error");
+  });
+});
+
+describe("threadAnswerUserPrompt", () => {
+  const question = (extra: { impact?: string; fixRationale?: string } = {}) => ({
+    finding: {
+      file: "src/app.ts",
+      startLine: 11,
+      endLine: 11,
+      severity: "major" as const,
+      category: "bug" as const,
+      title: "Overflow",
+      body: "Widen before adding.",
+      suggestion: "const b = a + 1n;",
+      ...extra,
+    },
+    code: "    11 | const b = a + 1;",
+    reply: "Why does this matter?",
+  });
+
+  // The review prompt moves the consequence out of body, so the answer needs it to say why.
+  it("carries the claimed impact and fix rationale, and leaves them out when empty", () => {
+    const prompt = threadAnswerUserPrompt(question({ impact: "Totals wrap past 2^53.", fixRationale: "BigInt cannot overflow." }));
+    expect(prompt).toContain("Claimed impact: Totals wrap past 2^53.");
+    expect(prompt).toContain("Why this fix works: BigInt cannot overflow.");
+    expect(prompt.indexOf("Why this fix works")).toBeGreaterThan(prompt.indexOf("Suggested replacement"));
+    const bare = threadAnswerUserPrompt(question());
+    expect(bare).not.toContain("Claimed impact");
+    expect(bare).not.toContain("Why this fix works");
   });
 });

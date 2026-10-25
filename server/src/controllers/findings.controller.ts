@@ -199,11 +199,14 @@ export async function getFindingStats(req: Request, res: Response) {
 }
 
 const CALIBRATION_NOTE =
-  "Confidence is the model's own estimate. Each bucket shows how findings reported at that confidence turned out: confirmed (fixed) or dismissed as false positives.";
+  "Confidence is the model's own estimate, as first reported. Each bucket shows how findings reported at that confidence turned out: confirmed (a later run that read the file no longer reported it) or dismissed as false positives. A false positive that a later run stops reporting also counts as confirmed, so the confirmed rate is an upper bound.";
 
 // How the confidence models report has matched what happened to their
-// findings, in tenths. A finding is confirmed once a later run saw it fixed and
-// a false positive once someone dismissed it as one; open findings, other
+// findings, in tenths. A finding is confirmed once a later run that read its
+// file stopped reporting it, and a false positive once someone dismissed it as
+// one. "Stopped reporting" also catches false positives that drop out (a
+// reworded title, a verify demotion, plain nondeterminism), and nothing stored
+// tells those apart, so confirmed is an upper bound. Open findings, other
 // dismissals and invalidated ones decided nothing, so the rates are over
 // `decided`. Raw because Prisma cannot group by an expression.
 export async function getFindingCalibration(req: Request, res: Response) {

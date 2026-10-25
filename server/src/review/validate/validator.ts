@@ -178,7 +178,9 @@ export function validateFindings(
     const suggestion =
       config.review.committableSuggestions && candidate.suggestion?.trim() ? candidate.suggestion : undefined;
     const impact = candidate.impact.trim();
-    const fixRationale = candidate.fixRationale.trim();
+    // A rationale written for a suggestion the config removed explains code
+    // nobody sees; without a suggestion from the model, body carries the fix.
+    const fixRationale = candidate.suggestion?.trim() && suggestion === undefined ? "" : candidate.fixRationale.trim();
 
     const finding: Finding = {
       file: file.path,

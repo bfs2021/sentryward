@@ -75,6 +75,8 @@ export function useFindingCalibration(repoId: string | undefined, groupBy: Calib
   return useQuery({
     queryKey: ["findings", "calibration", repoId ?? null, groupBy],
     queryFn: () => api<FindingCalibration>(`/findings/calibration${query ? `?${query}` : ""}`),
+    // Switching the grouping keeps the current table up instead of a skeleton.
+    placeholderData: keepPreviousData,
   })
 }
 

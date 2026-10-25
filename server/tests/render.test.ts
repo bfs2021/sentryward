@@ -348,6 +348,37 @@ describe("structured evidence", () => {
     expect(prompt).toContain("Why this fix works: A bound parameter cannot change the query.");
   });
 
+  // The dashboard builds this prompt separately (client/src/features/reviews/agentPrompt.ts);
+  // its test expects the same text for the same finding, so the copies cannot drift apart.
+  it("orders the structured fields in the agent prompt as the dashboard does", async () => {
+    const prompt = findingPrompt({
+      ...(await finding()),
+      file: "src/app.ts",
+      startLine: 11,
+      endLine: 14,
+      title: "SQL injection in search",
+      body: "Why it matters.",
+      suggestion: "db.query(sql, [q])",
+    });
+    expect(prompt).toBe(
+      [
+        "In src/app.ts around lines 11-14: SQL injection in search",
+        "",
+        "Why it matters.",
+        "",
+        "Impact: Every row can be read.",
+        "",
+        "Suggested replacement for those lines:",
+        "",
+        "db.query(sql, [q])",
+        "",
+        "Why this fix works: A bound parameter cannot change the query.",
+        "",
+        "Verify this against the current code first; it may already be fixed.",
+      ].join("\n"),
+    );
+  });
+
   it("names a verification outcome but says nothing for an unchecked finding", async () => {
     const base = await finding();
     expect(inlineBody({ ...base, verification: "verified" }, "github")).toContain(" · ✅ verified");
