@@ -313,6 +313,30 @@ describe("LLM Connections page", () => {
       expect(bodyOf(post![1])).toEqual({ model: "anthropic/claude-sonnet-5-5" })
     })
 
+    it("shows what the probe after a passing test found", async () => {
+      mockApi(
+        routes({
+          result: {
+            ok: true,
+            latencyMs: 400,
+            inputTokens: 10,
+            outputTokens: 2,
+            capabilities: { thinking: "options", tools: false, detail: "thinking options work; tools are refused" },
+          },
+        }),
+      )
+      renderWithProviders(<App />, { route: "/llm-connections" })
+
+      const dialog = await openTest()
+      await userEvent.type(within(dialog).getByRole("textbox", { name: "Model" }), "anthropic/claude-sonnet-5-5")
+      await userEvent.click(within(dialog).getByRole("button", { name: "Run test" }))
+
+      const status = await within(dialog).findByRole("status")
+      expect(within(status).getByText("Thinking")).toBeInTheDocument()
+      expect(within(status).getByText("No tools")).toBeInTheDocument()
+      expect(status).toHaveTextContent("tools are refused")
+    })
+
     it("shows the provider's error and clears it when the model changes", async () => {
       mockApi(
         routes({
@@ -347,6 +371,63 @@ describe("LLM Connections page", () => {
       await userEvent.click(within(dialog).getByRole("button", { name: "Run test" }))
 
       expect(await within(dialog).findByText("This connection can only run anthropic/... models")).toBeInTheDocument()
+    })
+  })
+
+  describe("capabilities", () => {
+    const routes = (capabilities: unknown[]) => ({
+      "GET /api/settings/api-keys": { keys: [storedAnthropic, ...noKeys.keys.slice(1)] },
+      "GET /api/settings/api-keys/anthropic/status": { status: "active" },
+      "GET /api/settings/api-keys/anthropic/capabilities": { capabilities },
+    })
+
+    async function openCapabilities() {
+      await userEvent.click(await screen.findByRole("button", { name: "Actions for Anthropic" }))
+      await userEvent.click(await screen.findByRole("menuitem", { name: "Capabilities" }))
+      return screen.findByRole("dialog")
+    }
+
+    it("lists what each model was found to support", async () => {
+      mockApi(
+        routes([
+          {
+            model: "anthropic/claude-sonnet-5-5",
+            endpoint: null,
+            thinking: "options",
+            tools: true,
+            source: "probe",
+            detail: "thinking options work; tool calls work",
+            checkedAt: "2026-10-20T00:00:00.000Z",
+          },
+          {
+            model: "anthropic/claude-3-5-haiku-latest",
+            endpoint: null,
+            thinking: "none",
+            tools: null,
+            source: "runtime",
+            detail: "Rejected thinking options",
+            checkedAt: "2026-10-21T00:00:00.000Z",
+          },
+        ]),
+      )
+      renderWithProviders(<App />, { route: "/llm-connections" })
+
+      const dialog = await openCapabilities()
+      const sonnet = (await within(dialog).findByText("anthropic/claude-sonnet-5-5")).closest("tr")!
+      expect(within(sonnet).getByText("Thinking")).toBeInTheDocument()
+      expect(within(sonnet).getByText("Tools")).toBeInTheDocument()
+      const haiku = within(dialog).getByText("anthropic/claude-3-5-haiku-latest").closest("tr")!
+      expect(within(haiku).getByText("No thinking")).toBeInTheDocument()
+      expect(within(haiku).getByText("Tools unknown")).toBeInTheDocument()
+      expect(haiku).toHaveTextContent("(review)")
+    })
+
+    it("says how to detect capabilities when none are recorded", async () => {
+      mockApi(routes([]))
+      renderWithProviders(<App />, { route: "/llm-connections" })
+
+      const dialog = await openCapabilities()
+      expect(await within(dialog).findByText(/Nothing recorded yet/)).toBeInTheDocument()
     })
   })
 })

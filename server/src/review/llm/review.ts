@@ -10,6 +10,8 @@ export interface ChunkReview {
   usage: LlmUsage;
   // Models tried first whose replies were unusable.
   failedUsage: LlmUsage[];
+  // What the calls had to give up, e.g. thinking the endpoint refused.
+  warnings: string[];
 }
 
 export async function reviewChunk(
@@ -29,6 +31,7 @@ export async function reviewChunk(
     repair: repairReviewOutput,
     temperature: config.llm.temperature,
     maxOutputTokens: config.llm.maxTokens,
+    thinking: config.llm.thinking,
   });
   return {
     findings: response.object.findings,
@@ -40,5 +43,6 @@ export async function reviewChunk(
       chunk: chunk.index,
     },
     failedUsage: failedUsage(response.failedAttempts ?? [], "review", chunk.index),
+    warnings: response.warnings ?? [],
   };
 }

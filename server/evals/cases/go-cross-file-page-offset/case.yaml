@@ -1,0 +1,8 @@
+title: Simplify the page offset
+description: Offset counts pages from zero.
+language: go
+expected:
+  - file: paging/paging.go
+    lines: [8, 8]
+    category: [bug, logic]
+    description: Offset now treats pages as zero-based, but listOrders in api/orders.go still passes the documented one-based page (defaulting to 1), so the first page of orders is skipped

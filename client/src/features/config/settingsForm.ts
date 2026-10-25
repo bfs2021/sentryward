@@ -42,14 +42,30 @@ export type FlagName = (typeof FLAGS)[number]["name"]
 export type FlagSection = (typeof FLAGS)[number]["section"]
 
 // Every select the form edits besides the profile, connection and severities.
+// A section may be a dotted path into a nested object. `boolean` selects store
+// true and false as booleans and any other option as its string.
 export const CHOICES = [
   { name: "review", section: "triggers" },
   { name: "summary", section: "triggers" },
   { name: "highLevelSummaryPlacement", section: "output" },
   { name: "verify", section: "review" },
-] as const
+  { name: "context", section: "review" },
+  { name: "thinking", section: "llm" },
+  { name: "verifyThinking", section: "llm" },
+  { name: "thinkingSupport", key: "thinking", section: "llm.capabilities" },
+  { name: "toolSupport", key: "tools", section: "llm.capabilities", boolean: true },
+] as const satisfies readonly { name: string; key?: string; section: string; boolean?: boolean }[]
 
 export type ChoiceName = (typeof CHOICES)[number]["name"]
+
+// The key a choice is saved under, which only differs where two sections
+// share a name (llm.thinking and llm.capabilities.thinking).
+export const choiceKey = (choice: (typeof CHOICES)[number]) => ("key" in choice ? choice.key : choice.name)
+
+// The value at a dotted path, e.g. "review.agent".
+export function at(value: unknown, path: string): unknown {
+  return path.split(".").reduce<unknown>((node, key) => (node as Section | undefined)?.[key], value)
+}
 
 // The skip lists, edited as tags.
 export const LISTS = ["ignoreTitles", "skipAuthors", "skipLabels", "skipSourceBranches", "skipTargetBranches"] as const
@@ -58,11 +74,20 @@ export type ListName = (typeof LISTS)[number]
 const MAX_LIST_ENTRIES = 50
 const MAX_LIST_ENTRY = 200
 
-export type NumberName = "temperature" | "maxTokens" | "contextBudget" | "maxFindings" | "maxChunks" | "minConfidence"
+export type NumberName =
+  | "temperature"
+  | "maxTokens"
+  | "contextBudget"
+  | "maxFindings"
+  | "maxChunks"
+  | "minConfidence"
+  | "maxSteps"
+  | "maxToolTokens"
+  | "maxSearches"
 
 export interface NumberSpec {
   name: NumberName
-  section: "llm" | "review"
+  section: "llm" | "review" | "review.agent"
   min: number
   max?: number
   step: number
@@ -80,6 +105,9 @@ export const NUMBERS: NumberSpec[] = [
   { name: "maxFindings", section: "review", min: 1, max: 100, step: 1, integer: true },
   { name: "maxChunks", section: "review", min: 1, max: 50, step: 1, integer: true },
   { name: "minConfidence", section: "review", min: 0, max: 1, step: 0.05, integer: false },
+  { name: "maxSteps", section: "review.agent", min: 2, max: 20, step: 1, integer: true },
+  { name: "maxToolTokens", section: "review.agent", min: 1000, max: 100000, step: 1000, integer: true },
+  { name: "maxSearches", section: "review.agent", min: 0, max: 10, step: 1, integer: true },
 ]
 
 // Typed into the context budget to derive it from the model's context window.
@@ -262,13 +290,14 @@ export function toForm(settings: ConfigOverride): FormState {
   }
   const numbers = {} as FormState["numbers"]
   for (const { name, section } of NUMBERS) {
-    const value = (settings[section] as Section | undefined)?.[name]
+    const value = (at(settings, section) as Section | undefined)?.[name]
     numbers[name] = value === null ? AUTO : typeof value === "number" ? String(value) : ""
   }
   const choices = {} as FormState["choices"]
-  for (const { name, section } of CHOICES) {
-    const value = name === "review" ? legacyReview(settings.triggers) : (settings[section] as Section | undefined)?.[name]
-    choices[name] = typeof value === "string" ? value : INHERIT
+  for (const choice of CHOICES) {
+    const value =
+      choice.name === "review" ? legacyReview(settings.triggers) : (at(settings, choice.section) as Section | undefined)?.[choiceKey(choice)]
+    choices[choice.name] = typeof value === "string" || typeof value === "boolean" ? String(value) : INHERIT
   }
   const lists = {} as FormState["lists"]
   for (const name of LISTS) lists[name] = [...(settings.triggers?.[name] ?? [])]
@@ -344,17 +373,29 @@ export function toSettings(base: ConfigOverride, form: FormState): ConfigOverrid
     ],
   }
   for (const { name, section } of FLAGS) fields[section].push([name, form.flags[name]])
-  for (const { name, section } of CHOICES) fields[section].push([name, pick(form.choices[name])])
+  for (const choice of CHOICES) {
+    const value = pick(form.choices[choice.name])
+    const saved = "boolean" in choice && (value === "true" || value === "false") ? value === "true" : value
+    ;(fields[choice.section] ??= []).push([choiceKey(choice), saved])
+  }
   for (const name of LISTS) {
     const entries = tagList(form.lists[name])
     fields.triggers.push([name, entries.length ? entries : undefined])
   }
-  for (const spec of NUMBERS) fields[spec.section].push([spec.name, parseNumber(spec, form.numbers[spec.name])])
+  for (const spec of NUMBERS) {
+    ;(fields[spec.section] ??= []).push([spec.name, parseNumber(spec, form.numbers[spec.name])])
+  }
 
-  for (const [name, entries] of Object.entries(fields)) {
-    const section: Section = { ...((next[name] as Section | undefined) ?? {}) }
+  // Nested sections first, so their parent is written with them in place and
+  // an emptied one disappears from it.
+  const depth = (path: string) => path.split(".").length
+  for (const [path, entries] of Object.entries(fields).sort(([a], [b]) => depth(b) - depth(a))) {
+    const keys = path.split(".")
+    const last = keys.pop()!
+    const parent = keys.reduce<Section>((node, key) => (node[key] ??= {}) as Section, next as Section)
+    const section: Section = { ...((parent[last] as Section | undefined) ?? {}) }
     for (const [key, value] of entries) setOrDelete(section, key, value)
-    setOrDelete(next, name, Object.keys(section).length ? section : undefined)
+    setOrDelete(parent, last, Object.keys(section).length ? section : undefined)
   }
   return next
 }
@@ -489,8 +530,8 @@ export function baseConfig(schema: ConfigSchema, profile: string = schema.defaul
   return {
     ...defaults,
     profile,
-    llm: { ...defaults.llm, ...preset.llm },
-    review: { ...defaults.review, ...preset.review },
+    llm: { ...defaults.llm, ...preset.llm, capabilities: { ...defaults.llm.capabilities, ...preset.llm?.capabilities } },
+    review: { ...defaults.review, ...preset.review, agent: { ...defaults.review.agent, ...preset.review?.agent } },
     output: { ...defaults.output, ...preset.output },
     triggers: { ...defaults.triggers, ...preset.triggers },
   }
@@ -513,7 +554,15 @@ export function withoutDefaults(settings: ConfigOverride, schema: ConfigSchema):
     const section = next[name] as Section | undefined
     if (!section) continue
     for (const [key, value] of Object.entries(section)) {
-      if (same((base[name] as Section)[key], value)) delete section[key]
+      const inherited = (base[name] as Section)[key]
+      // A nested object (review.agent) keeps only the fields that differ.
+      if (value && typeof value === "object" && !Array.isArray(value) && inherited && typeof inherited === "object") {
+        const nested = value as Section
+        for (const [field, fieldValue] of Object.entries(nested)) {
+          if (same((inherited as Section)[field], fieldValue)) delete nested[field]
+        }
+        if (Object.keys(nested).length === 0) delete section[key]
+      } else if (same(inherited, value)) delete section[key]
     }
     if (Object.keys(section).length === 0) delete next[name]
   }

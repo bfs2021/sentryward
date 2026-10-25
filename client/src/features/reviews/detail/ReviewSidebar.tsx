@@ -233,8 +233,18 @@ function UsageCard({ result }: { result: ReviewResult }) {
                 </span>
                 <span className="text-muted-foreground">
                   {call.inputTokens.toLocaleString()} in · {call.outputTokens.toLocaleString()} out ·{" "}
+                  {call.reasoningTokens ? `${call.reasoningTokens.toLocaleString()} reasoning · ` : ""}
                   {formatDuration(call.latencyMs)}
                 </span>
+                {call.steps && (
+                  <span className="text-muted-foreground">
+                    {call.steps} steps
+                    {call.toolCalls &&
+                      ` · ${Object.entries(call.toolCalls)
+                        .map(([name, count]) => `${name} ×${count}`)
+                        .join(", ")}`}
+                  </span>
+                )}
               </li>
             ))}
           </ul>

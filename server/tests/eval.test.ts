@@ -237,6 +237,13 @@ describe("corpus", () => {
 describe("evaluate", () => {
   const [sqlCase] = loadCorpus(["ts-sql-injection"]) as [EvalCase];
 
+  it("reviews a case with the thinking and context being compared", () => {
+    const config = caseConfig(sqlCase, "anthropic/claude-sonnet-5-5", { thinking: "medium", context: "agentic" });
+    expect(config.llm.thinking).toBe("medium");
+    expect(config.review.context).toBe("agentic");
+    expect(caseConfig(sqlCase, "anthropic/claude-sonnet-5-5").llm.thinking).toBe("off");
+  });
+
   it("reviews a case and scores what the model reported", async () => {
     const { generate, requests } = fakeModel({
       code_review: {
@@ -247,7 +254,7 @@ describe("evaluate", () => {
       walkthrough: WALKTHROUGH,
     });
 
-    const report = await evaluateCase(sqlCase, generate, { model: "anthropic/claude-sonnet-5-5", match: DEFAULT_MATCH_OPTIONS, concurrency: 1 });
+    const report = await evaluateCase(sqlCase, { generate }, { model: "anthropic/claude-sonnet-5-5", match: DEFAULT_MATCH_OPTIONS, concurrency: 1 });
 
     expect(requests.every((r) => r.model === "anthropic/claude-sonnet-5-5")).toBe(true);
     // The case's after/ tree stands in for the head revision.
@@ -260,7 +267,7 @@ describe("evaluate", () => {
   it("reports a failed review as errored instead of scoring it", async () => {
     const { generate } = fakeModel({ code_review: new Error("rate limited"), walkthrough: WALKTHROUGH });
 
-    const run = await evaluate([sqlCase], generate, { model: "anthropic/claude-sonnet-5-5", match: DEFAULT_MATCH_OPTIONS, concurrency: 1 });
+    const run = await evaluate([sqlCase], { generate }, { model: "anthropic/claude-sonnet-5-5", match: DEFAULT_MATCH_OPTIONS, concurrency: 1 });
 
     // The walkthrough's usage is recorded, but the failed call may have been
     // billed too, so the cost is unknown rather than the walkthrough's alone.
@@ -273,7 +280,7 @@ describe("evaluate", () => {
     const { generate } = fakeModel({ code_review: { findings: [] }, walkthrough: WALKTHROUGH });
     const broken = { ...sqlCase, changeSet: null as never };
 
-    const run = await evaluate([broken, sqlCase], generate, { model: "anthropic/claude-sonnet-5-5", match: DEFAULT_MATCH_OPTIONS, concurrency: 1 });
+    const run = await evaluate([broken, sqlCase], { generate }, { model: "anthropic/claude-sonnet-5-5", match: DEFAULT_MATCH_OPTIONS, concurrency: 1 });
 
     expect(run.cases[0]).toMatchObject({ status: "error", costUsd: null });
     expect(run.cases[1]?.costUsd).toBeGreaterThan(0);

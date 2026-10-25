@@ -1,0 +1,18 @@
+diff --git a/src/users/repository.ts b/src/users/repository.ts
+index 1796447..4e6bda0 100644
+--- a/src/users/repository.ts
++++ b/src/users/repository.ts
+@@ -6,11 +6,11 @@ export interface User {
+   email: string;
+ }
+ 
+-// Throws when there is no such user, so callers can rely on the result.
++// Missing users are common during imports; logging a stack for each is noise.
+ export async function findUser(id: string): Promise<User> {
+   const row = await db.query<User>("SELECT id, name, email FROM users WHERE id = $1", [id]);
+   if (!row) {
+-    throw new Error(`User ${id} not found`);
++    return undefined as unknown as User;
+   }
+   return row;
+ }

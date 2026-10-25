@@ -428,6 +428,22 @@ For 9router, save its key and host under OpenAI in LLM Connections, select the O
 
 The worker runs in a container, where `localhost` is the container itself; `host.docker.internal` reaches a proxy running on the host.
 
+### Model capabilities
+
+Thinking and agentic context depend on what a model supports on the endpoint that serves it, and that differs per model even on one endpoint: not every native Anthropic, OpenAI or Google model takes thinking options, Ollama models differ in tool and thinking support, and proxies (9router, OmniRoute, LiteLLM, OpenRouter and the like) differ in whether they forward thinking options, translate them between wire formats or pass tool calls through. Sentryward records, per connection and model, whether **thinking** works (through the provider's options, by a model that thinks by itself, or not at all) and whether **tools** work:
+
+- **Probe.** A passing **Test model** also sends two tiny calls, one with thinking options and one with a trivial tool, and stores what each did. A review that needs thinking or tools probes a model the first time it is used on an endpoint, keyed models from the server environment included. Probe tokens are recorded in the review's usage as `probe` calls.
+- **Runtime fallback.** A call that the endpoint rejects with a 400 naming thinking or tool parameters is retried once without them; thinking that comes back with no reasoning is noted as ignored; an agentic pass that gets plain text instead of tool calls is read as a static one. Each records a review warning and updates the stored capability, so a review never fails because a model lacks thinking or tools.
+- **Defaults.** Official APIs start from a built-in table of model families; Ollama and custom hosts start unknown. Detection overrules the table.
+
+Choose **Capabilities** in a connection's actions menu to see what was found. When detection is wrong, set **Thinking support** and **Tool support** in Configuration > LLM. Like endpoints, these settings exist only in the dashboard: a repository file cannot change how credentials and endpoints are used.
+
+### Thinking and agentic context
+
+`llm.thinking` (`off`, `low`, `medium`, `high`) lets review passes reason before answering. Each level maps to the provider's own option: an Anthropic thinking budget of 2,000, 8,000 or 24,000 tokens, an OpenAI reasoning effort of the same name, or a Google thinking budget. The budget is added on top of `max_tokens` (Anthropic counts thinking inside it), temperature is not sent while thinking is on, and the prompt ceiling leaves room for both. `llm.verify_thinking` sets the verifier's level separately (`null` uses `thinking`); the walkthrough never thinks. The `strict` profile uses `high` and `fast` uses `off`.
+
+`review.context: agentic` lets each pass read more of the repository before it reports. A pass starts from the same diff and gathered context as a static one, and may call `read_file` (at most 400 lines a call, at the change's head revision) and `search_code` (shared by the whole review, since GitHub rate-limits code search), then reports through a `report_findings` tool. `review.agent` caps the loop: `max_steps` (8), `max_tool_tokens` (30,000 per pass) and `max_searches` (5 per review); the last step can only report. What a pass read is shown to the verifier, and usage records each pass's steps and tool calls. Tool results are content from the change under review, so the tools are read-only, scoped to the repository at the head revision, and their output is marked as untrusted data in the prompt. A model or endpoint without tool support falls back to static context with a warning.
+
 ### Ollama
 
 Add Ollama under LLM Connections and enter its OpenAI-compatible base URL. For Ollama running on the Docker host, use `http://host.docker.internal:11434/v1`. The API key is optional. Select the Ollama connection in Configuration > LLM and use the `ollama/<model>` form, for example `ollama/qwen3`.
@@ -449,6 +465,8 @@ llm:
   verify_model: null        # model for review.verify; null uses model (fallbacks are shared)
   temperature: 0.2
   max_tokens: 8000
+  thinking: off             # off | low | medium | high: reasoning budget for review passes
+  verify_thinking: null     # thinking for review.verify; null uses thinking
 review:
   categories: [security, bug, performance, logic, reliability]
   severity_floor: minor     # what is reported
@@ -466,6 +484,11 @@ review:
                             # refuted ones are dropped, uncertain ones demoted (fast profile: off)
   tool_findings: true       # report static analysis results already on the forge as findings
   tool_findings_block: false  # let those findings reach block_on and fail the verdict
+  context: static           # static | agentic: let passes read files and search code through tools
+  agent:                    # caps for agentic passes
+    max_steps: 8            # model calls per pass, the final report included
+    max_tool_tokens: 30000  # what tools may return in one pass
+    max_searches: 5         # code searches across the whole review
 output:
   walkthrough: true
   post_inline: true
@@ -649,7 +672,8 @@ so scripts written before workspaces keep working. Routes under
 | DELETE | `/api/settings/api-keys/:provider` | Workspace admins: removes the stored credential |
 | GET    | `/api/settings/api-keys/:provider/status` | `{ status }`: `active`, `revoked` when the provider rejects the key, or `unreachable` |
 | GET    | `/api/settings/api-keys/:provider/models` | The model ids the connection lists, prefixed with its provider; 400 when the host rejects the key or is down |
-| POST   | `/api/settings/api-keys/:provider/test` | `{ model }`, runs one minimal generation with the stored credential; returns `{ result }` with latency and token usage, or `ok: false` with a `reason` (`revoked`, `model`, `unreachable`, `output`) and message. 400 when an official API is given another provider's model; 409 when the stored key can't be decrypted |
+| POST   | `/api/settings/api-keys/:provider/test` | `{ model }`, runs one minimal generation with the stored credential; returns `{ result }` with latency and token usage, or `ok: false` with a `reason` (`revoked`, `model`, `unreachable`, `output`) and message. A passing test also probes the model and adds `capabilities: { thinking, tools, detail }`, which it stores. 400 when an official API is given another provider's model; 409 when the stored key can't be decrypted |
+| GET    | `/api/settings/api-keys/:provider/capabilities` | `{ capabilities }`: per model reached through the connection, `{ model, endpoint, thinking, tools, source, detail, checkedAt }`, where `thinking` is `options`, `model`, `none` or `null` (unknown), `tools` is a boolean or `null`, and `source` is `probe` or `runtime`. Saving or removing the connection clears them |
 | GET    | `/api/notifications` | `{ targets, mailConfigured }`: the workspace's notification targets with their events, whether each is `active`, a URL's host only and email recipients' user ids |
 | POST   | `/api/notifications` | Workspace admins: `{ kind: "webhook" \| "slack", name, events, url }` or `{ kind: "email", name, events, recipientIds }`; returns `{ target, secret? }`, a webhook's signing secret shown only here |
 | PATCH  | `/api/notifications/:id` | Workspace admins: `{ name?, events?, recipientIds?, active? }`; `active: false` pauses deliveries |
@@ -740,6 +764,9 @@ docker compose exec worker npm run eval -- --model anthropic/claude-sonnet-5-5 -
 | `--strict-category` | off | also require the finding's category to be one the case accepts |
 | `--price` | built-in table | `<input>,<output>` USD per million tokens, for models the table does not list |
 | `--base-url` | none | send the model's calls to this endpoint (a proxy or Ollama) |
+| `--thinking` | the case's setting (`off`) | `off`, `low`, `medium` or `high` |
+| `--context` | the case's setting (`static`) | `static` or `agentic` |
+| `--compare` | off | review every case twice, with thinking off and static context, then with `--thinking` (default `medium`) and `--context`, and print recall, precision and cost side by side |
 | `--out` | `server/evals/reports/<time>-<model>.json` | where to write the report |
 
 Each case runs through `runReview` with the default configuration, so it

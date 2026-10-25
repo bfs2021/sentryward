@@ -4,12 +4,14 @@ import { VERIFY_SYSTEM_PROMPT, verifyUserPrompt } from "./prompt.ts";
 import { callUsage, failedUsage, type Generate, generateWithFallback, modelChain } from "./providers.ts";
 import { repairVerificationOutput, verificationOutputSchema, type VerificationOutput } from "./schemas.ts";
 
-// A verdict and a sentence need little room.
-const VERIFY_OUTPUT_TOKENS = 1000;
+// A verdict and a sentence need little room. Thinking adds its budget on top
+// (createGenerate), or a thinking verifier would spend all of this reasoning.
+export const VERIFY_OUTPUT_TOKENS = 1000;
 
 export interface FindingVerification extends VerificationOutput {
   usage: LlmUsage;
   failedUsage: LlmUsage[];
+  warnings: string[];
 }
 
 export async function verifyFinding(
@@ -27,6 +29,7 @@ export async function verifyFinding(
     repair: repairVerificationOutput,
     temperature: config.llm.temperature,
     maxOutputTokens: Math.min(config.llm.maxTokens, VERIFY_OUTPUT_TOKENS),
+    thinking: config.llm.verifyThinking ?? config.llm.thinking,
   });
   return {
     verdict: response.object.verdict,
@@ -38,5 +41,6 @@ export async function verifyFinding(
       latencyMs: response.latencyMs,
     },
     failedUsage: failedUsage(response.failedAttempts ?? [], "verify"),
+    warnings: response.warnings ?? [],
   };
 }

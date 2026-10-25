@@ -1,0 +1,8 @@
+title: Quieter user lookups
+description: findUser no longer throws for a missing user.
+language: typescript
+expected:
+  - file: src/users/repository.ts
+    lines: [13, 13]
+    category: [bug, reliability]
+    description: findUser now returns undefined behind a User type, and unchanged callers such as showProfile in src/routes/profile.ts read user.name without a check, so a missing user crashes the request with a TypeError

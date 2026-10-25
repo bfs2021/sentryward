@@ -78,7 +78,10 @@ function codeFor(finding: Finding, chunks: Chunk[], config: Config): { diff: str
   }
   const overhead = estimateTokens(VERIFY_SYSTEM_PROMPT) + PROMPT_ALLOWANCE;
   const diff = fillContext(blocks, diffTokenBudget(config, overhead));
-  const contexts = [...new Set([...reporting, ...ofFile].map((chunk) => chunk.context).filter(Boolean))].map(
+  // An agentic pass's reads come after what was gathered for it: the verifier
+  // sees the code the finding was reported from.
+  const texts = [...reporting, ...ofFile].flatMap((chunk) => [chunk.context, chunk.toolContext ?? ""]);
+  const contexts = [...new Set(texts.filter(Boolean))].map(
     (text, index): ContextBlock => ({ path: "", label: "context", priority: index, text, tokens: estimateTokens(text) }),
   );
   return { diff, context: fillContext(contexts, contextTokenBudget(config, overhead, estimateTokens(diff))) };
@@ -120,6 +123,7 @@ export async function verifyFindings(input: VerifyInput): Promise<VerifyResult> 
       failures.push(outcome.error);
     } else if (outcome) {
       result.usage.push(outcome.usage);
+      result.warnings.push(...outcome.warnings);
       if (outcome.verdict === "refuted") {
         drop("refuted");
         continue;

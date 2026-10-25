@@ -5,13 +5,17 @@ import type { ConfigOverride, ProfileName } from "./schema.ts";
 export const PROFILES: Record<ProfileName, ConfigOverride> = {
   // The defaults as they are.
   balanced: {},
-  // One model call per pass and fewer passes: no walkthrough or verification.
+  // One model call per pass and fewer passes: no walkthrough, verification
+  // or thinking.
   fast: {
+    llm: { thinking: "off" },
     review: { maxChunks: 4, verify: "off" },
     output: { walkthrough: false },
   },
-  // Majors block, more findings are kept, low-confidence ones still dropped.
+  // Majors block, more findings are kept, low-confidence ones still dropped,
+  // and passes think hard before answering.
   strict: {
+    llm: { thinking: "high" },
     review: { blockOn: "major", maxFindings: 40, minConfidence: 0.6 },
   },
   // Security and reliability only, and majors block.

@@ -18,6 +18,9 @@ const effective = {
     connection: null,
     baseUrl: null,
     endpointKey: null,
+    thinking: "off",
+    verifyThinking: null,
+    capabilities: { thinking: "auto", tools: "auto" },
   },
   review: {
     categories: ["security", "bug"],
@@ -35,6 +38,8 @@ const effective = {
     verify: "blocking",
     toolFindings: true,
     toolFindingsBlock: false,
+    context: "static",
+    agent: { maxSteps: 8, maxToolTokens: 30000, maxSearches: 5 },
   },
   output: {
     walkthrough: true,
@@ -360,6 +365,41 @@ describe("Configuration page", { timeout: 20_000 }, () => {
           review: { categories: ["security", "style"], maxFindings: 10 },
           ignorePaths: ["gen/**", "docs/**"],
           languageInstructions: { Go: "Wrap errors" },
+        },
+      }),
+    )
+  })
+
+  it("edits thinking, capabilities and agentic context in the global config", async () => {
+    let body: unknown
+    mockApi(
+      globalRoutes({
+        "PUT /api/config/global": (init?: RequestInit) => {
+          body = JSON.parse(String(init?.body))
+          return jsonResponse(200, globalConfig((body as { settings: Record<string, unknown> }).settings))
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration" })
+
+    await userEvent.click(await screen.findByRole("combobox", { name: "LLM connection" }))
+    await userEvent.click(screen.getByRole("option", { name: /OpenAI/ }))
+    await userEvent.click(screen.getByRole("combobox", { name: "Thinking" }))
+    await userEvent.click(screen.getByRole("option", { name: "Medium (8k tokens)" }))
+    await userEvent.click(screen.getByRole("combobox", { name: "Tool support" }))
+    await userEvent.click(screen.getByRole("option", { name: "No tools" }))
+
+    await openTab("Finding Types")
+    await userEvent.click(screen.getByRole("combobox", { name: "Review context" }))
+    await userEvent.click(screen.getByRole("option", { name: "Agentic" }))
+    await userEvent.type(screen.getByLabelText("Agent steps"), "4")
+    await userEvent.click(screen.getByRole("button", { name: "Save global config" }))
+
+    await waitFor(() =>
+      expect(body).toMatchObject({
+        settings: {
+          llm: { thinking: "medium", capabilities: { tools: false } },
+          review: { context: "agentic", agent: { maxSteps: 4 } },
         },
       }),
     )

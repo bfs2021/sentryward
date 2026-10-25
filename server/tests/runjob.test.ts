@@ -434,7 +434,62 @@ describe("runJob", () => {
 
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
     expect(stored.status).toBe("completed");
-    expect(generateFor).toEqual([[keys, { baseUrl, apiKey: "router-key" }, { openai: baseUrl }]]);
+    expect(generateFor).toEqual([
+      [
+        keys,
+        { baseUrl, apiKey: "router-key" },
+        { openai: baseUrl },
+        { ledger: expect.anything(), override: { thinking: "auto", tools: "auto" } },
+      ],
+    ]);
+  });
+
+  it("runs agentic passes, probing the model once and storing what it found", async () => {
+    const job = await claimedJob();
+    const baseUrl = "http://router.test/v1";
+    await prisma.repository.update({
+      where: { id: repositoryId },
+      data: {
+        settings: { llm: { model: "openai/gpt-x", connection: "openai", thinking: "low" }, review: { context: "agentic" } },
+      },
+    });
+    const { runDeps } = deps({}, { code_review: { findings: [] }, walkthrough: WALKTHROUGH, verification: { verdict: "confirmed", reason: "" } });
+    runDeps.credentialsFor = async () => ({
+      keys: { openai: "k" },
+      baseUrls: { openai: baseUrl },
+      connections: { openai: { apiKey: "k", baseUrl } },
+    });
+    runDeps.probe = async () => ({
+      capabilities: { thinking: "options", tools: true },
+      detail: "thinking options work; tool calls work",
+      spent: [{ model: "openai/gpt-x", inputTokens: 7, outputTokens: 2, latencyMs: 1 }],
+    });
+    const agentic: unknown[] = [];
+    runDeps.generateAgenticFor = (_keys, _endpoint, _baseUrls, options) => async (request) => {
+      agentic.push(request.model);
+      // What the call itself learned is stored with the review.
+      options?.ledger?.observe({ model: request.model, capabilities: { thinking: "none" }, source: "runtime" });
+      return {
+        object: { findings: [] } as never,
+        model: request.model,
+        inputTokens: 500,
+        outputTokens: 30,
+        latencyMs: 4,
+        steps: 3,
+        toolCalls: { read_file: 2, report_findings: 1 },
+      };
+    };
+
+    await runJob(job, runDeps);
+
+    const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(stored.status).toBe("completed");
+    expect(agentic).toEqual(["openai/gpt-x"]);
+    const usage = (stored.result as { usage: { purpose: string; steps?: number }[] }).usage;
+    expect(usage[0]).toMatchObject({ purpose: "probe", inputTokens: 7 });
+    expect(usage.find((u) => u.purpose === "review")).toMatchObject({ steps: 3 });
+    const row = await prisma.llmCapability.findFirstOrThrow({ where: { model: "openai/gpt-x" } });
+    expect(row).toMatchObject({ endpoint: baseUrl, thinking: "none", tools: true, source: "runtime" });
   });
 
   it("refuses to run when the selected connection is not stored", async () => {
