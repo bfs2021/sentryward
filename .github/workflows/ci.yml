@@ -13,15 +13,21 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Server and client checks run as separate jobs so neither waits on the other.
+# Images are built with Buildx and cached in GitHub Actions, so npm ci reruns
+# only when a lockfile changes; each job has its own cache scope so they never
+# evict each other or the multi-arch cache of release-image.yml.
 jobs:
-  verify:
+  server:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
       COMPOSE_PROJECT_NAME: sentryward-ci
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Create disposable development configuration
+      - &checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - &dev-config
+        name: Create disposable development configuration
         # The runner context is unavailable in job-level env, so later steps get
         # COMPOSE_ENV_FILES through GITHUB_ENV.
         run: |
@@ -41,9 +47,22 @@ jobs:
           }
           writeFileSync(process.env.COMPOSE_ENV_FILES, config, { mode: 0o600 });
           JS
+      - &buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build server image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: server
+          load: true
+          # The name Compose gives the service's image, so `up` uses this build.
+          tags: ${{ env.COMPOSE_PROJECT_NAME }}-server
+          cache-from: type=gha,scope=ci-dev-server
+          cache-to: type=gha,mode=max,scope=ci-dev-server
       - name: Start Docker services
-        run: docker compose up --build --detach --wait --wait-timeout 180 db server client
+        run: docker compose up --detach --wait --wait-timeout 180 db server
       - name: Wait for API readiness
+        # The server container regenerates the Prisma client before it listens,
+        # and the tests import it.
         run: |
           docker compose exec -T server node --input-type=module <<'JS'
           import { setTimeout } from 'node:timers/promises';
@@ -60,6 +79,37 @@ jobs:
         run: docker compose exec -T server npm test
       - name: Server type check
         run: docker compose exec -T server npm run typecheck
+      - &diagnostics
+        name: Container diagnostics
+        if: failure()
+        run: |
+          docker compose ps --all
+          docker compose logs --no-color --tail 200
+      - &cleanup
+        name: Clean up disposable services
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+
+  client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      COMPOSE_PROJECT_NAME: sentryward-ci
+    steps:
+      - *checkout
+      - *dev-config
+      - *buildx
+      - name: Build client image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: client
+          load: true
+          tags: ${{ env.COMPOSE_PROJECT_NAME }}-client
+          cache-from: type=gha,scope=ci-dev-client
+          cache-to: type=gha,mode=max,scope=ci-dev-client
+      - name: Start Docker services
+        # The client checks never call the API, so its server dependency is skipped.
+        run: docker compose up --detach --wait --wait-timeout 180 --no-deps client
       - name: Client tests
         run: docker compose exec -T client npm test
       - name: Client type check
@@ -68,14 +118,8 @@ jobs:
         run: docker compose exec -T client npm run lint
       - name: Client production build
         run: docker compose exec -T client npm run build
-      - name: Container diagnostics
-        if: failure()
-        run: |
-          docker compose ps --all
-          docker compose logs --no-color --tail 200
-      - name: Clean up disposable services
-        if: always()
-        run: docker compose down --volumes --remove-orphans
+      - *diagnostics
+      - *cleanup
 
   prod-image:
     runs-on: ubuntu-latest
@@ -86,7 +130,7 @@ jobs:
       # A local tag, so Compose never pulls a published image in its place.
       SENTRYWARD_VERSION: ci
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - *checkout
       - name: Create disposable production configuration
         run: |
           echo "COMPOSE_ENV_FILES=$RUNNER_TEMP/sentryward-prod-ci.env" >> "$GITHUB_ENV"
@@ -97,11 +141,34 @@ jobs:
             echo "ENCRYPTION_KEY=$(openssl rand -hex 32)"
             echo "CLIENT_ORIGIN=https://sentryward.example.com"
             echo "API_PUBLIC_URL=https://sentryward.example.com"
+            # No reviews run here, so cleanup has nothing to wait for.
+            echo "WORKER_STOP_GRACE_PERIOD=10s"
           } > "$RUNNER_TEMP/sentryward-prod-ci.env"
+      - *buildx
       - name: Build production image
-        run: docker compose build server
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          load: true
+          # The image docker-compose.prod.yml names for SENTRYWARD_VERSION=ci.
+          tags: ghcr.io/${{ github.repository }}:ci
+          cache-from: type=gha,scope=ci-prod
+          cache-to: type=gha,mode=max,scope=ci-prod
       - name: Start production services
         run: docker compose up --detach --wait --wait-timeout 180
+      - name: Wait for worker readiness
+        # The worker has no healthcheck, so "healthy" only means its process
+        # exists. It logs this line after registering its SIGTERM handler.
+        run: |
+          for attempt in $(seq 60); do
+            if docker compose logs worker | grep -q '\[worker\] polling every'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Worker did not start polling" >&2
+          exit 1
       - name: Smoke test
         run: |
           base=http://127.0.0.1:4000
@@ -113,11 +180,5 @@ jobs:
           # The database must not be published on the host.
           test -z "$(docker port "$(docker compose ps --quiet db)")"
           docker compose ps --status running --services | grep -qx worker
-      - name: Container diagnostics
-        if: failure()
-        run: |
-          docker compose ps --all
-          docker compose logs --no-color --tail 200
-      - name: Clean up disposable services
-        if: always()
-        run: docker compose down --volumes --remove-orphans
+      - *diagnostics
+      - *cleanup
