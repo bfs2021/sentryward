@@ -49,6 +49,9 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     restart: unless-stopped
+    # Node as PID 1 ignores SIGTERM (it has no handler), so every stop waited
+    # for the SIGKILL timeout. An init process lets the signal end it.
+    init: true
     environment:
       <<: *app-environment
       # Hops of reverse proxy in front of the API; 1 for a single proxy.
@@ -79,6 +82,10 @@ services:
     # (WORKER_LOCK_TIMEOUT_MS) retries them. Waiting longer than the lock
     # timeout gains nothing, since the job is recovered by then anyway.
     stop_grace_period: ${WORKER_STOP_GRACE_PERIOD:-15m}
+    # As PID 1, node drops a SIGTERM that arrives before the handler is
+    # registered (while tsx loads the worker), and the stop then waits the
+    # whole grace period. Under an init process that signal just exits it.
+    init: true
     environment:
       <<: *app-environment
       # Defaults mirror server/src/config/env.ts; an empty value would fail
