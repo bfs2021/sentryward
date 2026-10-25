@@ -10,9 +10,13 @@ export const updateGlobalConfigSchema = z.object({
 
 // The display preview: `base` is what the form inherits (the profile and
 // defaults, or the global config for a repository) and `settings` what the
-// form sets on top, so the preview follows unsaved edits.
+// form sets on top, so the preview follows unsaved edits. `base` is a resolved
+// config sent back as is, so it carries `rules`, which dashboard settings
+// refuse; they never affect the preview, so they are dropped, not rejected.
 export const configPreviewSchema = z.object({
   provider: forgeProviderSchema,
-  base: dashboardOverrideSchema,
+  base: dashboardOverrideSchema
+    .extend({ rules: z.array(z.unknown()).optional() })
+    .transform(({ rules: _rules, ...base }) => base),
   settings: dashboardOverrideSchema,
 });

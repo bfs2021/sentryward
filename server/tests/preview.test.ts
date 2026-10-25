@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { app } from "../src/app.ts";
 import { prisma } from "../src/lib/prisma.ts";
 import { resolveConfig } from "../src/review/config/resolve.ts";
-import type { ConfigOverride } from "../src/review/config/schema.ts";
+import { DEFAULT_CONFIG, type ConfigOverride } from "../src/review/config/schema.ts";
 import { runReview } from "../src/review/pipeline.ts";
 import { previewPublication } from "../src/review/preview/preview.ts";
 import { SAMPLE_NOW, sampleChange, sampleGenerate, sampleIssues } from "../src/review/preview/sample.ts";
@@ -142,6 +142,23 @@ describe("POST /api/config/preview", () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ provider: "gitlab", status: null, inline: [], pr: { number: 42 } });
     expect(res.body.summaryComment).toMatch(/^## Summary\n/);
+  });
+
+  it("accepts a resolved config as the base, rules included", async () => {
+    // The forms send the defaults or the global config's effective config,
+    // which has `rules` even though dashboard settings cannot set them.
+    const res = await request(app)
+      .post("/api/config/preview")
+      .set("Cookie", cookie)
+      .send({ provider: "github", base: { ...DEFAULT_CONFIG, rules: [] }, settings: {} });
+    expect(res.status).toBe(200);
+    expect(res.body.summaryComment).toMatch(/^## Summary\n/);
+
+    const refused = await request(app)
+      .post("/api/config/preview")
+      .set("Cookie", cookie)
+      .send({ provider: "github", base: {}, settings: { rules: [] } });
+    expect(refused.status).toBe(400);
   });
 
   it("rejects settings the config would reject", async () => {
