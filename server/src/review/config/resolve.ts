@@ -3,12 +3,16 @@ import {
   DEFAULT_CONFIG,
   configOverrideSchema,
   configSchema,
+  combinedRulesError,
   dashboardOverrideSchema,
   type Config,
   type ConfigOverride,
   type DashboardOverride,
   type ProfileName,
+  type Rule,
+  type RuleGuard,
 } from "./schema.ts";
+import { atLeast } from "../core/severity.ts";
 
 export type LayerName = "default" | "profile" | "global" | "repoSettings" | "repoFile" | "trigger";
 
@@ -28,6 +32,18 @@ export interface ResolvedConfig {
   // Dotted leaf path to the layer that set it, so a result can say why a
   // setting has the value it does.
   sources: Record<string, LayerName>;
+  // Rules a layer could not add (rulesFrom); the config still resolves.
+  warnings: string[];
+  // The same, by layer, for callers that reject a save instead of warning.
+  ruleIssues: RuleIssue[];
+}
+
+export interface RuleIssue {
+  layer: LayerName;
+  // "clash": a rule id already set below; "limit": the layer's rules broke a
+  // limit together with those below and were left out.
+  kind: "clash" | "limit";
+  message: string;
 }
 
 type Plain = Record<string, unknown>;
@@ -72,6 +88,55 @@ export function withLegacyTriggers<T extends ConfigOverride>(layer: T): T {
   return layer;
 }
 
+const LAYER_LABELS: Record<LayerName, string> = {
+  default: "the defaults",
+  profile: "the profile",
+  global: "the global config",
+  repoSettings: "the repository settings",
+  repoFile: "the repository file",
+  trigger: "the trigger",
+};
+
+// Rules combine across layers instead of replacing like other lists: each
+// layer adds to those below it and can never drop or redefine one of them, so
+// a repository file cannot loosen what the workspace requires. Every layer was
+// validated on its own, so only the combination can break a limit; then that
+// layer's additions are left out as a whole, never half of them.
+function rulesFrom(layers: [LayerName, ConfigOverride | undefined][], sources: Record<string, LayerName>, issues: RuleIssue[]): Rule[] {
+  let rules: Rule[] = [];
+  for (const [name, layer] of layers) {
+    if (!layer?.rules?.length) continue;
+    const added: Rule[] = [];
+    for (const rule of layer.rules) {
+      const owner = sources[`rules.${rule.id}`];
+      if (owner) {
+        issues.push({ layer: name, kind: "clash", message: `Rule ${rule.id} in ${LAYER_LABELS[name]} was ignored: a rule with that id is already set in ${LAYER_LABELS[owner]}` });
+      } else added.push(rule);
+    }
+    if (!added.length) continue;
+    const combined = [...rules, ...added];
+    const reason = combinedRulesError(combined);
+    if (reason) {
+      issues.push({
+        layer: name,
+        kind: "limit",
+        message: `Rules in ${LAYER_LABELS[name]} were ignored: together with the rules below them, ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`,
+      });
+      continue;
+    }
+    rules = combined;
+    for (const rule of added) sources[`rules.${rule.id}`] = name;
+    sources.rules = name;
+  }
+  return rules;
+}
+
+function withoutRules<T extends ConfigOverride>(layer: T): T {
+  if (layer.rules === undefined) return layer;
+  const { rules: _rules, ...rest } = layer;
+  return rest as T;
+}
+
 // Precedence, lowest first: defaults, profile preset, global config,
 // repository settings, repository file, trigger. The profile itself is chosen by the highest layer
 // that names one.
@@ -101,11 +166,36 @@ export function resolveConfig(layers: ConfigLayers): ResolvedConfig {
     if (layer) stack.push([name, withLegacyTriggers(layer)]);
   }
   for (const [name, layer] of stack) {
-    merged = merge(merged, layer as Plain);
-    recordLeaves(layer, name, sources);
+    merged = merge(merged, withoutRules(layer) as Plain);
+    recordLeaves(withoutRules(layer), name, sources);
   }
   // `profile` is decided above, not merged; attribute it to whoever named it.
   sources.profile = naming?.[0] ?? "default";
+  const ruleIssues: RuleIssue[] = [];
+  merged.rules = rulesFrom(ordered, sources, ruleIssues);
+  const config = configSchema.parse(merged);
+  const ruleGuard = guardFor(layers, config, sources);
+  if (ruleGuard) config.ruleGuard = ruleGuard;
 
-  return { config: configSchema.parse(merged), sources };
+  return { config, sources, warnings: ruleIssues.map((issue) => issue.message), ruleIssues };
+}
+
+const DASHBOARD_LAYERS = new Set<LayerName>(["global", "repoSettings"]);
+
+// Dashboard rules are held to the thresholds the dashboard layers resolve to
+// on their own, profile included, or to the effective ones where those are
+// stricter: a repository file or trigger can ask for more of them, never less.
+// Only needed when such a layer exists and there is a dashboard rule to hold.
+function guardFor(layers: ConfigLayers, config: Config, sources: Record<string, LayerName>): RuleGuard | undefined {
+  if (!layers.repoFile && !layers.trigger) return undefined;
+  const ids = config.rules.filter((rule) => DASHBOARD_LAYERS.has(sources[`rules.${rule.id}`]!)).map((rule) => rule.id);
+  if (!ids.length) return undefined;
+  const dashboard = resolveConfig({ global: layers.global, repoSettings: layers.repoSettings }).config;
+  const floor = config.review.severityFloor;
+  return {
+    ids,
+    severityFloor: atLeast(floor, dashboard.review.severityFloor) ? dashboard.review.severityFloor : floor,
+    minConfidence: Math.min(config.review.minConfidence, dashboard.review.minConfidence),
+    ignorePaths: dashboard.ignorePaths,
+  };
 }

@@ -78,6 +78,7 @@ const effective = {
   ignorePaths: ["**/*.lock"],
   instructions: "",
   languageInstructions: {},
+  rules: [],
 }
 
 const globalConfig = (settings: Record<string, unknown> = {}, sources: Record<string, string> = {}) => ({
@@ -838,6 +839,96 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     // Back to what the global config gives, not the saved override.
     expect(walkthrough).toBeChecked()
     expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled()
+  })
+})
+
+describe("Team rules", { timeout: 20_000 }, () => {
+  const RE2_ERROR = "Not a valid regular expression (backreferences and lookarounds are not supported)"
+  // Answers like the server: lookarounds do not compile.
+  const checkStub = (checked: string[][]) => (init?: RequestInit) => {
+    const { patterns } = JSON.parse(String(init?.body)) as { patterns: string[] }
+    checked.push(patterns)
+    return jsonResponse(200, { errors: patterns.map((pattern) => (pattern.includes("(?") ? RE2_ERROR : null)) })
+  }
+
+  it("adds a rule to the global config, checking its pattern on the server", async () => {
+    let body: unknown
+    const checked: string[][] = []
+    mockApi(
+      globalRoutes({
+        "GET /api/config/global": globalConfig({ llm: { connection: "openai" } }),
+        "POST /api/config/rules/check": checkStub(checked),
+        "PUT /api/config/global": (init?: RequestInit) => {
+          body = JSON.parse(String(init?.body))
+          return jsonResponse(200, globalConfig((body as { settings: Record<string, unknown> }).settings))
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration?tab=guidance" })
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add rule" }))
+    await userEvent.type(screen.getByLabelText("Rule 1 id"), "no-console")
+    await userEvent.type(screen.getByLabelText("Description"), "No console logging in server code.")
+    await userEvent.click(screen.getByRole("combobox", { name: "Severity" }))
+    await userEvent.click(screen.getByRole("option", { name: "minor" }))
+    await userEvent.type(screen.getByLabelText("Paths"), "server/**")
+    await userEvent.type(screen.getByLabelText("Pattern"), "console(?=\\.)")
+
+    expect(await screen.findByText(RE2_ERROR)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Save global config" })).toBeDisabled()
+    expect(screen.getByRole("tab", { name: /Guidance, has errors/ })).toBeInTheDocument()
+
+    await userEvent.clear(screen.getByLabelText("Pattern"))
+    await userEvent.type(screen.getByLabelText("Pattern"), "console\\.log")
+    await waitFor(() => expect(checked.at(-1)).toEqual(["console\\.log"]))
+    expect(screen.queryByText(RE2_ERROR)).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole("button", { name: "Save global config" }))
+
+    await waitFor(() =>
+      expect(body).toEqual({
+        settings: {
+          llm: { connection: "openai" },
+          rules: [
+            { id: "no-console", description: "No console logging in server code.", severity: "minor", paths: ["server/**"], pattern: "console\\.log" },
+          ],
+        },
+      }),
+    )
+  })
+
+  it("shows a repository's inherited and effective rules with their layers, and flags an id it cannot override", async () => {
+    const workspaceRule = { id: "no-secrets", description: "Never log secrets.", severity: "critical" }
+    const fileRule = { id: "file-rule", description: "From the file.", severity: "major", pattern: "TODO" }
+    mockApi(
+      globalRoutes({
+        "GET /api/config/global": {
+          ...globalConfig({ rules: [workspaceRule] }, { "rules.no-secrets": "global" }),
+          config: { ...effective, rules: [workspaceRule] },
+        },
+        "POST /api/config/rules/check": checkStub([]),
+        "GET /api/repos": { repos: [repo("r1", "team/web", { followGlobal: false })] },
+        "GET /api/repos/r1/config": {
+          ref: "main",
+          repoFile: ".sentryward.yaml",
+          warnings: ["Rule no-secrets in the repository file was ignored: a rule with that id is already set in the global config"],
+          config: { ...effective, rules: [workspaceRule, fileRule] },
+          sources: { "rules.no-secrets": "global", "rules.file-rule": "repoFile" },
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration?repo=r1&tab=guidance" })
+
+    expect(await screen.findByText(/Rule no-secrets in the repository file was ignored/)).toBeInTheDocument()
+    expect(screen.getByText(/Added to the global config's rules/)).toBeInTheDocument()
+    const inherited = screen.getByText("Inherited").parentElement!
+    expect(within(inherited).getByText("no-secrets")).toBeInTheDocument()
+    expect(within(inherited).getByText(/critical \(from global config\)/)).toBeInTheDocument()
+    const effectiveRules = screen.getByText("Effective").parentElement!
+    expect(within(effectiveRules).getByText(/major · pattern \(from repository file\)/)).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole("button", { name: "Add rule" }))
+    await userEvent.type(screen.getByLabelText("Rule 1 id"), "no-secrets")
+    expect(screen.getByText(/The global config already uses this id/)).toBeInTheDocument()
   })
 })
 

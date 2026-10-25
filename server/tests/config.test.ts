@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { loadReviewConfig } from "../src/review/config/load.ts";
 import { parseRepoFile } from "../src/review/config/repoFile.ts";
 import { resolveConfig } from "../src/review/config/resolve.ts";
-import { DEFAULT_CONFIG, configSchema, dashboardOverrideSchema } from "../src/review/config/schema.ts";
+import { DEFAULT_CONFIG, configOverrideSchema, configSchema, dashboardOverrideSchema } from "../src/review/config/schema.ts";
 import type { ForgeAdapter } from "../src/review/forge/types.ts";
 
 describe("DEFAULT_CONFIG", () => {
@@ -140,12 +140,105 @@ describe("resolveConfig", () => {
     }
   });
 
-  it("takes rules from the repository file only", () => {
-    const rules = [{ id: "no-b", description: "No b.", severity: "major" as const }];
-    expect(resolveConfig({ repoFile: { rules } }).config.rules).toEqual(rules);
-    expect(dashboardOverrideSchema.safeParse({ rules }).success).toBe(false);
-    expect(() => resolveConfig({ repoSettings: { rules } as never })).toThrow();
-    expect(() => resolveConfig({ global: { rules } as never })).toThrow();
+  describe("rules", () => {
+    const rule = (id: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      description: `Rule ${id}.`,
+      severity: "major" as const,
+      ...extra,
+    });
+
+    it("are accepted by the dashboard layers", () => {
+      expect(dashboardOverrideSchema.safeParse({ rules: [rule("no-b")] }).success).toBe(true);
+      expect(dashboardOverrideSchema.safeParse({ rules: [rule("no-b", { pattern: "(?=b)" })] }).success).toBe(false);
+    });
+
+    it("combine across layers, lowest first, with each rule's source", () => {
+      const { config, sources, warnings } = resolveConfig({
+        global: { rules: [rule("global")] },
+        repoSettings: { rules: [rule("settings")] },
+        repoFile: { rules: [rule("file")] },
+      });
+      expect(config.rules.map((r) => r.id)).toEqual(["global", "settings", "file"]);
+      expect(sources).toMatchObject({
+        "rules.global": "global",
+        "rules.settings": "repoSettings",
+        "rules.file": "repoFile",
+        rules: "repoFile",
+      });
+      expect(warnings).toEqual([]);
+    });
+
+    it("keep a lower layer's rule when a higher one reuses its id", () => {
+      const { config, sources, warnings } = resolveConfig({
+        global: { rules: [rule("shared", { severity: "critical" })] },
+        repoSettings: { rules: [rule("mine"), rule("shared", { severity: "info" })] },
+        repoFile: { rules: [rule("mine", { severity: "info" }), rule("file")] },
+      });
+      expect(config.rules).toEqual([rule("shared", { severity: "critical" }), rule("mine"), rule("file")]);
+      expect(sources).toMatchObject({ "rules.shared": "global", "rules.mine": "repoSettings", "rules.file": "repoFile" });
+      expect(warnings).toEqual([
+        "Rule shared in the repository settings was ignored: a rule with that id is already set in the global config",
+        "Rule mine in the repository file was ignored: a rule with that id is already set in the repository settings",
+      ]);
+    });
+
+    it("leave out a layer's additions as a whole when the combination is over a limit", () => {
+      const many = (prefix: string, count: number) => Array.from({ length: count }, (_, i) => rule(`${prefix}-${i}`));
+      const { config, sources, warnings } = resolveConfig({
+        global: { rules: many("global", 40) },
+        repoFile: { rules: many("file", 20) },
+      });
+      expect(config.rules).toHaveLength(40);
+      expect(sources["rules.file-0"]).toBeUndefined();
+      expect(sources.rules).toBe("global");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/^Rules in the repository file were ignored: together with the rules below them/);
+    });
+
+    it("report clashes and limits by layer", () => {
+      const { ruleIssues } = resolveConfig({
+        global: { rules: [rule("shared")] },
+        repoSettings: { rules: [rule("shared")] },
+      });
+      expect(ruleIssues).toEqual([expect.objectContaining({ layer: "repoSettings", kind: "clash" })]);
+    });
+
+    it("hold dashboard rules to the dashboard's thresholds, which a file can only tighten", () => {
+      const raised = resolveConfig({
+        global: { review: { severityFloor: "minor", minConfidence: 0.5 }, ignorePaths: ["dist/**"], rules: [rule("global")] },
+        repoFile: { review: { severityFloor: "critical", minConfidence: 0.9 }, ignorePaths: ["**"], rules: [rule("file")] },
+      }).config;
+      expect(raised.review.severityFloor).toBe("critical");
+      expect(raised.ruleGuard).toEqual({ ids: ["global"], severityFloor: "minor", minConfidence: 0.5, ignorePaths: ["dist/**"] });
+
+      const lowered = resolveConfig({
+        global: { review: { severityFloor: "major", minConfidence: 0.7 }, rules: [rule("global")] },
+        repoFile: { review: { severityFloor: "info", minConfidence: 0.2 } },
+      }).config;
+      expect(lowered.ruleGuard).toMatchObject({ severityFloor: "info", minConfidence: 0.2 });
+
+      // A file's profile does not change the dashboard's thresholds either.
+      const profiled = resolveConfig({ global: { rules: [rule("global")] }, repoFile: { profile: "strict" } }).config;
+      expect(profiled.review.minConfidence).toBe(0.6);
+      expect(profiled.ruleGuard?.minConfidence).toBe(DEFAULT_CONFIG.review.minConfidence);
+    });
+
+    it("need no guard without a dashboard rule or a layer above the dashboard", () => {
+      expect(resolveConfig({ global: { rules: [rule("global")] } }).config.ruleGuard).toBeUndefined();
+      expect(resolveConfig({ global: {}, repoFile: { rules: [rule("file")] } }).config.ruleGuard).toBeUndefined();
+    });
+
+    it("cannot have the guard set by a layer", () => {
+      expect(configOverrideSchema.safeParse({ ruleGuard: { ids: [], severityFloor: "info", minConfidence: 0, ignorePaths: [] } }).success).toBe(false);
+      expect(dashboardOverrideSchema.safeParse({ ruleGuard: { ids: [], severityFloor: "info", minConfidence: 0, ignorePaths: [] } }).success).toBe(false);
+    });
+
+    it("default to none, attributed to the defaults", () => {
+      const { config, sources } = resolveConfig({});
+      expect(config.rules).toEqual([]);
+      expect(sources.rules).toBe("default");
+    });
   });
 
   it("only accepts an http(s) base URL and a known key slot", () => {
@@ -422,6 +515,26 @@ describe("loadReviewConfig", () => {
 
     expect(loaded.config.review.maxFindings).toBe(7);
     expect(loaded.warnings).toEqual([".sentryward.yaml was ignored: review: unknown setting nope"]);
+  });
+
+  it("adds the repository file's rules to the saved ones, ignoring repository settings while following the global config", async () => {
+    const { adapter } = fakeAdapter({
+      "base:.sentryward.yaml": "rules:\n  - id: shared\n    description: Weaker.\n    severity: info\n",
+    });
+    const shared = { id: "shared", description: "Strict.", severity: "critical" as const };
+    const own = { id: "own", description: "Own.", severity: "minor" as const };
+
+    const loaded = await loadReviewConfig({
+      adapter,
+      project: "acme/web",
+      ref: "base",
+      globalSettings: { rules: [shared] },
+      repoSettings: { rules: [own] },
+      followGlobal: true,
+    });
+
+    expect(loaded.config.rules).toEqual([shared]);
+    expect(loaded.warnings).toEqual(["Rule shared in the repository file was ignored: a rule with that id is already set in the global config"]);
   });
 
   it("ignores saved settings that no longer validate", async () => {

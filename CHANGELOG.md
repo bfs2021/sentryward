@@ -101,7 +101,7 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 - Team rules in `.sentryward.yaml`. A `rules` list states a convention once,
   with an `id`, `description`, `severity` and optional `category`, `paths`
   globs and `good`/`bad` examples, read from the base revision like the rest
-  of the file (rules cannot be set in dashboard settings). A rule with a
+  of the file. A rule with a
   `pattern` (an RE2 regular expression, matched in linear time) is checked
   against the change's added lines without a model, so the same diff always
   gives the same findings; the rest are given to the model, and a violation it
@@ -111,6 +111,23 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   forge comments and the dashboard. The False positives tab gains a per-rule
   table, and a change to the rules makes the next push a full review. Includes
   a migration adding a `rule_id` column to findings. Closes #106.
+- Team rules in dashboard settings. The global config (every repository in
+  the workspace) and repository settings can hold a `rules` list, edited on
+  the Configuration page's Guidance tab. Unlike other lists, rules combine
+  across layers in the order global config, repository settings,
+  `.sentryward.yaml`: a later layer can add rules but never remove or override
+  an earlier one, so a rule reusing an id is ignored with a review warning,
+  and a layer whose rules would take the combined list past the limits is left
+  out as a whole, with a warning. Repository settings whose rules clash with
+  or do not fit beside the global ones are refused on save, and the global
+  config lists repositories whose rules it leaves out. Dashboard rules keep the
+  dashboard's `severity_floor` and `min_confidence` (a repository file can only
+  lower them for those rules), and their patterns still run on files only the
+  repository file ignores. The effective config names each rule's layer
+  (`sources["rules.<id>"]`). The editor checks patterns with the server's RE2
+  as they are typed (`POST /api/config/rules/check`), and inline comments for
+  rule findings include the rule's description and paths, since dashboard
+  rules are not visible in the repository. Closes #140.
 
 ### Changed
 

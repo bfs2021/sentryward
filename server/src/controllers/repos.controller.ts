@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import { HttpError } from "../lib/httpError.ts";
 import { prisma } from "../lib/prisma.ts";
-import { loadReviewConfig } from "../review/config/load.ts";
+import { loadReviewConfig, repoSettingsRuleIssues } from "../review/config/load.ts";
 import { hostOrigin } from "../review/forge/types.ts";
 import { adapterForConnection, loadWorkspaceConnection, toHttpError } from "../services/forge.ts";
 import { requireStoredLlmConnection } from "../services/llm.ts";
@@ -129,6 +129,14 @@ export async function updateRepo(req: Request, res: Response) {
       throw new HttpError(400, "Validation failed", { connection: ["Select an LLM connection"] });
     }
     await requireStoredLlmConnection(req.workspaceId!, settings.llm.connection);
+  }
+  if (settings?.rules?.length) {
+    const issues = repoSettingsRuleIssues({
+      globalSettings: existing.connection.workspace.reviewSettings,
+      repoSettings: settings,
+      followGlobal: followGlobal ?? existing.followGlobal,
+    });
+    if (issues.length) throw new HttpError(400, "Validation failed", { rules: issues.map((issue) => issue.message) });
   }
 
   // Turning a repository on or off by hand overrides any access-loss marker,

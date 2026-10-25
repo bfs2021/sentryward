@@ -31,7 +31,7 @@ export const CONFIG_TABS = [
     value: "guidance",
     label: "Guidance",
     icon: BookText,
-    description: "Project conventions and per-language guidance passed to the reviewer.",
+    description: "Project conventions, per-language guidance and team rules passed to the reviewer.",
   },
 ] as const
 
@@ -50,5 +50,5 @@ export const TAB_ERRORS: Record<ConfigTab, (keyof FormErrors)[]> = {
   files: ["ignorePaths", "maxChunks"],
   display: ["summaryInstructions"],
   triggers: ["ignoreTitles", "skipAuthors", "skipLabels", "skipSourceBranches", "skipTargetBranches"],
-  guidance: ["instructions", "languageInstructions"],
+  guidance: ["instructions", "languageInstructions", "rules"],
 }

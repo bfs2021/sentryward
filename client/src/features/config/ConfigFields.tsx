@@ -26,17 +26,20 @@ import { Textarea } from "@/components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useApiKeys, useLlmModels } from "@/features/llm-connections/api"
 import { LLM_PROVIDERS } from "@/features/llm-connections/providers"
-import { useConfigSchema, type ConfigOverride, type EffectiveConfig, type LlmProviderName } from "./api"
+import { useConfigSchema, type ConfigOverride, type EffectiveConfig, type LlmProviderName, type Rule } from "./api"
 import { ModelCombobox, type ModelSuggestions } from "./ModelCombobox"
 import { ReviewPreview } from "./ReviewPreview"
 import { CONFIG_TABS, TAB_ERRORS, type ConfigTab } from "./tabs"
 import {
   AUTO,
   CHOICES,
+  EMPTY_RULE,
   FLAGS,
   INHERIT,
   MAX_FALLBACK_MODELS,
+  MAX_RULE_PATTERN,
   NUMBERS,
+  ruleRowErrors,
   toSettings,
   type ChoiceName,
   type FlagName,
@@ -44,6 +47,7 @@ import {
   type FormErrors,
   type FormState,
   type NumberName,
+  type RuleRow,
 } from "./settingsForm"
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -517,6 +521,222 @@ function LanguageInstructionsField(props: {
   )
 }
 
+// Rules another layer sets, with that layer, e.g. "no-secrets · critical (from global config)".
+function RuleList(props: { label: string; rules: Rule[]; sources?: Record<string, string> }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="text-sm font-medium">{props.label}</p>
+      <ul className="flex flex-col gap-1 text-sm">
+        {props.rules.map((rule) => {
+          const source = props.sources?.[`rules.${rule.id}`]
+          return (
+            <li key={rule.id} className="flex flex-wrap items-baseline gap-x-2">
+              <code className="font-mono">{rule.id}</code>
+              <span className="text-muted-foreground">
+                {rule.severity}
+                {rule.pattern !== undefined && " · pattern"}
+                {source && ` (from ${SOURCE_LABEL[source] ?? source})`}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+// The select's stand-in for a rule without a category, which files it under maintainability.
+const NO_CATEGORY = "__none"
+
+function RulesField(props: {
+  rows: RuleRow[]
+  onChange: (rows: RuleRow[]) => void
+  isRepo: boolean
+  severities: string[]
+  categories: string[]
+  // The rules from the layers below, which these add to.
+  inherited?: Rule[]
+  inheritedSources?: Record<string, string>
+  config?: EffectiveConfig
+  sources?: Record<string, string>
+  patternErrors?: Record<string, string | null>
+  error?: string
+  disabled?: boolean
+}) {
+  const { rows } = props
+  const rowErrors = ruleRowErrors(rows, props.patternErrors)
+  const update = (index: number, change: Partial<RuleRow>) =>
+    props.onChange(rows.map((row, i) => (i === index ? { ...row, ...change } : row)))
+  const inheritedIds = new Map((props.inherited ?? []).map((rule) => [rule.id, props.inheritedSources?.[`rules.${rule.id}`]]))
+  const severityOptions = props.severities.map((value) => ({ value, label: value }))
+  const categoryOptions = [
+    { value: NO_CATEGORY, label: "maintainability", description: "The default" },
+    ...props.categories.filter((value) => value !== "maintainability").map((value) => ({ value, label: value })),
+  ]
+
+  return (
+    <FieldSet data-disabled={props.disabled} data-invalid={props.error ? true : undefined}>
+      <FieldLegend variant="label">Team rules</FieldLegend>
+      <FieldDescription>
+        Conventions every review checks, with a severity. A rule with a pattern is matched against added lines without a
+        model; the rest are given to the model.{" "}
+        {props.isRepo
+          ? "Added to the global config's rules. The repository file can add more but not replace these: a rule whose id is already set is ignored, with a warning."
+          : "Applied to every repository. Repository settings and files can add rules but not replace these: a rule whose id is already set is ignored, with a warning."}
+      </FieldDescription>
+      {props.inherited && props.inherited.length > 0 && (
+        <RuleList label="Inherited" rules={props.inherited} sources={props.inheritedSources} />
+      )}
+      {rows.map((row, index) => {
+        const errors = rowErrors[index] ?? {}
+        const n = index + 1
+        const shadowedBy = inheritedIds.has(row.id.trim()) ? inheritedIds.get(row.id.trim()) : undefined
+        return (
+          <div key={index} className="flex flex-col gap-3 rounded-lg border p-3">
+            <div className="flex items-start gap-2">
+              <div className="grid flex-1 gap-3 @md/field-group:grid-cols-3">
+                <Field data-invalid={errors.id ? true : undefined}>
+                  <FieldLabel htmlFor={`rule-${n}-id`}>Id</FieldLabel>
+                  <Input
+                    id={`rule-${n}-id`}
+                    aria-label={`Rule ${n} id`}
+                    value={row.id}
+                    onChange={(e) => update(index, { id: e.target.value })}
+                    placeholder="no-db-in-controllers"
+                    className="font-mono"
+                    disabled={props.disabled}
+                    aria-invalid={errors.id ? true : undefined}
+                  />
+                  {errors.id && <FieldError>{errors.id}</FieldError>}
+                  {!errors.id && inheritedIds.has(row.id.trim()) && (
+                    <FieldDescription className="text-destructive">
+                      {shadowedBy ? `The ${SOURCE_LABEL[shadowedBy] ?? shadowedBy}` : "An inherited rule"} already uses this
+                      id, so that rule applies instead of this one.
+                    </FieldDescription>
+                  )}
+                </Field>
+                <Field data-invalid={errors.severity ? true : undefined}>
+                  <FieldLabel htmlFor={`rule-${n}-severity`}>Severity</FieldLabel>
+                  <SearchableSelect
+                    id={`rule-${n}-severity`}
+                    value={row.severity || undefined}
+                    onValueChange={(severity) => update(index, { severity })}
+                    options={severityOptions}
+                    disabled={props.disabled}
+                    aria-invalid={errors.severity ? true : undefined}
+                  />
+                  {errors.severity && <FieldError>{errors.severity}</FieldError>}
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor={`rule-${n}-category`}>Category</FieldLabel>
+                  <SearchableSelect
+                    id={`rule-${n}-category`}
+                    value={row.category || NO_CATEGORY}
+                    onValueChange={(category) => update(index, { category: category === NO_CATEGORY ? "" : category })}
+                    options={categoryOptions}
+                    disabled={props.disabled}
+                  />
+                </Field>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Remove rule ${n}`}
+                onClick={() => props.onChange(rows.filter((_, i) => i !== index))}
+                disabled={props.disabled}
+              >
+                <Trash2 />
+              </Button>
+            </div>
+            <Field data-invalid={errors.description ? true : undefined}>
+              <FieldLabel htmlFor={`rule-${n}-description`}>Description</FieldLabel>
+              <Textarea
+                id={`rule-${n}-description`}
+                value={row.description}
+                onChange={(e) => update(index, { description: e.target.value })}
+                placeholder="Controllers must not import Prisma directly; go through a service."
+                rows={2}
+                disabled={props.disabled}
+                aria-invalid={errors.description ? true : undefined}
+              />
+              {errors.description && <FieldError>{errors.description}</FieldError>}
+            </Field>
+            <div className="grid gap-3 @md/field-group:grid-cols-2">
+              <Field data-invalid={errors.paths ? true : undefined}>
+                <FieldLabel htmlFor={`rule-${n}-paths`}>Paths</FieldLabel>
+                <Textarea
+                  id={`rule-${n}-paths`}
+                  value={row.paths}
+                  onChange={(e) => update(index, { paths: e.target.value })}
+                  placeholder="server/src/controllers/**"
+                  rows={2}
+                  className="font-mono"
+                  disabled={props.disabled}
+                />
+                <FieldDescription>One glob per line; empty covers every reviewed file.</FieldDescription>
+                {errors.paths && <FieldError>{errors.paths}</FieldError>}
+              </Field>
+              <Field data-invalid={errors.pattern ? true : undefined}>
+                <FieldLabel htmlFor={`rule-${n}-pattern`}>Pattern</FieldLabel>
+                <Input
+                  id={`rule-${n}-pattern`}
+                  value={row.pattern}
+                  onChange={(e) => update(index, { pattern: e.target.value })}
+                  placeholder={"from [\"']@prisma/client"}
+                  maxLength={MAX_RULE_PATTERN + 1}
+                  className="font-mono"
+                  disabled={props.disabled}
+                  aria-invalid={errors.pattern ? true : undefined}
+                />
+                <FieldDescription>Optional regular expression (RE2: no lookarounds or backreferences).</FieldDescription>
+                {errors.pattern && <FieldError>{errors.pattern}</FieldError>}
+              </Field>
+            </div>
+            {!row.pattern && (
+              <div className="grid gap-3 @md/field-group:grid-cols-2">
+                {(["good", "bad"] as const).map((field) => (
+                  <Field key={field} data-invalid={errors[field] ? true : undefined}>
+                    <FieldLabel htmlFor={`rule-${n}-${field}`}>{field === "good" ? "Good example" : "Bad example"}</FieldLabel>
+                    <Textarea
+                      id={`rule-${n}-${field}`}
+                      value={row[field]}
+                      onChange={(e) => update(index, { [field]: e.target.value })}
+                      rows={3}
+                      className="font-mono"
+                      disabled={props.disabled}
+                    />
+                    {errors[field] && <FieldError>{errors[field]}</FieldError>}
+                  </Field>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
+      <div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => props.onChange([...rows, { ...EMPTY_RULE }])}
+          disabled={props.disabled}
+        >
+          <Plus />
+          Add rule
+        </Button>
+      </div>
+      {props.config && props.config.rules.length > 0 && (
+        <RuleList label="Effective" rules={props.config.rules} sources={props.sources} />
+      )}
+      {props.config && props.config.rules.length === 0 && (
+        <FieldDescription className="text-xs">Effective: none</FieldDescription>
+      )}
+      {props.error && <FieldError>{props.error}</FieldError>}
+    </FieldSet>
+  )
+}
+
 function FallbackModelsField(props: {
   rows: string[]
   onChange: (rows: string[]) => void
@@ -684,6 +904,8 @@ export function ConfigFields(props: {
   inherited?: EffectiveConfig
   inheritedSources?: Record<string, string>
   errors?: FormErrors
+  // The server's RE2 answers for rule patterns (useRulePatternErrors).
+  rulePatternErrors?: Record<string, string | null>
   disabled?: boolean
   guidanceLabel?: string
 }) {
@@ -1200,6 +1422,20 @@ export function ConfigFields(props: {
           isRepo={isRepo}
           effective={config && effective("languageInstructions", config.languageInstructions)}
           error={errors.languageInstructions}
+          disabled={disabled}
+        />
+        <RulesField
+          rows={form.rules}
+          onChange={(rules) => props.onChange({ ...form, rules })}
+          isRepo={isRepo}
+          severities={schema.data?.severities ?? []}
+          categories={schema.data?.categories ?? []}
+          inherited={inherited?.rules}
+          inheritedSources={props.inheritedSources}
+          config={config}
+          sources={sources}
+          patternErrors={props.rulePatternErrors}
+          error={errors.rules}
           disabled={disabled}
         />
       </>

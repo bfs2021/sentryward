@@ -105,6 +105,7 @@ export async function publishReview(input: PublishInput): Promise<Publication> {
       const posted = new Set([...input.postedFingerprints, ...onForge]);
       const comments = inlineComments(result.findings, changeSet, ref.provider, posted, {
         agentPrompt: config.output.agentPrompts,
+        rules: config.rules,
       });
       publication.inlineSkipped = result.findings.filter((f) => f.bucket === "actionable" && posted.has(f.fingerprint)).length;
       const outcome = await publisher.postInlineComments(ref, comments);

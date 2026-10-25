@@ -185,7 +185,9 @@ export const MAX_RULES_CHARS = 16_000;
 const compileResults = new Map<string, boolean>();
 const MAX_COMPILE_RESULTS = 500;
 
-function compiles(pattern: string): boolean {
+export const RULE_PATTERN_ERROR = "Not a valid regular expression (backreferences and lookarounds are not supported)";
+
+export function rulePatternCompiles(pattern: string): boolean {
   const known = compileResults.get(pattern);
   if (known !== undefined) return known;
   let ok: boolean;
@@ -217,38 +219,68 @@ export const ruleSchema = z.strictObject({
     .string()
     .min(1)
     .max(MAX_RULE_PATTERN_CHARS)
-    .refine(compiles, "Not a valid regular expression (backreferences and lookarounds are not supported)")
+    .refine(rulePatternCompiles, RULE_PATTERN_ERROR)
     .optional(),
   good: z.string().max(2000).optional(),
   bad: z.string().max(2000).optional(),
 });
 export type Rule = z.infer<typeof ruleSchema>;
 
-const rulesSchema = z
+export const MAX_RULES = 50;
+
+// What counts towards MAX_RULES_CHARS: everything the prompt prints of the
+// rules without a pattern.
+export function modelRuleChars(rules: Rule[]): number {
+  return rules
+    .filter((rule) => rule.pattern === undefined)
+    .reduce(
+      (sum, rule) =>
+        sum +
+        rule.id.length +
+        (rule.paths?.join(", ").length ?? 0) +
+        rule.description.length +
+        (rule.good?.length ?? 0) +
+        (rule.bad?.length ?? 0),
+      0,
+    );
+}
+
+// The limits on a list as a whole. Layers combine (config/resolve.ts), so a
+// list of rules that are each valid can still break them; this checks only
+// that, without parsing every rule again.
+export function combinedRulesError(rules: Rule[]): string | undefined {
+  if (rules.length > MAX_RULES) return `At most ${MAX_RULES} rules`;
+  if (modelRuleChars(rules) > MAX_RULES_CHARS) {
+    return `Rules without a pattern may hold at most ${MAX_RULES_CHARS} characters in total (ids, paths, descriptions and examples)`;
+  }
+  return undefined;
+}
+
+export const rulesSchema = z
   .array(ruleSchema)
-  .max(50)
+  .max(MAX_RULES)
   .superRefine((rules, ctx) => {
     const seen = new Set<string>();
     for (const [index, rule] of rules.entries()) {
       if (seen.has(rule.id)) ctx.addIssue({ code: "custom", path: [index, "id"], message: `Duplicate rule id ${rule.id}` });
       seen.add(rule.id);
     }
-    const chars = rules
-      .filter((rule) => rule.pattern === undefined)
-      .reduce(
-        (sum, rule) =>
-          sum +
-          rule.id.length +
-          (rule.paths?.join(", ").length ?? 0) +
-          rule.description.length +
-          (rule.good?.length ?? 0) +
-          (rule.bad?.length ?? 0),
-        0,
-      );
-    if (chars > MAX_RULES_CHARS) {
-      ctx.addIssue({ code: "custom", message: `Rules without a pattern may hold at most ${MAX_RULES_CHARS} characters in total (ids, paths, descriptions and examples)` });
+    if (modelRuleChars(rules) > MAX_RULES_CHARS) {
+      ctx.addIssue({ code: "custom", message: combinedRulesError(rules)! });
     }
   });
+
+// Set by resolution only, never by a layer: the override schemas are strict
+// and do not list it. A repository file or trigger may tighten the floor and
+// confidence for dashboard rules but not loosen them, and may not hide files
+// from their patterns, so it cannot silence what the workspace requires.
+const ruleGuardSchema = z.strictObject({
+  ids: z.array(z.string()),
+  severityFloor: severitySchema,
+  minConfidence: z.number().min(0).max(1),
+  ignorePaths: z.array(z.string()),
+});
+export type RuleGuard = z.infer<typeof ruleGuardSchema>;
 
 const topLevelShape = {
   version: z.literal(1),
@@ -256,13 +288,16 @@ const topLevelShape = {
   ignorePaths: z.array(z.string().min(1)).max(200),
   instructions: z.string().max(4000),
   languageInstructions: z.record(z.string().min(1), z.string().max(2000)),
-  // Team rules (rules.ts). Only the repository file sets them (see
-  // dashboardOverrideSchema), read from the base revision.
+  // Team rules (rules.ts). Unlike every other list they combine across
+  // layers instead of replacing, and a lower layer's rule always wins
+  // (resolve.ts), so a repository file cannot loosen workspace rules. Their
+  // thresholds are held too (ruleGuard).
   rules: rulesSchema,
 };
 
 export const configSchema = z.strictObject({
   ...topLevelShape,
+  ruleGuard: ruleGuardSchema.optional(),
   llm: z.strictObject(dashboardLlmShape),
   review: z.strictObject(reviewShape),
   output: z.strictObject(outputShape),
@@ -284,14 +319,9 @@ export type ConfigOverride = z.infer<typeof configOverrideSchema>;
 // The global config and repository settings, saved by the repository owner in
 // the dashboard. Only these layers may set endpoints; the repository file and
 // triggers use configOverrideSchema, which rejects them as unknown settings.
-// Rules are the reverse: they live in the repository file alone, so a team
-// reads every rule it is held to in one place.
-export const REPOSITORY_ONLY_KEYS = { rules: true } as const;
-export const dashboardOverrideSchema = configOverrideSchema
-  .extend({
-    llm: z.strictObject(dashboardLlmShape).partial().optional(),
-  })
-  .omit(REPOSITORY_ONLY_KEYS);
+export const dashboardOverrideSchema = configOverrideSchema.extend({
+  llm: z.strictObject(dashboardLlmShape).partial().optional(),
+});
 export type DashboardOverride = z.infer<typeof dashboardOverrideSchema>;
 
 export const DEFAULT_CONFIG: Config = {

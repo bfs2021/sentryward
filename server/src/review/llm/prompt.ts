@@ -31,9 +31,9 @@ const CATEGORY_HELP: Record<string, string> = {
   docs: "public behaviour changed without its documentation",
 };
 
-// The team's rules a pattern cannot check. They come from the base revision's
-// config file, never from the change, so they are trusted like the repository
-// guidance. They sit in the system prompt so the planner
+// The team's rules a pattern cannot check. They come from the dashboard
+// settings or the base revision's config file, never from the change, so they
+// are trusted like the repository guidance. They sit in the system prompt so the planner
 // measures them exactly and every pass shares one cached prefix; the validator
 // holds each finding to the paths of the rule it names.
 function rulesSection(config: Config): string {
@@ -51,7 +51,7 @@ function rulesSection(config: Config): string {
   });
   return `
 
-Repository rules. Report every violation in the diff of a rule that applies to its file, whatever the categories above:
+Team rules. Report every violation in the diff of a rule that applies to its file, whatever the categories above:
 ${entries.join("\n")}
 
 For a rule violation set ruleId to the rule's id, use the rule's severity, evidence "contract", and name the rule in evidenceNote. Otherwise ruleId is null.`;

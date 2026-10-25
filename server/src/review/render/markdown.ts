@@ -64,6 +64,12 @@ export function sanitize(text: string): string {
     .replace(/(^|[^\w`])@(?=[\w-])/g, "$1@​");
 }
 
+// For text shown inside an HTML block (details) that may itself contain tags:
+// a stray "</details>" would end the block early. Newlines are kept.
+export function htmlBlockText(text: string): string {
+  return sanitize(text).replace(/[<>]/g, (c) => (c === "<" ? "&lt;" : "&gt;"));
+}
+
 // For text inside HTML (summary tags) and table cells. Backslashes are escaped
 // first so text ending in "\" cannot swallow the escape of a following "|".
 function inline(text: string): string {

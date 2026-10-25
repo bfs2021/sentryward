@@ -97,7 +97,7 @@ export async function previewPublication(config: Config, provider: ForgeProvider
     summaryComment: placement.summary,
     walkthroughComment: placement.walkthroughComment,
     inline: output.postInline
-      ? inlineComments(result.findings, change, provider, new Set(), { agentPrompt: output.agentPrompts }).map((comment) => ({
+      ? inlineComments(result.findings, change, provider, new Set(), { agentPrompt: output.agentPrompts, rules: config.rules }).map((comment) => ({
           path: comment.path,
           startLine: comment.startLine,
           endLine: comment.endLine,

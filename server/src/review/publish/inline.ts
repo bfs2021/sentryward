@@ -1,3 +1,4 @@
+import type { Rule } from "../config/schema.ts";
 import type { ChangeSet, Finding, ForgeProvider } from "../core/models.ts";
 import { fingerprintMarker } from "../core/markers.ts";
 import { FORGE_INFO } from "../forge/providers.ts";
@@ -7,6 +8,7 @@ import {
   BRAND_FOOTER,
   SEVERITY_ICON,
   fixRationaleLines,
+  htmlBlockText,
   impactLines,
   sanitize,
   ruleSuffix,
@@ -23,6 +25,21 @@ function fence(code: string, info: string): string {
 export interface InlineOptions {
   // output.agentPrompts; on unless turned off.
   agentPrompt?: boolean;
+  // The resolved config's rules, to spell out the one a rule finding broke.
+  rules?: Rule[];
+}
+
+// Rules set in the dashboard are not in the repository, so a developer
+// without dashboard access would otherwise see only the rule's id. Collapsed:
+// the finding already says what is wrong; this is the rule's own wording.
+function ruleLines(finding: Finding, rules: Rule[] | undefined): string[] {
+  if (finding.source !== "rule" || !finding.ruleId) return [];
+  const rule = rules?.find((candidate) => candidate.id === finding.ruleId);
+  if (!rule) return [];
+  const lines = ["", "<details>", `<summary>📏 Rule ${rule.id}</summary>`, "", htmlBlockText(rule.description.trim())];
+  if (rule.paths?.length) lines.push("", `Applies to: ${rule.paths.map((path) => `\`${sanitize(path).replace(/`/g, "")}\``).join(", ")}`);
+  lines.push("", "</details>");
+  return lines;
 }
 
 export function inlineBody(finding: Finding, provider: ForgeProvider, options: InlineOptions = {}): string {
@@ -36,6 +53,7 @@ export function inlineBody(finding: Finding, provider: ForgeProvider, options: I
   ];
   if (finding.suggestion) lines.push("", fence(finding.suggestion, FORGE_INFO[provider].suggestionInfo(finding.startLine, finding.endLine)));
   lines.push(...fixRationaleLines(finding));
+  lines.push(...ruleLines(finding, options.rules));
   // Collapsed like the agent prompt: supporting detail, not what a reader needs first.
   if (finding.evidenceNote) lines.push("", "<details>", "<summary>🔎 Evidence</summary>", "", sanitize(finding.evidenceNote), "", "</details>");
   if (options.agentPrompt !== false) lines.push("", ...agentPromptBlock("Prompt for AI agents", findingPrompt(finding)));

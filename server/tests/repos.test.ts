@@ -458,6 +458,47 @@ describe("GET /api/repos/:id/config with the global config", () => {
     expect(res.body.sources).toMatchObject({ profile: "global", "review.maxFindings": "global" });
   });
 
+  it("combines rules from every layer and reports a repository file rule that clashes with a workspace rule", async () => {
+    const connection = await prisma.forgeConnection.findUniqueOrThrow({ where: { id: connectionId } });
+    const workspaceRule = { id: "no-secrets", description: "Never log secrets.", severity: "critical" };
+    await prisma.workspace.update({ where: { id: connection.workspaceId }, data: { reviewSettings: { rules: [workspaceRule] } } });
+    const repo = await prisma.repository.create({
+      data: {
+        connectionId,
+        provider: "gitlab",
+        host: "gitlab.com",
+        fullPath: "team/web",
+        externalId: "1",
+        defaultBranch: "main",
+        settings: { rules: [{ id: "repo-rule", description: "Repo.", severity: "minor" }] },
+        followGlobal: false,
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      fetchStub([
+        {
+          url: /\/repository\/files\/\.sentryward\.yaml\/raw\?ref=main$/,
+          body: "rules:\n  - id: no-secrets\n    description: Logging secrets is fine.\n    severity: info\n  - id: file-rule\n    description: File.\n    severity: major\n",
+        },
+      ]).fetch,
+    );
+
+    const res = await request(app).get(`/api/repos/${repo.id}/config`).set("Cookie", cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body.config.rules.map((rule: { id: string }) => rule.id)).toEqual(["no-secrets", "repo-rule", "file-rule"]);
+    expect(res.body.config.rules[0]).toEqual(workspaceRule);
+    expect(res.body.sources).toMatchObject({
+      "rules.no-secrets": "global",
+      "rules.repo-rule": "repoSettings",
+      "rules.file-rule": "repoFile",
+    });
+    expect(res.body.warnings).toEqual([
+      "Rule no-secrets in the repository file was ignored: a rule with that id is already set in the global config",
+    ]);
+  });
+
   it("layers the repository settings over the global config when it does not", async () => {
     const repo = await repoWithGlobal(false);
 
@@ -504,21 +545,76 @@ describe("GET and PUT /api/config/global", () => {
     expect(res.body.errors.settings).toBeDefined();
   });
 
-  it("rejects rules, which only the repository file sets", async () => {
-    const rules = [{ id: "no-b", description: "No b.", severity: "major" }];
+  it("saves rules in the global config and repository settings, validated like the file", async () => {
+    const rules = [{ id: "no-b", description: "No b.", severity: "major", pattern: "\\bb\\b" }];
     const global = await request(app)
       .put("/api/config/global")
       .set("Cookie", cookie)
       .send({ settings: { llm: { connection: "openai" }, rules } });
-    expect(global.status).toBe(400);
-    expect(JSON.stringify(global.body.errors.settings)).toMatch(/rules/);
+    expect(global.status).toBe(200);
+    expect(global.body.settings.rules).toEqual(rules);
+    expect(global.body.config.rules).toEqual(rules);
+    expect(global.body.sources).toMatchObject({ rules: "global", "rules.no-b": "global" });
+
+    const read = await request(app).get("/api/config/global").set("Cookie", cookie);
+    expect(read.body.settings.rules).toEqual(rules);
+
+    const lookahead = await request(app)
+      .put("/api/config/global")
+      .set("Cookie", cookie)
+      .send({ settings: { llm: { connection: "openai" }, rules: [{ ...rules[0], pattern: "b(?=c)" }] } });
+    expect(lookahead.status).toBe(400);
+    expect(JSON.stringify(lookahead.body.errors.settings)).toMatch(/lookarounds/);
 
     const repo = await prisma.repository.create({
       data: { connectionId, provider: "gitlab", host: "gitlab.com", fullPath: "team/rules", externalId: "9", defaultBranch: "main" },
     });
-    const saved = await request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ settings: { rules } });
-    expect(saved.status).toBe(400);
-    expect(JSON.stringify(saved.body.errors.settings)).toMatch(/rules/);
+    const own = [{ id: "no-c", description: "No c.", severity: "minor" }];
+    const saved = await request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ settings: { rules: own } });
+    expect(saved.status).toBe(200);
+    const duplicate = await request(app)
+      .patch(`/api/repos/${repo.id}`)
+      .set("Cookie", cookie)
+      .send({ settings: { rules: [...own, ...own] } });
+    expect(duplicate.status).toBe(400);
+  });
+
+  it("refuses repository rules the global rules would leave out, and warns when global rules grow", async () => {
+    const many = (prefix: string, count: number) =>
+      Array.from({ length: count }, (_, i) => ({ id: `${prefix}-${i}`, description: "Rule.", severity: "minor" }));
+    const global = await request(app)
+      .put("/api/config/global")
+      .set("Cookie", cookie)
+      .send({ settings: { llm: { connection: "openai" }, rules: many("global", 45) } });
+    expect(global.status).toBe(200);
+
+    const repo = await prisma.repository.create({
+      data: { connectionId, provider: "gitlab", host: "gitlab.com", fullPath: "team/limits", externalId: "10", defaultBranch: "main", followGlobal: false },
+    });
+    const over = await request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ settings: { rules: many("repo", 10) } });
+    expect(over.status).toBe(400);
+    expect(over.body.errors.rules[0]).toMatch(/^Rules in the repository settings were ignored: together with the rules below them, at most 50 rules/);
+
+    const clash = await request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ settings: { rules: many("global", 1) } });
+    expect(clash.status).toBe(400);
+    expect(clash.body.errors.rules).toEqual([
+      "Rule global-0 in the repository settings was ignored: a rule with that id is already set in the global config",
+    ]);
+
+    // Following the global config, its own rules are not applied, so not checked.
+    const following = await request(app)
+      .patch(`/api/repos/${repo.id}`)
+      .set("Cookie", cookie)
+      .send({ settings: { rules: many("repo", 10) }, followGlobal: true });
+    expect(following.status).toBe(200);
+    await prisma.repository.update({ where: { id: repo.id }, data: { followGlobal: false } });
+
+    const grown = await request(app)
+      .put("/api/config/global")
+      .set("Cookie", cookie)
+      .send({ settings: { llm: { connection: "openai" }, rules: many("global", 45) } });
+    expect(grown.status).toBe(200);
+    expect(grown.body.warnings).toEqual([expect.stringMatching(/^team\/limits: Rules in the repository settings were ignored/)]);
   });
 
   it("requires a saved connection for global configuration", async () => {

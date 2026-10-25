@@ -505,7 +505,7 @@ ignore_paths: ["**/*.lock", "**/dist/**"]   # replaces the default list
 instructions: "Controllers stay thin; business logic lives in services."
 language_instructions:
   typescript: "Strict mode; no any."
-rules:                      # team rules, see "Review rules" below
+rules:                      # team rules, added to the dashboard ones, see "Review rules" below
   - id: no-db-in-controllers
     description: Controllers must not import Prisma directly; go through services.
     severity: major
@@ -540,7 +540,18 @@ rules:                      # team rules, see "Review rules" below
 - **With a `pattern`**, the rule is checked against every added line of the files it covers (lines over 2000 characters are skipped), so the same diff always gives the same findings. It is never shown to the model and is not re-checked by `review.verify`.
 - **Without one**, the rule is given to the model with its examples, and a violation it reports is filed under the rule with the rule's severity. These still go through `require_evidence` and `verify` like any model finding. Their text (ids, paths, descriptions and examples) is capped at 16000 characters in total.
 
-Both kinds are reported with source `rule` and the rule's id, count towards `max_findings`, and can be dismissed like any finding. The Findings page's False positives tab lists found and false-positive counts per rule. Rules are read from the base revision like the rest of the file, so a pull request cannot loosen the rules it is reviewed against. Rules can only be set in the file, not in dashboard settings. An invalid rule (a pattern that does not compile, a duplicate id) makes the whole file invalid, as with any other setting.
+Both kinds are reported with source `rule` and the rule's id, count towards `max_findings`, and can be dismissed like any finding. The Findings page's False positives tab lists found and false-positive counts per rule. Rules are read from the base revision like the rest of the file, so a pull request cannot loosen the rules it is reviewed against. An invalid rule (a pattern that does not compile, a duplicate id) makes the whole file invalid, as with any other setting.
+
+Rules can also be set in the dashboard, on the Configuration page's Guidance tab: in the global config, so they apply to every repository in the workspace, and in a repository's settings. Unlike other lists, rules from each layer are combined instead of replacing each other, in the order global config, repository settings, `.sentryward.yaml`:
+
+- A layer can add rules but never remove or override one from a layer before it. A rule whose id is already set is ignored, the earlier rule applies, and the review lists a warning (for example, a file rule reusing a workspace rule's id). A pull request can therefore not loosen workspace rules either.
+- The limits (50 rules, 16000 characters of model-checked rule text) apply to the combined list. If a layer's rules would go past them, that layer's rules are all left out, with a warning, and the earlier layers still apply.
+- Saving repository settings is refused when their rules clash with a global rule or would not fit beside the global rules. The global config lists, as warnings, repositories whose saved rules it leaves out.
+- Dashboard rules (global config and repository settings) are held to the `severity_floor` and `min_confidence` the dashboard layers resolve to, profile included. A `.sentryward.yaml` or trigger can lower them for those rules but not raise them, so a repository cannot quiet workspace rules that way. Their patterns also run on files that only the file's `ignore_paths` leaves out; model-checked dashboard rules are not, since the model never sees ignored files.
+- A repository that follows the global config uses the global rules and the file's rules, without its own saved ones.
+- The effective config (`GET /api/repos/:id/config`) names each rule's layer as `sources["rules.<id>"]`.
+
+The editor checks patterns with the server's RE2 as they are typed, since a browser accepts lookarounds and backreferences that RE2 rejects. Dashboard rules are not visible in the repository, so the inline comment for a rule finding includes the rule's description and paths in a collapsed **📏 Rule** block.
 
 ### Static analysis findings
 
@@ -631,6 +642,7 @@ so scripts written before workspaces keep working. Routes under
 | GET    | `/api/config/schema` | Defaults, profiles, severities and categories for the settings UI |
 | GET    | `/api/config/global` | The workspace's global review config, and what it resolves to with each value's source |
 | PUT    | `/api/config/global` | Workspace admins: `{ settings }`, replaces the global review config; `{}` resets it |
+| POST   | `/api/config/rules/check` | `{ patterns }` (up to 50, 300 characters each): `{ errors }`, one per pattern in order, `null` when RE2 compiles it, otherwise the message a save would give |
 | GET    | `/api/settings/api-keys` | Every LLM provider, with whether the workspace stored a credential, its key's last four characters, its custom host and whether the server has a key of its own |
 | PUT    | `/api/settings/api-keys/:provider` | Workspace admins: `{ apiKey?, baseUrl? }`, verifies the credential with the provider and stores the key encrypted |
 | DELETE | `/api/settings/api-keys/:provider` | Workspace admins: removes the stored credential |

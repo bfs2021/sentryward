@@ -1,4 +1,4 @@
-import type { ConfigOverride, ConfigSchema, EffectiveConfig } from "./api"
+import type { ConfigOverride, ConfigSchema, EffectiveConfig, Rule } from "./api"
 
 export const INHERIT = "__inherit"
 
@@ -99,6 +99,41 @@ export interface LanguageRow {
   text: string
 }
 
+// One team rule as the form edits it: every field a string, "" for unset.
+export interface RuleRow {
+  id: string
+  description: string
+  severity: string
+  category: string
+  // One glob per line.
+  paths: string
+  pattern: string
+  good: string
+  bad: string
+}
+
+export type RuleField = keyof RuleRow
+
+export const EMPTY_RULE: RuleRow = {
+  id: "",
+  description: "",
+  severity: "",
+  category: "",
+  paths: "",
+  pattern: "",
+  good: "",
+  bad: "",
+}
+
+// Mirror ruleSchema in server/src/review/config/schema.ts.
+export const RULE_ID_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,63}$/
+export const MAX_RULES = 50
+const MAX_RULE_DESCRIPTION = 1000
+const MAX_RULE_PATHS = 50
+export const MAX_RULE_PATTERN = 300
+const MAX_RULE_EXAMPLE = 2000
+const MAX_RULES_CHARS = 16_000
+
 export interface FormState {
   profile: string
   model: string
@@ -122,6 +157,8 @@ export interface FormState {
   summaryInstructions: string
   // Rows missing a language or text are not saved.
   languageInstructions: LanguageRow[]
+  // This layer's own rules, added to the inherited ones. Blank rows are not saved.
+  rules: RuleRow[]
   // undefined inherits the value from the layers below.
   flags: Record<FlagName, boolean | undefined>
   // INHERIT inherits.
@@ -143,7 +180,8 @@ export type FormErrors = Partial<
     | "ignorePaths"
     | "instructions"
     | "summaryInstructions"
-    | "languageInstructions",
+    | "languageInstructions"
+    | "rules",
     string
   >
 >
@@ -175,6 +213,35 @@ function parseNumber(spec: NumberSpec, text: string): number | null | undefined 
   if (!trimmed) return undefined
   if (spec.nullable && trimmed.toLowerCase() === AUTO) return null
   return Number(trimmed)
+}
+
+const isBlankRule = (row: RuleRow) => Object.values(row).every((value) => !value.trim())
+
+function toRuleRow(rule: Rule): RuleRow {
+  return {
+    id: rule.id,
+    description: rule.description,
+    severity: rule.severity,
+    category: rule.category ?? "",
+    paths: (rule.paths ?? []).join("\n"),
+    pattern: rule.pattern ?? "",
+    good: rule.good ?? "",
+    bad: rule.bad ?? "",
+  }
+}
+
+// Optional fields are left out when empty, as a hand-written file would.
+// Examples keep their indentation: they are code. A rule with a pattern is
+// never shown to the model, so its examples (hidden in the editor) are not kept.
+function toRule(row: RuleRow): Rule {
+  const paths = pathList(row.paths)
+  const rule: Rule = { id: row.id.trim(), description: row.description.trim(), severity: row.severity }
+  if (row.category) rule.category = row.category
+  if (paths.length) rule.paths = paths
+  if (row.pattern) rule.pattern = row.pattern
+  if (!row.pattern && row.good.trim()) rule.good = row.good
+  if (!row.pattern && row.bad.trim()) rule.bad = row.bad
+  return rule
 }
 
 function languageMap(rows: LanguageRow[]): Record<string, string> {
@@ -227,6 +294,7 @@ export function toForm(settings: ConfigOverride): FormState {
       language,
       text,
     })),
+    rules: (settings.rules ?? []).map(toRuleRow),
     flags,
   }
 }
@@ -248,6 +316,8 @@ export function toSettings(base: ConfigOverride, form: FormState): ConfigOverrid
   setOrDelete(next, "ignorePaths", ignorePaths.length ? ignorePaths : undefined)
   const languages = languageMap(form.languageInstructions)
   setOrDelete(next, "languageInstructions", Object.keys(languages).length ? languages : undefined)
+  const rules = form.rules.filter((row) => !isBlankRule(row)).map(toRule)
+  setOrDelete(next, "rules", rules.length ? rules : undefined)
 
   const fallbackModels = modelList(form.fallbackModels)
   const fields: Record<string, [string, unknown][]> = {
@@ -289,8 +359,63 @@ export function toSettings(base: ConfigOverride, form: FormState): ConfigOverrid
   return next
 }
 
+// Each rule row's problems, by field. Pattern errors come from the server's
+// RE2 check (`patternErrors`, keyed by pattern); a pattern it has not answered
+// for yet is not held against the row, and the save still validates it.
+export function ruleRowErrors(
+  rows: RuleRow[],
+  patternErrors: Record<string, string | null> = {},
+): Partial<Record<RuleField, string>>[] {
+  const ids = rows.map((row) => row.id.trim())
+  return rows.map((row, index) => {
+    const errors: Partial<Record<RuleField, string>> = {}
+    if (isBlankRule(row)) return errors
+    const id = ids[index]
+    if (!id) errors.id = "Enter an id"
+    else if (!RULE_ID_PATTERN.test(id))
+      errors.id = "Use lowercase letters, digits, dots, dashes and underscores, e.g. no-db-in-controllers"
+    else if (ids.indexOf(id) !== index) errors.id = `Duplicate rule id ${id}`
+    const description = row.description.trim()
+    if (!description) errors.description = "Describe what the rule requires"
+    else if (description.length > MAX_RULE_DESCRIPTION) errors.description = `At most ${MAX_RULE_DESCRIPTION} characters`
+    if (!row.severity) errors.severity = "Choose a severity"
+    if (pathList(row.paths).length > MAX_RULE_PATHS) errors.paths = `At most ${MAX_RULE_PATHS} paths`
+    if (row.pattern.length > MAX_RULE_PATTERN) errors.pattern = `At most ${MAX_RULE_PATTERN} characters`
+    else if (row.pattern && patternErrors[row.pattern]) errors.pattern = patternErrors[row.pattern]!
+    for (const field of ["good", "bad"] as const) {
+      if (!row.pattern && row[field].length > MAX_RULE_EXAMPLE) errors[field] = `At most ${MAX_RULE_EXAMPLE} characters`
+    }
+    return errors
+  })
+}
+
+// What the server counts towards MAX_RULES_CHARS: everything the prompt
+// prints of the rules a model checks.
+function modelRuleChars(rules: Rule[]): number {
+  return rules
+    .filter((rule) => rule.pattern === undefined)
+    .reduce(
+      (sum, rule) =>
+        sum +
+        rule.id.length +
+        (rule.paths?.join(", ").length ?? 0) +
+        rule.description.length +
+        (rule.good?.length ?? 0) +
+        (rule.bad?.length ?? 0),
+      0,
+    )
+}
+
 // Mirrors the server's bounds; a save is held back while anything is listed.
-export function validateForm(form: FormState, connectionRequired = false, savedConnections?: string[]): FormErrors {
+// inheritedRules are the global config's, under a repository's own: the server
+// combines the two, so the limits and ids hold for both together.
+export function validateForm(
+  form: FormState,
+  connectionRequired = false,
+  savedConnections?: string[],
+  patternErrors?: Record<string, string | null>,
+  inheritedRules: Rule[] = [],
+): FormErrors {
   const errors: FormErrors = {}
   for (const spec of NUMBERS) {
     const value = parseNumber(spec, form.numbers[spec.name])
@@ -341,6 +466,18 @@ export function validateForm(form: FormState, connectionRequired = false, savedC
   if (new Set(languages).size !== languages.length) errors.languageInstructions = "Each language can only be listed once"
   else if (form.languageInstructions.some((row) => row.text.trim().length > MAX_LANGUAGE_INSTRUCTIONS))
     errors.languageInstructions = `At most ${MAX_LANGUAGE_INSTRUCTIONS} characters per language`
+
+  const rules = form.rules.filter((row) => !isBlankRule(row)).map(toRule)
+  const combined = [...inheritedRules, ...rules]
+  const inheritedIds = new Set(inheritedRules.map((rule) => rule.id))
+  const clash = rules.find((rule) => inheritedIds.has(rule.id))
+  const withGlobal = inheritedRules.length ? `, together with the ${inheritedRules.length} global rules` : ""
+  if (ruleRowErrors(form.rules, patternErrors).some((row) => Object.keys(row).length > 0))
+    errors.rules = "Fix the rules marked below"
+  else if (clash) errors.rules = `Rule ${clash.id} is already set in the global config, which wins`
+  else if (combined.length > MAX_RULES) errors.rules = `At most ${MAX_RULES} rules${withGlobal}`
+  else if (modelRuleChars(combined) > MAX_RULES_CHARS)
+    errors.rules = `Rules without a pattern may hold at most ${MAX_RULES_CHARS} characters in total (ids, paths, descriptions and examples)${withGlobal}`
   return errors
 }
 

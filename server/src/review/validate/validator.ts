@@ -4,7 +4,7 @@ import { fingerprint } from "../core/fingerprint.ts";
 import { isAddedLine, type ChangedFile, type ChangeSet, type Finding, type ToolAnnotation } from "../core/models.ts";
 import { atLeast, severityRank } from "../core/severity.ts";
 import type { ModelFinding } from "../llm/schemas.ts";
-import { DEFAULT_RULE_CATEGORY, modelRuleFor } from "../rules.ts";
+import { DEFAULT_RULE_CATEGORY, modelRuleFor, ruleFloor, ruleMinConfidence } from "../rules.ts";
 
 // A model finding plus the model of the pass that produced it.
 export type TaggedFinding = ModelFinding & { model?: string };
@@ -174,7 +174,7 @@ export function validateFindings(
     end = clampEnd(file, start, end);
 
     const confidence = Math.min(1, Math.max(0, candidate.confidence));
-    if (confidence < config.review.minConfidence) {
+    if (confidence < ruleMinConfidence(config, rule?.id)) {
       drop("low_confidence");
       continue;
     }
@@ -187,7 +187,7 @@ export function validateFindings(
       kind = "verification_needed";
       demoted += 1;
     }
-    if (!atLeast(severity, config.review.severityFloor)) {
+    if (!atLeast(severity, ruleFloor(config, rule?.id))) {
       drop("below_floor");
       continue;
     }
