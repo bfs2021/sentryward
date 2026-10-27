@@ -158,6 +158,9 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- The Delete account card moved to the bottom of the Profile settings tab
+  and the Account tab is gone. Old `/settings?tab=account` links open the
+  Profile tab. Closes #146.
 - Changing your password in Settings now signs you out on other devices,
   keeping only the current browser signed in. Existing sessions stay valid
   through the upgrade.
