@@ -17,6 +17,7 @@ function report(overrides: Partial<UsageReport> = {}): UsageReport {
     totals: {
       reviews: 4,
       calls: 9,
+      unpricedCalls: 0,
       inputTokens: 1_250_000,
       cachedInputTokens: 400_000,
       outputTokens: 120_000,
@@ -31,6 +32,7 @@ function report(overrides: Partial<UsageReport> = {}): UsageReport {
         model: SONNET,
         provider: "anthropic",
         calls: 9,
+        unpricedCalls: 0,
         inputTokens: 1_250_000,
         cachedInputTokens: 400_000,
         outputTokens: 120_000,
@@ -45,6 +47,7 @@ function report(overrides: Partial<UsageReport> = {}): UsageReport {
         fullPath: "acme/web",
         reviews: 4,
         calls: 9,
+        unpricedCalls: 0,
         inputTokens: 1_250_000,
         cachedInputTokens: 400_000,
         outputTokens: 120_000,
@@ -252,6 +255,28 @@ describe("Usage page", () => {
     expect(within(row as HTMLElement).getAllByText("$0.00")).toHaveLength(4)
   })
 
+  it("shows the cost of a model no call had a price for as unknown", async () => {
+    mockApi({
+      ...recentRoutes(),
+      "GET /api/usage?period=7d": report({
+        byModel: [
+          {
+            ...report().byModel[0]!,
+            model: PROXY,
+            provider: "openai",
+            unpricedCalls: 9,
+            cost: { input: 0, cached: 0, output: 0, total: 0 },
+          },
+        ],
+      }),
+    })
+    renderWithProviders(<App />, { route: "/usage" })
+
+    const row = (await screen.findByRole("table", { name: "Usage by model" })).querySelector("tbody tr")!
+    expect(within(row as HTMLElement).getAllByText("Unknown")).toHaveLength(4)
+    expect(within(row as HTMLElement).queryByText("$0.00")).not.toBeInTheDocument()
+  })
+
   it("links recent reviews to their pages", async () => {
     mockApi({ "GET /api/usage?period=7d": report(), ...recentRoutes() })
     renderWithProviders(<App />, { route: "/usage" })
@@ -263,7 +288,7 @@ describe("Usage page", () => {
 
   it("shows empty states without usage", async () => {
     const empty = report({
-      totals: { reviews: 0, calls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, cost: { usd: 0 } },
+      totals: { reviews: 0, calls: 0, unpricedCalls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, cost: { usd: 0 } },
       series: [{ start: "2026-10-23T00:00:00.000Z", calls: 0, tokens: 0, usd: 0 }],
       byModel: [],
       byProvider: [],

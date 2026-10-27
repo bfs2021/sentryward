@@ -244,6 +244,34 @@ describe("runJob", () => {
     expect(findings[0]).toMatchObject({ state: "open", lifecycle: "new", author: "alice", lastJobId: job.id });
   });
 
+  it("records each call's cost at the workspace's prices, and as unknown where none is known", async () => {
+    await prisma.workspace.update({
+      where: { id: workspaceId },
+      data: { reviewSettings: { llm: { connection: "anthropic", walkthroughModel: "anthropic/unpriced-model" } } },
+    });
+    await prisma.modelPrice.create({ data: { workspaceId, model: "anthropic/claude-sonnet-5-5", input: 10_000, output: 0 } });
+    const job = await claimedJob();
+    const { runDeps } = deps(
+      { "base:.sentryward.yaml": "output:\n  walkthrough: true\n" },
+      { code_review: { findings: [modelFinding()] }, walkthrough: WALKTHROUGH },
+    );
+
+    await runJob(job, runDeps);
+
+    const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
+    const usage = (stored.result as ReviewResult).usage;
+    // 100 input tokens at $10,000 per million.
+    expect(usage.find((u) => u.purpose === "review")).toMatchObject({ cost: { total: 1 } });
+    expect(usage.find((u) => u.purpose === "walkthrough")).toMatchObject({ unpriced: true });
+    expect(stored.summary).toMatchObject({
+      usageByModel: {
+        "anthropic/claude-sonnet-5-5": { cost: { total: 1 }, unpricedCalls: 0, latencyMs: 5 },
+        "anthropic/unpriced-model": { unpricedCalls: 1 },
+      },
+      duplicates: 0,
+    });
+  });
+
   it("reports static analysis on changed lines as tool findings that do not block", async () => {
     const job = await claimedJob();
     const annotation: ToolAnnotation = {

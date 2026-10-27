@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LlmUsage } from "../src/review/core/models.ts";
-import { addUsage, callCost, priceFor, usageByModel } from "../src/review/core/pricing/pricing.ts";
+import { addUsage, callCost, callPricing, priceFor, priceUsage, usageByModel } from "../src/review/core/pricing/pricing.ts";
 import { MODEL_PRICING } from "../src/review/core/pricing/table.ts";
 
 const SONNET = MODEL_PRICING["claude-sonnet-5-5"]!;
@@ -20,10 +20,18 @@ describe("priceFor", () => {
     expect(priceFor("anthropic/claude-opus-9")).toEqual({ input: 5, output: 25, cached: 0.5, cacheWrite: 6.25, reasoning: 25 });
   });
 
-  it("never prices an Ollama model, even one named like a hosted model", () => {
+  it("prices an Ollama model at nothing, even one named like a hosted model", () => {
     for (const model of ["ollama/qwen3-coder:30b", "ollama/deepseek-r1:14b", "ollama/glm-4.6", "ollama/auto"]) {
-      expect(priceFor(model)).toBeNull();
+      expect(priceFor(model)).toEqual({ input: 0, output: 0 });
     }
+  });
+
+  it("prefers the workspace's own price: the configured id, then without its prefix", () => {
+    const own = { input: 1, output: 2 };
+    expect(priceFor("anthropic/claude-sonnet-5-5", { "anthropic/claude-sonnet-5-5": own })).toBe(own);
+    expect(priceFor("openai/cx/claude-sonnet-5-5(high)", { "claude-sonnet-5-5": own })).toBe(own);
+    expect(priceFor("ollama/llama3", { "ollama/llama3": own })).toBe(own);
+    expect(priceFor("anthropic/claude-sonnet-5-5", { "openai/other": own })).toBe(SONNET);
   });
 
   it("prices common models without an exact entry by their own family", () => {
@@ -36,7 +44,7 @@ describe("priceFor", () => {
   });
 
   it("has no price for a model nothing matches", () => {
-    expect(priceFor("ollama/llama3")).toBeNull();
+    expect(priceFor("openai/my-proxy-model")).toBeNull();
     // Never an Object.prototype member.
     expect(priceFor("openai/constructor")).toBeNull();
   });
@@ -89,6 +97,30 @@ describe("callCost", () => {
   });
 });
 
+describe("callPricing and priceUsage", () => {
+  it("flags a call no price is known for instead of costing it nothing", () => {
+    expect(callPricing({ inputTokens: 10, outputTokens: 10 }, null)).toEqual({ unpriced: true });
+    expect(callPricing({ inputTokens: 1_000_000, outputTokens: 0 }, { input: 3, output: 0 })).toMatchObject({ cost: { total: 3 } });
+  });
+
+  it("re-prices every call at the workspace's prices, replacing what the call recorded", () => {
+    const priced = priceUsage(
+      [
+        call("anthropic/claude-sonnet-5-5", 1_000_000, 0, { cost: callCost({ inputTokens: 1_000_000, outputTokens: 0 }, SONNET) }),
+        call("openai/my-proxy", 1_000_000, 0, { unpriced: true }),
+        call("openai/unknown", 1_000_000, 0),
+      ],
+      { "anthropic/claude-sonnet-5-5": { input: 1, output: 1 }, "my-proxy": { input: 4, output: 4 } },
+    );
+    expect(priced[0]).toMatchObject({ cost: { total: 1 } });
+    expect(priced[0]).not.toHaveProperty("unpriced");
+    expect(priced[1]).toMatchObject({ cost: { total: 4 } });
+    expect(priced[1]).not.toHaveProperty("unpriced");
+    expect(priced[2]).toMatchObject({ unpriced: true });
+    expect(priced[2]).not.toHaveProperty("cost");
+  });
+});
+
 const call = (model: string, inputTokens: number, outputTokens: number, extra: Partial<LlmUsage> = {}): LlmUsage => ({
   purpose: "review",
   model,
@@ -114,6 +146,14 @@ describe("usageByModel and addUsage", () => {
     });
     // A call stored before costs were recorded adds tokens and no cost.
     expect(byModel["ollama/llama3"]).toMatchObject({ calls: 1, inputTokens: 5, cost: { total: 0 } });
+  });
+
+  it("sums each model's call time and the calls no price was known for", () => {
+    const byModel = usageByModel([
+      call("a/x", 1, 1, { latencyMs: 300, unpriced: true }),
+      call("a/x", 1, 1, { latencyMs: 100 }),
+    ]);
+    expect(byModel["a/x"]).toMatchObject({ calls: 2, latencyMs: 400, unpricedCalls: 1 });
   });
 
   it("merges per-model totals across runs", () => {

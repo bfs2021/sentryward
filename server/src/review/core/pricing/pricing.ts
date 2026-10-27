@@ -45,18 +45,28 @@ const PATTERNS = PATTERN_PRICING.map(({ pattern, price }) => {
   return { re: new RegExp(`^${escaped.join(".*")}$`, "i"), price };
 });
 
-// The exact id, the id without its provider prefix, then the first matching
-// pattern. A router effort suffix such as "(medium)" in
-// "openai/cx/gpt-5.6-sol(medium)" names the same model, so it is dropped
-// first. Ollama models run on the user's own hardware, so they cost nothing
-// even when their name matches a hosted model's ("ollama/qwen3-coder:30b").
-// No match is null, which costs 0.
-export function priceFor(model: string): ModelPrice | null {
+// A workspace's own prices, keyed by the model as configs name it
+// ("provider/model") or by the id without its provider prefix.
+export type PriceOverrides = Record<string, ModelPrice>;
+
+// Ollama models run on the user's own hardware: a known price of nothing,
+// unlike a model nothing prices, whose cost is unknown.
+const FREE: ModelPrice = { input: 0, output: 0 };
+
+// The workspace's own price for the model, then the built-in one: the exact
+// id, the id without its provider prefix, then the first matching pattern. A
+// router effort suffix such as "(medium)" in "openai/cx/gpt-5.6-sol(medium)"
+// names the same model, so it is dropped first. Ollama models cost nothing
+// unless the workspace prices them, even when their name matches a hosted
+// model's ("ollama/qwen3-coder:30b"). No match is null: the cost is unknown.
+export function priceFor(model: string, overrides: PriceOverrides = {}): ModelPrice | null {
   const id = model.replace(/\([^()]*\)$/, "");
-  if (id.split("/")[0] === "ollama") return null;
-  const own = (key: string) => (Object.hasOwn(MODEL_PRICING, key) ? MODEL_PRICING[key]! : null);
   const base = id.split("/").pop()!;
-  const exact = own(id) ?? own(base);
+  const own = (table: Record<string, ModelPrice>, key: string) => (Object.hasOwn(table, key) ? table[key]! : null);
+  const override = own(overrides, model) ?? own(overrides, id) ?? own(overrides, base);
+  if (override) return override;
+  if (id.split("/")[0] === "ollama") return FREE;
+  const exact = own(MODEL_PRICING, id) ?? own(MODEL_PRICING, base);
   if (exact) return exact;
   return PATTERNS.find(({ re }) => re.test(base) || re.test(id))?.price ?? null;
 }
@@ -93,16 +103,30 @@ export function addCost(into: CallCost, from: CallCost): CallCost {
 }
 
 // One model's calls summed. The cost is what the calls recorded; calls stored
-// before costs were recorded add nothing to it.
+// before costs were recorded add nothing to it, and unpricedCalls counts those
+// no price was known for. latencyMs sums the calls' time; both are absent on
+// digests stored before they were kept.
 export interface ModelUsage extends CallTokens {
   calls: number;
   cost?: CallCost;
+  unpricedCalls?: number;
+  latencyMs?: number;
 }
 
 export type UsageByModel = Record<string, ModelUsage>;
 
 export function emptyUsage(): ModelUsage {
-  return { calls: 0, inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, reasoningTokens: 0, cost: { ...ZERO } };
+  return {
+    calls: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    cost: { ...ZERO },
+    unpricedCalls: 0,
+    latencyMs: 0,
+  };
 }
 
 export function addUsage(into: UsageByModel, from: UsageByModel): UsageByModel {
@@ -115,6 +139,8 @@ export function addUsage(into: UsageByModel, from: UsageByModel): UsageByModel {
     total.outputTokens += usage.outputTokens;
     total.reasoningTokens = (total.reasoningTokens ?? 0) + (usage.reasoningTokens ?? 0);
     if (usage.cost) addCost((total.cost ??= { ...ZERO }), usage.cost);
+    total.unpricedCalls = (total.unpricedCalls ?? 0) + (usage.unpricedCalls ?? 0);
+    total.latencyMs = (total.latencyMs ?? 0) + (usage.latencyMs ?? 0);
   }
   return into;
 }
@@ -133,10 +159,24 @@ export function usageByModel(usage: LlmUsage[]): UsageByModel {
         outputTokens: call.outputTokens,
         reasoningTokens: call.reasoningTokens ?? 0,
         ...(call.cost ? { cost: call.cost } : {}),
+        unpricedCalls: call.unpriced ? 1 : 0,
+        latencyMs: call.latencyMs,
       },
     });
   }
   return byModel;
+}
+
+// The run's calls priced at the workspace's prices, so a review records what
+// the workspace pays rather than the built-in table's figure. A call nothing
+// prices records no cost and is flagged instead, so it reads as unknown.
+export function priceUsage(usage: LlmUsage[], overrides: PriceOverrides): LlmUsage[] {
+  return usage.map(({ cost: _cost, unpriced: _unpriced, ...call }) => ({ ...call, ...callPricing(call, priceFor(call.model, overrides)) }));
+}
+
+// The cost fields of a call: its cost, or the flag saying none was known.
+export function callPricing(tokens: CallTokens, price: ModelPrice | null): { cost: CallCost } | { unpriced: true } {
+  return price ? { cost: callCost(tokens, price) } : { unpriced: true };
 }
 
 export function usedTokens(usage: CallTokens): boolean {

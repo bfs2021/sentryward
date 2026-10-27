@@ -22,6 +22,9 @@ export interface ResultSummary {
   usageTotals: UsageTotals;
   // The same tokens per model, with each model's recorded cost.
   usageByModel: UsageByModel;
+  // Findings dropped as repeats of another (across passes, verification and
+  // tool checks), for the duplicate rate. Absent on digests from before it.
+  duplicates: number;
 }
 
 // Sum the per-call token usage into one total.
@@ -54,6 +57,7 @@ export function summarize(result: ReviewResult): ResultSummary {
     hasBlocking: result.verdict.blocking.length > 0,
     usageTotals: usageTotals(result),
     usageByModel: usageByModel(result.usage),
+    duplicates: result.validation.dropped.duplicate ?? 0,
   };
 }
 

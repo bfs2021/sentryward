@@ -76,6 +76,7 @@ model Workspace {
   connections     ForgeConnection[]
   llmCredentials  LlmCredential[]
   llmCapabilities LlmCapability[]
+  modelPrices     ModelPrice[]
   invites         Invite[]
   oauthStates     OAuthState[]
   notifications   NotificationTarget[]
@@ -560,6 +561,31 @@ model LlmCapability {
 
   @@unique([workspaceId, provider, endpoint, model])
   @@map("llm_capabilities")
+}
+
+// A workspace's own price for a model, used instead of the built-in table
+// (review/core/pricing) for its reviews' costs. Applied when a review runs and
+// stored with it, so changing a price leaves past reviews as they were.
+model ModelPrice {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  // "provider/model" as configs name it, or the id without its provider
+  // prefix to price the model on every provider.
+  model       String
+  // USD per million tokens. Cache and reasoning rates fall back to the input
+  // and output ones when unset, as built-in prices do.
+  input       Float
+  output      Float
+  cached      Float?
+  cacheWrite  Float?   @map("cache_write")
+  reasoning   Float?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, model])
+  @@map("model_prices")
 }
 
 enum NotificationKind {

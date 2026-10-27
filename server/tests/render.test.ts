@@ -28,8 +28,11 @@ describe("summarize and toJson", () => {
           outputTokens: 40,
           reasoningTokens: 0,
           cost: { input: 0.0004, cached: 0, cacheWrite: 0, output: 0.0004, reasoning: 0, total: 0.0008 },
+          unpricedCalls: 0,
+          latencyMs: 10,
         },
       },
+      duplicates: 0,
     });
   });
 

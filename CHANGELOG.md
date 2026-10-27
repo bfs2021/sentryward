@@ -10,6 +10,22 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- Model and review-cost benchmarking (#107). Workspace admins can set their
+  own model prices under LLM Connections > Model prices (`GET`/`PUT
+  /api/settings/model-prices`, `DELETE /api/settings/model-prices/:id`,
+  new `model_prices` table); a review's calls are priced at them when it
+  runs, ahead of the built-in table. A model nothing prices now records no
+  cost and is flagged `unpriced`, so its cost reads as unknown instead of $0
+  (the Usage table says so too); Ollama models stay free unless priced. The
+  review digest now keeps per-model call time and unpriced call counts, and
+  the number of findings dropped as duplicates. A Benchmarks page (`GET
+  /api/benchmarks`) compares, over a period and optionally one repository,
+  cost per review, tokens and mean call time per model, cost, median duration
+  and duplicate rate per repository, and confirmed and false-positive
+  findings per model by language and by category, naming the best model
+  among those with enough findings. Reviews from before this change have no
+  call time or duplicate count and are left out of those figures. Closes #107.
+
 - Extended thinking, agentic context and model capabilities (#139).
   `llm.thinking` (`off`, `low`, `medium`, `high`) and `llm.verify_thinking`
   let review and verification calls reason first, mapped to each provider's

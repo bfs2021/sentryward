@@ -5,6 +5,7 @@ import { skipFilterReason } from "../review/config/filters.ts";
 import { loadDashboardConfig, loadReviewConfig } from "../review/config/load.ts";
 import type { Config } from "../review/config/schema.ts";
 import type { ChangeSet, RejectedFinding, ToolAnnotation } from "../review/core/models.ts";
+import { priceUsage } from "../review/core/pricing/pricing.ts";
 import type { ContextSource } from "../review/context/gather.ts";
 import { cacheKey, cached, forgeCache, type ForgeCache } from "../review/forge/cache.ts";
 import { ForgeError } from "../review/forge/http.ts";
@@ -39,6 +40,7 @@ import {
   recordCredentials,
 } from "../services/providers/credentials.ts";
 import { llmCredentialsFor } from "../services/llm.ts";
+import { priceOverridesFor } from "../services/modelPrices.ts";
 import { probeModel } from "../services/llmProbe.ts";
 import { prepareCapabilities, type Probe } from "./capabilities.ts";
 import { CLOSE_CHECK_INTERVAL_MS, watchForClose } from "./closeWatch.ts";
@@ -444,6 +446,9 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
     await capabilities.persist();
   }
   if (capabilities.usage.length) result = { ...result, usage: [...capabilities.usage, ...result.usage] };
+  // Costs are fixed here, at the workspace's prices, before anything renders
+  // or stores them.
+  result = { ...result, usage: priceUsage(result.usage, await priceOverridesFor(repo.connection.workspaceId)) };
   // Nothing is published for a review cancelled or a change no longer open.
   if (await watch.closedNow()) {
     await cancel(publishes(config));

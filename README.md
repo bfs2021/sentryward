@@ -428,6 +428,12 @@ For 9router, save its key and host under OpenAI in LLM Connections, select the O
 
 The worker runs in a container, where `localhost` is the container itself; `host.docker.internal` reaches a proxy running on the host.
 
+### Model prices and benchmarks
+
+Review costs are estimates worked out when a review runs, from a built-in price table. Under **Model prices** on the LLM Connections page, workspace admins can set their own price for a model (USD per million tokens for input and output, optionally cache reads, cache writes and reasoning), keyed by `provider/model` or by the id without its provider prefix. A workspace price wins over the built-in one; Ollama models cost nothing unless priced. A model neither prices is shown with an unknown cost rather than $0, and the card lists the models recent reviews called that have no price. Prices apply to reviews from then on; past reviews keep the cost they recorded.
+
+The **Benchmarks** page compares models over a period, optionally for one repository: cost (total and per review), tokens and mean call time per model; cost, median review duration and the duplicate rate (findings dropped as repeats of another) per repository; and, per language and per category, how each model's findings turned out (confirmed: resolved by a later run; false positive: dismissed as one), naming the best model among those with at least five findings.
+
 ### Model capabilities
 
 Thinking and agentic context depend on what a model supports on the endpoint that serves it, and that differs per model even on one endpoint: not every native Anthropic, OpenAI or Google model takes thinking options, Ollama models differ in tool and thinking support, and proxies (9router, OmniRoute, LiteLLM, OpenRouter and the like) differ in whether they forward thinking options, translate them between wire formats or pass tool calls through. Sentryward records, per connection and model, whether **thinking** works (through the provider's options, by a model that thinks by itself, or not at all) and whether **tools** work:
@@ -655,6 +661,7 @@ so scripts written before workspaces keep working. Routes under
 | GET    | `/api/reviews/stats?repoId=&days=` | Runs, verdicts, review time and token totals over the last `days` (default 7), with `cost: { usd }`: the summed costs reviews recorded when they ran. Reviews from before costs were recorded add nothing |
 | GET    | `/api/reviews/:id`   | One review with its full result; each model call carries the `cost` it recorded and `usageTotals.costUsd` sums them |
 | GET    | `/api/usage?period=&repoId=` | Model usage of the workspace's reviews over `24h`, `7d` (default), `30d`, `90d` or `all`: totals with input, cached and output tokens and the cost, a UTC time series (hourly for `24h`, monthly for a long `all`), and breakdowns by model (input, cached and output cost each), provider and repository |
+| GET    | `/api/benchmarks?period=&repoId=` | Model benchmarks over `24h`, `7d` (default), `30d`, `90d` or `all`: `totals`, `byModel` (reviews, tokens, `cost: { usd, partial, perReview }` with `usd` null when no call had a price, `meanLatencyMs`, `findings`), `byRepository` (adds `medianDurationMs` and `duplicates: { count, rate }`), and `byLanguage` / `byCategory` rows `{ key, findings, models, best }`. `findings` is `{ found, confirmed, falsePositives, confirmedRate, falsePositiveRate }` over findings first seen in the period |
 | GET    | `/api/usage/recent?period=&repoId=&page=&limit=` | `{ reviews, total, page }`: one page (`limit` 10 by default, 100 at most) of the period's reviews that called a model, newest first, with their models, tokens and cost; a page past the end returns the last one |
 | GET    | `/api/reviews/:id/markdown` | The review as the markdown document that is posted to the forge |
 | POST   | `/api/reviews/:id/rerun` | Queues a fresh review of the PR's latest head |
@@ -673,6 +680,9 @@ so scripts written before workspaces keep working. Routes under
 | GET    | `/api/settings/api-keys/:provider/status` | `{ status }`: `active`, `revoked` when the provider rejects the key, or `unreachable` |
 | GET    | `/api/settings/api-keys/:provider/models` | The model ids the connection lists, prefixed with its provider; 400 when the host rejects the key or is down |
 | POST   | `/api/settings/api-keys/:provider/test` | `{ model }`, runs one minimal generation with the stored credential; returns `{ result }` with latency and token usage, or `ok: false` with a `reason` (`revoked`, `model`, `unreachable`, `output`) and message. A passing test also probes the model and adds `capabilities: { thinking, tools, detail }`, which it stores. 400 when an official API is given another provider's model; 409 when the stored key can't be decrypted |
+| GET    | `/api/settings/model-prices` | `{ prices, models }`: the workspace's own model prices (`{ id, model, price, updatedAt }`, USD per million tokens) and the models its reviews called in the last 90 days with their built-in price (`null` when unknown) |
+| PUT    | `/api/settings/model-prices` | Workspace admins: `{ model, input, output, cached?, cacheWrite?, reasoning? }`, saves (or replaces) the price for `model`; applies to reviews from then on |
+| DELETE | `/api/settings/model-prices/:id` | Workspace admins: removes a price |
 | GET    | `/api/settings/api-keys/:provider/capabilities` | `{ capabilities }`: per model reached through the connection, `{ model, endpoint, thinking, tools, source, detail, checkedAt }`, where `thinking` is `options`, `model`, `none` or `null` (unknown), `tools` is a boolean or `null`, and `source` is `probe` or `runtime`. Saving or removing the connection clears them |
 | GET    | `/api/notifications` | `{ targets, mailConfigured }`: the workspace's notification targets with their events, whether each is `active`, a URL's host only and email recipients' user ids |
 | POST   | `/api/notifications` | Workspace admins: `{ kind: "webhook" \| "slack", name, events, url }` or `{ kind: "email", name, events, recipientIds }`; returns `{ target, secret? }`, a webhook's signing secret shown only here |

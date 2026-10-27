@@ -5,3 +5,8 @@ export function median(values: number[]): number | null {
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid]! : Math.round((sorted[mid - 1]! + sorted[mid]!) / 2);
 }
+
+// A whole-number percentage; null when there is nothing to take it of.
+export function percent(part: number, whole: number): number | null {
+  return whole ? Math.round((part / whole) * 100) : null;
+}

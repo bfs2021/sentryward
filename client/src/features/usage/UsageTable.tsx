@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components
 import { paginate, usePagination } from "@/hooks/use-pagination"
 import { useSort } from "@/hooks/use-sort"
 import { timeAgo } from "@/lib/time"
-import { formatCount, formatUsd } from "./format"
+import { costUnknown, formatCount, formatUsd } from "./format"
 import { Segmented } from "./Segmented"
 import type { ModelUsageRow, RepositoryUsageRow, UsageReport, UsageTokens } from "./types"
 
@@ -38,6 +38,11 @@ interface Column<R> {
 }
 
 const dash = <span className="text-muted-foreground">-</span>
+const unknown = <span className="text-muted-foreground">Unknown</span>
+
+// Unknown costs sort last, like rows never used.
+const costOf = <R extends UsageTokens>(row: R, usd: number) => (costUnknown(row) ? null : usd)
+const costCell = <R extends UsageTokens>(row: R, usd: number) => (costUnknown(row) ? unknown : formatUsd(usd))
 
 function tokenColumns<R extends UsageTokens>(): Column<R>[] {
   return [
@@ -65,10 +70,10 @@ function modelColumns(mode: Mode): Column<ModelUsageRow>[] {
     ...(mode === "tokens"
       ? tokenColumns<ModelUsageRow>()
       : [
-          { key: "inputCost", label: "Input cost", numeric: true, sortValue: (r: ModelUsageRow) => r.cost.input, cell: (r: ModelUsageRow) => formatUsd(r.cost.input) },
-          { key: "cachedCost", label: "Cached cost", numeric: true, sortValue: (r: ModelUsageRow) => r.cost.cached, cell: (r: ModelUsageRow) => formatUsd(r.cost.cached) },
-          { key: "outputCost", label: "Output cost", numeric: true, sortValue: (r: ModelUsageRow) => r.cost.output, cell: (r: ModelUsageRow) => formatUsd(r.cost.output) },
-          { key: "totalCost", label: "Total cost", numeric: true, sortValue: (r: ModelUsageRow) => r.cost.total, cell: (r: ModelUsageRow) => formatUsd(r.cost.total) },
+          { key: "inputCost", label: "Input cost", numeric: true, sortValue: (r: ModelUsageRow) => costOf(r, r.cost.input), cell: (r: ModelUsageRow) => costCell(r, r.cost.input) },
+          { key: "cachedCost", label: "Cached cost", numeric: true, sortValue: (r: ModelUsageRow) => costOf(r, r.cost.cached), cell: (r: ModelUsageRow) => costCell(r, r.cost.cached) },
+          { key: "outputCost", label: "Output cost", numeric: true, sortValue: (r: ModelUsageRow) => costOf(r, r.cost.output), cell: (r: ModelUsageRow) => costCell(r, r.cost.output) },
+          { key: "totalCost", label: "Total cost", numeric: true, sortValue: (r: ModelUsageRow) => costOf(r, r.cost.total), cell: (r: ModelUsageRow) => costCell(r, r.cost.total) },
         ]),
   ]
 }
@@ -81,7 +86,7 @@ function repositoryColumns(mode: Mode): Column<RepositoryUsageRow>[] {
     lastUsed(),
     ...(mode === "tokens"
       ? tokenColumns<RepositoryUsageRow>()
-      : [{ key: "totalCost", label: "Est. cost", numeric: true, sortValue: (r: RepositoryUsageRow) => r.usd, cell: (r: RepositoryUsageRow) => formatUsd(r.usd) }]),
+      : [{ key: "totalCost", label: "Est. cost", numeric: true, sortValue: (r: RepositoryUsageRow) => costOf(r, r.usd), cell: (r: RepositoryUsageRow) => costCell(r, r.usd) }]),
   ]
 }
 
