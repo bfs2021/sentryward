@@ -184,6 +184,9 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- Model prices moved to their own tab on the LLM Connections page
+  (`/llm-connections?tab=prices`), next to the Connections tab. The
+  Benchmarks page's "Unknown" cost link opens that tab.
 - The Delete account card moved to the bottom of the Profile settings tab
   and the Account tab is gone. Old `/settings?tab=account` links open the
   Profile tab. Closes #146.

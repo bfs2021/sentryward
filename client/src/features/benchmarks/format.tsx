@@ -15,7 +15,7 @@ export function Rate({ value }: { value: number | null }) {
 export function Cost({ usd, partial }: { usd: number | null; partial: CostFigures["partial"] }) {
   if (usd === null) {
     return (
-      <Link to="/llm-connections" className="text-muted-foreground underline underline-offset-2 hover:text-foreground">
+      <Link to="/llm-connections?tab=prices" className="text-muted-foreground underline underline-offset-2 hover:text-foreground">
         Unknown
       </Link>
     )

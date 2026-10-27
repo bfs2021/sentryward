@@ -92,7 +92,7 @@ describe("Benchmarks page", () => {
     expect(within(sonnet).getByText("90%")).toBeInTheDocument()
     // No price for the proxy: unknown, linking to where prices are set.
     const proxy = within(models).getByText(PROXY).closest("tr")!
-    expect(within(proxy).getAllByRole("link", { name: "Unknown" })[0]).toHaveAttribute("href", "/llm-connections")
+    expect(within(proxy).getAllByRole("link", { name: "Unknown" })[0]).toHaveAttribute("href", "/llm-connections?tab=prices")
   })
 
   it("marks the best model per language and dims those with few findings, then switches to categories", async () => {

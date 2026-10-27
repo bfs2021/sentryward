@@ -22,7 +22,7 @@ const pricesTable = () => screen.findByRole("table", { name: "Model prices" })
 describe("Model prices", () => {
   it("lists the workspace's prices and the recent models nothing prices", async () => {
     mockApi({ "GET /api/settings/api-keys": noKeys, "GET /api/settings/model-prices": PRICES })
-    renderWithProviders(<App />, { route: "/llm-connections" })
+    renderWithProviders(<App />, { route: "/llm-connections?tab=prices" })
 
     const table = await pricesTable()
     expect(within(table).getByText("openai/my-proxy")).toBeInTheDocument()
@@ -42,7 +42,7 @@ describe("Model prices", () => {
         return jsonResponse(200, PRICES)
       },
     })
-    renderWithProviders(<App />, { route: "/llm-connections" })
+    renderWithProviders(<App />, { route: "/llm-connections?tab=prices" })
 
     await userEvent.click(await screen.findByRole("button", { name: "openai/custom-model" }))
     const dialog = await screen.findByRole("dialog")
@@ -63,7 +63,7 @@ describe("Model prices", () => {
       models: [{ model: "openai/cx/gpt-5.6-sol(medium)", builtIn: null, price: { input: 1, output: 4 } }],
     }
     mockApi({ "GET /api/settings/api-keys": noKeys, "GET /api/settings/model-prices": routed })
-    renderWithProviders(<App />, { route: "/llm-connections" })
+    renderWithProviders(<App />, { route: "/llm-connections?tab=prices" })
 
     await pricesTable()
     expect(screen.queryByText(/has no price|have no price/)).not.toBeInTheDocument()
@@ -71,7 +71,7 @@ describe("Model prices", () => {
 
   it("keeps the model fixed when editing a saved price", async () => {
     mockApi({ "GET /api/settings/api-keys": noKeys, "GET /api/settings/model-prices": PRICES })
-    renderWithProviders(<App />, { route: "/llm-connections" })
+    renderWithProviders(<App />, { route: "/llm-connections?tab=prices" })
 
     await userEvent.click(await screen.findByRole("button", { name: "Edit the price for openai/my-proxy" }))
     const dialog = await screen.findByRole("dialog")
@@ -81,7 +81,7 @@ describe("Model prices", () => {
 
   it("checks prices before sending them", async () => {
     mockApi({ "GET /api/settings/api-keys": noKeys, "GET /api/settings/model-prices": PRICES })
-    renderWithProviders(<App />, { route: "/llm-connections" })
+    renderWithProviders(<App />, { route: "/llm-connections?tab=prices" })
 
     await userEvent.click(await screen.findByRole("button", { name: "Add price" }))
     const dialog = await screen.findByRole("dialog")
@@ -103,7 +103,7 @@ describe("Model prices", () => {
         return new Response(null, { status: 204 })
       },
     })
-    renderWithProviders(<App />, { route: "/llm-connections" })
+    renderWithProviders(<App />, { route: "/llm-connections?tab=prices" })
 
     await userEvent.click(await screen.findByRole("button", { name: "Remove the price for openai/my-proxy" }))
 
@@ -118,7 +118,7 @@ describe("Model prices", () => {
       "GET /api/settings/api-keys": noKeys,
       "GET /api/settings/model-prices": PRICES,
     })
-    renderWithProviders(<App />, { route: "/llm-connections" })
+    renderWithProviders(<App />, { route: "/llm-connections?tab=prices" })
 
     expect(within(await pricesTable()).getByText("openai/my-proxy")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Add price" })).not.toBeInTheDocument()
