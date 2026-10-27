@@ -10,13 +10,17 @@ const SONNET = "anthropic/claude-sonnet-5-5"
 const HAIKU = "anthropic/claude-haiku-5-5"
 const PROXY = "openai/my-proxy"
 
-const figures = (found: number, confirmed: number, falsePositives: number): FindingFigures => ({
-  found,
-  confirmed,
-  falsePositives,
-  confirmedRate: found ? Math.round((confirmed / found) * 100) : null,
-  falsePositiveRate: found ? Math.round((falsePositives / found) * 100) : null,
-})
+const figures = (found: number, confirmed: number, falsePositives: number): FindingFigures => {
+  const decided = confirmed + falsePositives
+  return {
+    found,
+    confirmed,
+    falsePositives,
+    decided,
+    confirmedRate: decided ? Math.round((confirmed / decided) * 100) : null,
+    falsePositiveRate: decided ? Math.round((falsePositives / decided) * 100) : null,
+  }
+}
 
 const tokens = { calls: 4, inputTokens: 10_000, cachedInputTokens: 0, outputTokens: 2_000 }
 
@@ -55,6 +59,7 @@ function report(overrides: Partial<BenchmarkReport> = {}): BenchmarkReport {
         models: [
           { model: SONNET, ...figures(8, 6, 0) },
           { model: HAIKU, ...figures(3, 2, 1) },
+          { model: PROXY, ...figures(9, 1, 1) },
           { model: null, ...figures(1, 0, 0) },
         ],
         best: SONNET,
@@ -77,14 +82,14 @@ describe("Benchmarks page", () => {
     const totals = await screen.findByRole("region", { name: "Benchmark totals" })
     expect(within(totals).getByText("≥ $1.50")).toBeInTheDocument()
     expect(within(totals).getByText("1m 35s")).toBeInTheDocument()
-    expect(within(totals).getByText("60%")).toBeInTheDocument()
+    expect(within(totals).getByText("86%")).toBeInTheDocument()
     expect(within(totals).getByText("13%")).toBeInTheDocument()
 
     const models = screen.getByRole("table", { name: "Benchmarks by model" })
     const sonnet = within(models).getByText(SONNET).closest("tr")!
     expect(within(sonnet).getByText("$1.50")).toBeInTheDocument()
     expect(within(sonnet).getByText("4s")).toBeInTheDocument()
-    expect(within(sonnet).getByText("64%")).toBeInTheDocument()
+    expect(within(sonnet).getByText("90%")).toBeInTheDocument()
     // No price for the proxy: unknown, linking to where prices are set.
     const proxy = within(models).getByText(PROXY).closest("tr")!
     expect(within(proxy).getAllByRole("link", { name: "Unknown" })[0]).toHaveAttribute("href", "/llm-connections")
@@ -97,6 +102,8 @@ describe("Benchmarks page", () => {
     const table = await screen.findByRole("table", { name: "Findings by language and model" })
     expect(within(within(table).getByText(SONNET).closest("tr")!).getByText("Best")).toBeInTheDocument()
     expect(within(within(table).getByText(HAIKU).closest("tr")!).getByText("few findings")).toBeInTheDocument()
+    // Many found but few decided is still too few to judge.
+    expect(within(within(table).getByText(PROXY).closest("tr")!).getByText("few findings")).toBeInTheDocument()
     expect(within(table).getByText("Tools and rules")).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole("tab", { name: "By category" }))

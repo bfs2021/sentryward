@@ -151,6 +151,9 @@ export interface RecentUsage {
   fullPath: string;
   createdAt: string;
   models: string[];
+  // With unpricedCalls, so a review no call had a price for reads as unknown.
+  calls: number;
+  unpricedCalls: number;
   inputTokens: number;
   outputTokens: number;
   usd: number;
@@ -266,6 +269,8 @@ export function buildRecentUsage(jobs: UsageJob[], page: number, limit: number) 
       fullPath: job.repository.fullPath,
       createdAt: job.createdAt.toISOString(),
       models: Object.keys(byModel!).sort(),
+      calls: totals.calls,
+      unpricedCalls: totals.unpricedCalls,
       inputTokens: totals.inputTokens,
       outputTokens: totals.outputTokens,
       usd: totals.usd,

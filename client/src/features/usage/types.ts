@@ -43,6 +43,8 @@ export interface RecentReviewUsage {
   fullPath: string
   createdAt: string
   models: string[]
+  calls: number
+  unpricedCalls: number
   inputTokens: number
   outputTokens: number
   usd: number

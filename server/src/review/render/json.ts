@@ -9,6 +9,8 @@ export interface UsageTotals {
   outputTokens: number;
   // The calls' recorded costs, fixed when the review ran.
   costUsd: number;
+  // Calls no price was known for, so a review none had a price for reads as unknown.
+  unpricedCalls: number;
 }
 
 export interface ResultSummary {
@@ -37,7 +39,8 @@ function usageTotals(result: ReviewResult): UsageTotals {
     { inputTokens: 0, outputTokens: 0 },
   );
   const costUsd = roundUsd(result.usage.reduce((total, call) => total + (call.cost?.total ?? 0), 0));
-  return { calls: result.usage.length, ...tokens, costUsd };
+  const unpricedCalls = result.usage.filter((call) => call.unpriced).length;
+  return { calls: result.usage.length, ...tokens, costUsd, unpricedCalls };
 }
 
 // The digest stored beside the result, for lists that must not load results.

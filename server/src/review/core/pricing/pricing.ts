@@ -54,19 +54,25 @@ export type PriceOverrides = Record<string, ModelPrice>;
 const FREE: ModelPrice = { input: 0, output: 0 };
 
 // The workspace's own price for the model, then the built-in one: the exact
-// id, the id without its provider prefix, then the first matching pattern. A
-// router effort suffix such as "(medium)" in "openai/cx/gpt-5.6-sol(medium)"
+// id, the id with its leading path segments dropped one at a time (so a router
+// id "openai/cx/gpt-5.6-sol" matches "cx/gpt-5.6-sol", then "gpt-5.6-sol"),
+// then the first matching pattern. A router effort suffix such as "(medium)"
 // names the same model, so it is dropped first. Ollama models cost nothing
 // unless the workspace prices them, even when their name matches a hosted
 // model's ("ollama/qwen3-coder:30b"). No match is null: the cost is unknown.
 export function priceFor(model: string, overrides: PriceOverrides = {}): ModelPrice | null {
   const id = model.replace(/\([^()]*\)$/, "");
-  const base = id.split("/").pop()!;
-  const own = (table: Record<string, ModelPrice>, key: string) => (Object.hasOwn(table, key) ? table[key]! : null);
-  const override = own(overrides, model) ?? own(overrides, id) ?? own(overrides, base);
+  const segments = id.split("/");
+  const base = segments.at(-1)!;
+  const keys = [model, ...segments.map((_, i) => segments.slice(i).join("/"))];
+  const own = (table: Record<string, ModelPrice>) => {
+    const key = keys.find((k) => Object.hasOwn(table, k));
+    return key === undefined ? null : table[key]!;
+  };
+  const override = own(overrides);
   if (override) return override;
-  if (id.split("/")[0] === "ollama") return FREE;
-  const exact = own(MODEL_PRICING, id) ?? own(MODEL_PRICING, base);
+  if (segments[0] === "ollama") return FREE;
+  const exact = own(MODEL_PRICING);
   if (exact) return exact;
   return PATTERNS.find(({ re }) => re.test(base) || re.test(id))?.price ?? null;
 }

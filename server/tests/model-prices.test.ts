@@ -41,7 +41,7 @@ describe("/api/settings/model-prices", () => {
     expect((await request(app).delete(`/api/settings/model-prices/${id}`).set("Cookie", cookie)).status).toBe(404);
   });
 
-  it("lists the models recent reviews called with their built-in price, null when unknown", async () => {
+  it("lists the models recent reviews called with their built-in and current price, null when unknown", async () => {
     const connection = await prisma.forgeConnection.create({
       data: { workspaceId, provider: "github", host: "github.com", kind: "github_app", installationId: "1", accountLogin: "acme" },
     });
@@ -56,14 +56,23 @@ describe("/api/settings/model-prices", () => {
         headSha: "h",
         trigger: "manual",
         status: "completed",
-        summary: { usageByModel: { "openai/my-proxy": used, "anthropic/claude-sonnet-5-5": used } },
+        summary: { usageByModel: { "openai/my-proxy": used, "anthropic/claude-sonnet-5-5": used, "openai/cx/my-router(medium)": used } },
       },
     });
     const res = await request(app).get("/api/settings/model-prices").set("Cookie", cookie);
+    const sonnet = expect.objectContaining({ input: 2, output: 10 });
     expect(res.body.models).toEqual([
-      { model: "anthropic/claude-sonnet-5-5", builtIn: expect.objectContaining({ input: 2, output: 10 }) },
-      { model: "openai/my-proxy", builtIn: null },
+      { model: "anthropic/claude-sonnet-5-5", builtIn: sonnet, price: sonnet },
+      { model: "openai/cx/my-router(medium)", builtIn: null, price: null },
+      { model: "openai/my-proxy", builtIn: null, price: null },
     ]);
+
+    // A price saved without the provider prefix prices the model, as reviews would.
+    const saved = await request(app)
+      .put("/api/settings/model-prices")
+      .set("Cookie", cookie)
+      .send({ model: "cx/my-router", input: 1, output: 4 });
+    expect(saved.body.models[1]).toEqual({ model: "openai/cx/my-router(medium)", builtIn: null, price: { input: 1, output: 4 } });
   });
 
   it("rejects invalid prices with field errors", async () => {

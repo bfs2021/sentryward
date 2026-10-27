@@ -2,7 +2,7 @@ import { Link } from "react-router"
 import { TablePagination } from "@/components/TablePagination"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
-import { formatCost, formatTokens } from "@/features/reviews/cost"
+import { costUnknown, formatCost, formatTokens } from "@/features/reviews/cost"
 import { usePagination } from "@/hooks/use-pagination"
 import { timeAgo } from "@/lib/time"
 import { useRecentUsage } from "./api"
@@ -44,7 +44,7 @@ export function RecentReviews({ period }: { period: UsagePeriod }) {
                   <span>
                     {formatTokens(review.inputTokens)} in · {formatTokens(review.outputTokens)} out
                   </span>
-                  <span className="text-foreground">{formatCost(review.usd)}</span>
+                  <span className="text-foreground">{formatCost(costUnknown(review) ? null : review.usd)}</span>
                   <span>{timeAgo(review.createdAt)}</span>
                 </div>
               </li>

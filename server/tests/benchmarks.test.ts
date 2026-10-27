@@ -81,7 +81,8 @@ describe("buildBenchmarkReport", () => {
       inputTokens: 2_000,
       cost: { usd: 2, partial: false, perReview: 1 },
       meanLatencyMs: 3_000,
-      findings: { found: 5, confirmed: 1, falsePositives: 1, confirmedRate: 20, falsePositiveRate: 20 },
+      // Rates are over the 2 decided: the open, invalidated and otherwise dismissed findings decided nothing.
+      findings: { found: 5, confirmed: 1, falsePositives: 1, decided: 2, confirmedRate: 50, falsePositiveRate: 50 },
     });
     expect(report.byModel.find((row) => row.model === HAIKU)).toMatchObject({
       reviews: 1,
@@ -100,6 +101,14 @@ describe("buildBenchmarkReport", () => {
     expect(report.byModel.find((row) => row.model === PROXY)!.cost).toEqual({ usd: null, partial: false, perReview: null });
     expect(report.byModel.find((row) => row.model === SONNET)!.cost).toEqual({ usd: 1, partial: true, perReview: 1 });
     expect(report.totals.cost).toMatchObject({ usd: 1, partial: true });
+  });
+
+  it("works out cost per review over the reviews that called a model", () => {
+    const queued: BenchmarkJob = { ...job({}), status: "queued", startedAt: null, finishedAt: null, summary: null };
+    const failedEarly: BenchmarkJob = { ...job({}), status: "failed" };
+    const report = buildBenchmarkReport([job({ [SONNET]: usage() }), job({ [SONNET]: usage() }), queued, failedEarly], [], "7d");
+    expect(report.totals).toMatchObject({ reviews: 4, cost: { usd: 2, perReview: 1 } });
+    expect(report.byRepository[0]).toMatchObject({ reviews: 4, cost: { usd: 2, perReview: 1 } });
   });
 
   it("leaves call time unknown for digests stored before it was kept", () => {
@@ -131,16 +140,16 @@ describe("buildBenchmarkReport", () => {
     expect(report.totals.duplicates).toEqual({ count: 3, rate: 30 });
   });
 
-  it("names the best model per language and category among those with enough findings", () => {
+  it("names the best model per language and category among those with enough decided findings", () => {
     const many = (n: number, make: () => BenchmarkFinding) => Array.from({ length: n }, make);
     const report = buildBenchmarkReport(
       [],
       [
-        // TypeScript: Sonnet confirms 3 of 5, Haiku 4 of 5; a tool finding has no model.
+        // TypeScript: Sonnet confirms 3 of 5 decided, Haiku 4 of 5; a tool finding has no model.
         ...many(3, () => confirmed({ file: "src/a.ts" })),
-        ...many(2, () => finding({ file: "src/a.ts" })),
+        ...many(2, () => falsePositive({ file: "src/a.ts" })),
         ...many(4, () => confirmed({ file: "src/b.tsx", model: HAIKU })),
-        finding({ file: "src/b.tsx", model: HAIKU }),
+        falsePositive({ file: "src/b.tsx", model: HAIKU }),
         finding({ file: "src/c.ts", model: null }),
         // Python: a perfect record on too few findings to count.
         ...many(MIN_SAMPLE - 1, () => confirmed({ file: "app.py", model: HAIKU, category: "security" })),
@@ -156,6 +165,29 @@ describe("buildBenchmarkReport", () => {
     expect(report.byLanguage.find((row) => row.key === "other")!.findings.found).toBe(1);
     expect(report.byCategory.find((row) => row.key === "security")!.best).toBeNull();
     expect(report.byCategory.find((row) => row.key === "other")!.findings.found).toBe(1);
+  });
+
+  it("does not mark a model down for findings still open", () => {
+    const many = (n: number, make: () => BenchmarkFinding) => Array.from({ length: n }, make);
+    const report = buildBenchmarkReport(
+      [],
+      [
+        // Sonnet: 5 confirmed and 5 open, no false positives. Haiku: 6 confirmed, 4 false positives.
+        ...many(5, () => confirmed()),
+        ...many(5, () => finding()),
+        ...many(6, () => confirmed({ model: HAIKU })),
+        ...many(4, () => falsePositive({ model: HAIKU })),
+        // Many found and all confirmed, but too few decided to be named best.
+        ...many(MIN_SAMPLE * 2, () => finding({ model: PROXY })),
+        confirmed({ model: PROXY }),
+      ],
+      "30d",
+    );
+    const typescript = report.byLanguage.find((row) => row.key === "typescript")!;
+    expect(typescript.models.find((row) => row.model === SONNET)).toMatchObject({ found: 10, decided: 5, confirmedRate: 100 });
+    expect(typescript.models.find((row) => row.model === HAIKU)).toMatchObject({ decided: 10, confirmedRate: 60 });
+    expect(typescript.models.find((row) => row.model === PROXY)).toMatchObject({ decided: 1, confirmedRate: 100 });
+    expect(typescript.best).toBe(SONNET);
   });
 });
 

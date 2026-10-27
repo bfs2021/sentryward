@@ -34,6 +34,13 @@ describe("priceFor", () => {
     expect(priceFor("anthropic/claude-sonnet-5-5", { "openai/other": own })).toBe(SONNET);
   });
 
+  it("matches a router id's own price without its provider prefix, before its last segment", () => {
+    const routed = { input: 1, output: 4 };
+    const bare = { input: 9, output: 9 };
+    expect(priceFor("openai/cx/gpt-5.6-sol(medium)", { "cx/gpt-5.6-sol": routed })).toBe(routed);
+    expect(priceFor("openai/cx/gpt-5.6-sol(medium)", { "gpt-5.6-sol": bare, "cx/gpt-5.6-sol": routed })).toBe(routed);
+  });
+
   it("prices common models without an exact entry by their own family", () => {
     expect(priceFor("openai/o3-mini-2025-01-31")).toMatchObject({ input: 1.1, output: 4.4 });
     expect(priceFor("openai/gpt-4o-2024-08-06")).toEqual(priceFor("openai/gpt-4o"));

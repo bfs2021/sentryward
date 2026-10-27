@@ -152,6 +152,11 @@ describe("buildUsageReport", () => {
     expect(buildRecentUsage(jobs, 1, 10).reviews.map((r) => r.usd)).toEqual([2, 0, 0]);
   });
 
+  it("gives each recent review its calls and unpriced calls, so its cost can read as unknown", () => {
+    const jobs = [job("2026-10-23T08:00:00Z", { [PROXY]: { calls: 2, unpricedCalls: 2, inputTokens: 10, outputTokens: 10 } })];
+    expect(buildRecentUsage(jobs, 1, 10).reviews[0]).toMatchObject({ calls: 2, unpricedCalls: 2, usd: 0 });
+  });
+
   it("counts the calls no price was known for, so the page can show their cost as unknown", () => {
     const report = buildUsageReport(
       [job("2026-10-23T08:00:00Z", { [PROXY]: { calls: 2, inputTokens: 10, outputTokens: 10, unpricedCalls: 2 } })],

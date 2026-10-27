@@ -7,7 +7,7 @@ import { PROVIDERS } from "@/features/forge/providers"
 import { copyToClipboard } from "@/lib/clipboard"
 import { formatDuration, timeAgo } from "@/lib/time"
 import { TriggerIcon } from "../badges"
-import { formatCost } from "../cost"
+import { costUnknown, formatCost } from "../cost"
 import { TRIGGER_LABEL } from "../options"
 import type { DropReason, Publication, ReviewDetail, ReviewResult } from "../types"
 
@@ -218,7 +218,7 @@ function UsageCard({ result }: { result: ReviewResult }) {
               -
             </span>
           ) : (
-            formatCost(usageTotals.costUsd)
+            formatCost(costUnknown(usageTotals) ? null : usageTotals.costUsd)
           )}
         </Row>
       </dl>

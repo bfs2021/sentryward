@@ -131,7 +131,7 @@ function groupLabel(group: Group, key: string) {
   return key === "other" ? "Other" : (CATEGORY_LABEL[key as FindingCategory] ?? key)
 }
 
-// Each language or category, then its models. The best model (enough
+// Each language or category, then its models. The best model (enough decided
 // findings, highest confirmed rate) is marked; rows with too few findings to
 // judge are dimmed rather than hidden, since a small team may have only those.
 export function BreakdownTable({ report }: { report: BenchmarkReport }) {
@@ -144,7 +144,8 @@ export function BreakdownTable({ report }: { report: BenchmarkReport }) {
         <div className="flex flex-col gap-1.5">
           <CardTitle>Best model</CardTitle>
           <CardDescription>
-            Findings per model. Best is the highest confirmed rate among models with at least {report.minSample} findings.
+            Findings per model, with rates over those resolved or dismissed as false positives. Best is the highest
+            confirmed rate among models with at least {report.minSample} such findings.
           </CardDescription>
         </div>
         <Segmented label="Break down findings" options={GROUPS} value={group} onChange={setGroup} />
@@ -164,7 +165,7 @@ export function BreakdownTable({ report }: { report: BenchmarkReport }) {
             {rows.map((row) => (
               <Fragment key={row.key}>
                 {row.models.map((model, index) => {
-                  const few = model.found < report.minSample
+                  const few = model.decided < report.minSample
                   return (
                     <TableRow key={model.model ?? "tools"} className={cn(few && "text-muted-foreground")}>
                       <TableCell className="font-medium">{index === 0 ? groupLabel(group, row.key) : null}</TableCell>

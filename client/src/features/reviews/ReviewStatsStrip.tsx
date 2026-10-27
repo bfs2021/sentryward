@@ -6,7 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { formatDuration } from "@/lib/time"
 import { USAGE_PERIODS, type UsagePeriod } from "@/features/usage/types"
 import { useReviewStats } from "./api"
-import { formatCost, formatTokens } from "./cost"
+import { costUnknown, formatCost, formatTokens } from "./cost"
 
 // With `to`, the whole tile links to the page that breaks the figure down.
 export function Stat({
@@ -77,7 +77,7 @@ export function ReviewStatsStrip() {
       </Stat>
       <Stat label={`Tokens, ${period}`} icon={Coins} to={usageLink}>
         {formatTokens(tokens.inputTokens + tokens.outputTokens)}
-        <span className="ml-2 text-xs font-normal text-muted-foreground">{formatCost(cost.usd)}</span>
+        <span className="ml-2 text-xs font-normal text-muted-foreground">{formatCost(costUnknown(tokens) ? null : cost.usd)}</span>
       </Stat>
     </section>
   )

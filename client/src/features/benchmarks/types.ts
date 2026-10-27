@@ -1,11 +1,13 @@
 import type { UsagePeriod } from "@/features/usage/types"
 
 // Confirmed: resolved by a later run (not invalidated). False positive:
-// dismissed as one. Rates are whole percentages, null with nothing found.
+// dismissed as one. Rates are whole percentages of decided (the two
+// together), null with nothing decided.
 export interface FindingFigures {
   found: number
   confirmed: number
   falsePositives: number
+  decided: number
   confirmedRate: number | null
   falsePositiveRate: number | null
 }
@@ -57,7 +59,7 @@ export interface Breakdown {
 
 export interface BenchmarkReport {
   period: UsagePeriod
-  // Fewer findings than this and a model is never named best.
+  // Fewer decided findings than this and a model is never named best.
   minSample: number
   totals: TokenFigures & {
     reviews: number

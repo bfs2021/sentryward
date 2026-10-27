@@ -18,7 +18,7 @@ describe("summarize and toJson", () => {
       bySeverity: { critical: 1, major: 1, minor: 2 },
       byBucket: { actionable: 2, outside_diff: 1, nitpick: 1 },
       hasBlocking: true,
-      usageTotals: { calls: 2, inputTokens: 200, outputTokens: 40, costUsd: 0.0008 },
+      usageTotals: { calls: 2, inputTokens: 200, outputTokens: 40, costUsd: 0.0008, unpricedCalls: 0 },
       usageByModel: {
         "anthropic/claude-sonnet-5-5": {
           calls: 2,
@@ -40,7 +40,13 @@ describe("summarize and toJson", () => {
     const result = await sampleResult();
     const json = toJson(result);
     expect(json.findings).toEqual(result.findings);
-    expect(json.usageTotals).toEqual({ calls: 2, inputTokens: 200, outputTokens: 40, costUsd: 0.0008 });
+    expect(json.usageTotals).toEqual({ calls: 2, inputTokens: 200, outputTokens: 40, costUsd: 0.0008, unpricedCalls: 0 });
+  });
+
+  it("counts the calls no price was known for in the token totals", async () => {
+    const result = await sampleResult();
+    const unpriced = { ...result, usage: result.usage.map(({ cost: _cost, ...call }) => ({ ...call, unpriced: true as const })) };
+    expect(toJson(unpriced).usageTotals).toMatchObject({ calls: 2, costUsd: 0, unpricedCalls: 2 });
   });
 });
 

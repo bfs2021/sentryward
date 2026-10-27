@@ -102,6 +102,9 @@ function PriceDialog({ editing, onOpenChange }: { editing: Editing | null; onOpe
             placeholder="openai/gpt-5.6"
             autoComplete="off"
             className="font-mono"
+            // Saving is keyed by model, so a changed id would add a second
+            // price rather than rename this one.
+            readOnly={editing?.price !== undefined}
           />
           <div className="grid grid-cols-2 gap-4">
             <TextField control={form.control} name="input" label="Input" inputMode="decimal" />
@@ -152,8 +155,9 @@ export function ModelPricesCard() {
   const { data, isPending, isError } = useModelPrices()
   const [editing, setEditing] = useState<Editing | null>(null)
 
-  const priced = new Set(data?.prices.map((p) => p.model))
-  const unknown = (data?.models ?? []).filter((m) => m.builtIn === null && !priced.has(m.model))
+  // The server matches saved prices the way reviews do, so a price saved
+  // under a shorter id clears its model here too.
+  const unknown = (data?.models ?? []).filter((m) => m.price === null)
 
   return (
     <Card>

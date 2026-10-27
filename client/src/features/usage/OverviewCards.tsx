@@ -1,5 +1,5 @@
 import { ArrowDownToLine, ArrowUpFromLine, Coins, DatabaseZap, GitPullRequest, Sparkles } from "lucide-react"
-import { formatCost } from "@/features/reviews/cost"
+import { costUnknown, formatCost } from "@/features/reviews/cost"
 import { Stat } from "@/features/reviews/ReviewStatsStrip"
 import { formatCount } from "./format"
 import type { UsageReport } from "./types"
@@ -28,7 +28,7 @@ export function OverviewCards({ totals }: { totals: UsageReport["totals"] }) {
         {formatCount(totals.outputTokens)}
       </Stat>
       <Stat label="Est. cost" icon={Coins}>
-        {formatCost(totals.cost.usd)}
+        {formatCost(costUnknown(totals) ? null : totals.cost.usd)}
         <Note>Estimated, not actual billing</Note>
       </Stat>
     </section>

@@ -21,8 +21,8 @@ export interface SavedModelPrice {
 export interface ModelPrices {
   prices: SavedModelPrice[]
   // Models recent reviews called, with the built-in price each gets without
-  // one of the workspace's own; null is unknown.
-  models: { model: string; builtIn: ModelPrice | null }[]
+  // one of the workspace's own, and the price reviews get now; null is unknown.
+  models: { model: string; builtIn: ModelPrice | null; price: ModelPrice | null }[]
 }
 
 export interface ModelPriceInput {

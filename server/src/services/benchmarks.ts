@@ -3,10 +3,10 @@ import { median, percent } from "../lib/stats.ts";
 import { addUsage, roundUsd, usedTokens, type UsageByModel } from "../review/core/pricing/pricing.ts";
 import { CATEGORIES, type Category } from "../review/core/severity.ts";
 import { detectLanguage } from "../review/diff/language.ts";
-import type { UsagePeriod } from "./usage.ts";
+import { totalsOf, type UsagePeriod } from "./usage.ts";
 
-// Below this many findings a model's rates say little, so it is never named
-// the best for a language or category (the page marks such rows too).
+// Below this many decided findings a model's rates say little, so it is never
+// named the best for a language or category (the page marks such rows too).
 export const MIN_SAMPLE = 5;
 
 // Files no language is detected for, and categories the engine no longer emits.
@@ -34,11 +34,15 @@ export interface BenchmarkFinding {
 
 // What became of the findings first seen in the period. Confirmed and false
 // positive mean what the findings stats mean by them: resolved by a later run
-// (not invalidated), and dismissed as a false positive.
+// (not invalidated), and dismissed as a false positive. The rates are over
+// decided (the two together), as in the calibration stats: open findings,
+// other dismissals and invalidated ones decided nothing, and counting them
+// would mark down a model whose findings are still open.
 export interface FindingFigures {
   found: number;
   confirmed: number;
   falsePositives: number;
+  decided: number;
   confirmedRate: number | null;
   falsePositiveRate: number | null;
 }
@@ -99,7 +103,7 @@ export interface DuplicateFigures {
 // One language or category: its findings overall, then per model. The tool
 // and rule findings are a row with model null. best is the model with the
 // highest confirmed rate (fewest false positives on a tie) among those with
-// at least MIN_SAMPLE findings.
+// at least MIN_SAMPLE decided findings.
 export interface Breakdown {
   key: string;
   findings: FindingFigures;
@@ -123,7 +127,8 @@ function count(tally: Tally, finding: BenchmarkFinding) {
 
 function figures(tally: Tally | undefined): FindingFigures {
   const t = tally ?? emptyTally();
-  return { ...t, confirmedRate: percent(t.confirmed, t.found), falsePositiveRate: percent(t.falsePositives, t.found) };
+  const decided = t.confirmed + t.falsePositives;
+  return { ...t, decided, confirmedRate: percent(t.confirmed, decided), falsePositiveRate: percent(t.falsePositives, decided) };
 }
 
 function tallyBy<K>(findings: BenchmarkFinding[], keyOf: (finding: BenchmarkFinding) => K): Map<K, Tally> {
@@ -158,19 +163,6 @@ function digestOf(summary: unknown): Digest {
     total: digest?.total ?? 0,
     duplicates: typeof digest?.duplicates === "number" ? digest.duplicates : null,
   };
-}
-
-function tokenFigures(byModel: UsageByModel) {
-  const totals = { calls: 0, unpricedCalls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, usd: 0 };
-  for (const usage of Object.values(byModel)) {
-    totals.calls += usage.calls;
-    totals.unpricedCalls += usage.unpricedCalls ?? 0;
-    totals.inputTokens += usage.inputTokens;
-    totals.cachedInputTokens += usage.cachedInputTokens ?? 0;
-    totals.outputTokens += usage.outputTokens;
-    totals.usd += usage.cost?.total ?? 0;
-  }
-  return totals;
 }
 
 function costFigures(totals: { calls: number; unpricedCalls: number; usd: number }, reviews: number): CostFigures {
@@ -213,7 +205,9 @@ function breakdowns(findings: BenchmarkFinding[], keyOf: (finding: BenchmarkFind
   const groups = new Map<string, BenchmarkFinding[]>();
   for (const finding of findings) {
     const key = keyOf(finding);
-    groups.set(key, [...(groups.get(key) ?? []), finding]);
+    const group = groups.get(key);
+    if (group) group.push(finding);
+    else groups.set(key, [finding]);
   }
   return [...groups]
     .map(([key, group]) => {
@@ -221,7 +215,7 @@ function breakdowns(findings: BenchmarkFinding[], keyOf: (finding: BenchmarkFind
         .map(([model, tally]) => ({ model, ...figures(tally) }))
         .sort((a, b) => b.found - a.found);
       const ranked = models
-        .filter((row) => row.model !== null && row.found >= MIN_SAMPLE)
+        .filter((row) => row.model !== null && row.decided >= MIN_SAMPLE)
         .sort((a, b) => b.confirmedRate! - a.confirmedRate! || a.falsePositiveRate! - b.falsePositiveRate! || b.found - a.found);
       return { key, findings: figures(tallyAll(group)), models, best: ranked[0]?.model ?? null };
     })
@@ -231,21 +225,28 @@ function breakdowns(findings: BenchmarkFinding[], keyOf: (finding: BenchmarkFind
 // Models compared on what they cost and what their findings came to, from
 // the digests the usage page reads and the findings first seen in the period.
 // Costs are those each review recorded when it ran, as on the usage page.
+// Cost per review is over the reviews that called a model: queued runs and
+// those that failed before any call spent nothing and would dilute it.
 export function buildBenchmarkReport(jobs: BenchmarkJob[], findings: BenchmarkFinding[], period: UsagePeriod): BenchmarkReport {
   const all: UsageByModel = {};
   const models = new Map<string, { reviews: number; latencyMs: number; timedCalls: number }>();
-  const repos = new Map<string, { fullPath: string; jobs: BenchmarkJob[]; digests: Digest[]; byModel: UsageByModel }>();
+  const repos = new Map<string, { fullPath: string; jobs: BenchmarkJob[]; digests: Digest[]; byModel: UsageByModel; billed: number }>();
   const digests: Digest[] = [];
+  let billed = 0;
 
   for (const job of jobs) {
     const digest = digestOf(job.summary);
     digests.push(digest);
     addUsage(all, digest.byModel);
-    const repo = repos.get(job.repository.id) ?? { fullPath: job.repository.fullPath, jobs: [], digests: [], byModel: {} };
+    const repo = repos.get(job.repository.id) ?? { fullPath: job.repository.fullPath, jobs: [], digests: [], byModel: {}, billed: 0 };
     repos.set(job.repository.id, repo);
     repo.jobs.push(job);
     repo.digests.push(digest);
     addUsage(repo.byModel, digest.byModel);
+    if (Object.values(digest.byModel).some(usedTokens)) {
+      billed += 1;
+      repo.billed += 1;
+    }
     for (const [model, usage] of Object.entries(digest.byModel)) {
       if (!usedTokens(usage)) continue;
       const entry = models.get(model) ?? { reviews: 0, latencyMs: 0, timedCalls: 0 };
@@ -266,7 +267,7 @@ export function buildBenchmarkReport(jobs: BenchmarkJob[], findings: BenchmarkFi
     minSample: MIN_SAMPLE,
     totals: {
       reviews: jobs.length,
-      ...split(tokenFigures(all), jobs.length),
+      ...split(totalsOf(all), billed),
       medianDurationMs: medianDuration(jobs),
       findings: figures(tallyAll(findings)),
       duplicates: duplicateFigures(digests),
@@ -275,7 +276,7 @@ export function buildBenchmarkReport(jobs: BenchmarkJob[], findings: BenchmarkFi
       .map(([model, entry]) => ({
         model,
         reviews: entry.reviews,
-        ...split(tokenFigures({ [model]: all[model]! }), entry.reviews),
+        ...split(totalsOf({ [model]: all[model]! }), entry.reviews),
         meanLatencyMs: entry.timedCalls ? Math.round(entry.latencyMs / entry.timedCalls) : null,
         findings: figures(byModelFindings.get(model)),
       }))
@@ -285,7 +286,7 @@ export function buildBenchmarkReport(jobs: BenchmarkJob[], findings: BenchmarkFi
         repositoryId,
         fullPath: repo.fullPath,
         reviews: repo.jobs.length,
-        ...split(tokenFigures(repo.byModel), repo.jobs.length),
+        ...split(totalsOf(repo.byModel), repo.billed),
         medianDurationMs: medianDuration(repo.jobs),
         findings: figures(byRepoFindings.get(repositoryId)),
         duplicates: duplicateFigures(repo.digests),

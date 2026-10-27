@@ -11,9 +11,9 @@ const noKeys = { keys: [] }
 const PRICES: ModelPrices = {
   prices: [{ id: "p1", model: "openai/my-proxy", price: { input: 1.5, output: 6 }, updatedAt: "2026-10-20T00:00:00.000Z" }],
   models: [
-    { model: "openai/my-proxy", builtIn: null },
-    { model: "anthropic/claude-sonnet-5-5", builtIn: { input: 2, output: 10 } },
-    { model: "openai/custom-model", builtIn: null },
+    { model: "openai/my-proxy", builtIn: null, price: { input: 1.5, output: 6 } },
+    { model: "anthropic/claude-sonnet-5-5", builtIn: { input: 2, output: 10 }, price: { input: 2, output: 10 } },
+    { model: "openai/custom-model", builtIn: null, price: null },
   ],
 }
 
@@ -54,6 +54,29 @@ describe("Model prices", () => {
 
     await waitFor(() => expect(saved).toHaveLength(1))
     expect(saved[0]).toEqual({ model: "openai/custom-model", input: 0.5, output: 2, cached: 0.05, cacheWrite: null, reasoning: null })
+  })
+
+  it("goes by the price the server says reviews get, not an exact id match", async () => {
+    // A price saved as "cx/gpt-5.6-sol" prices the router model, so it is not missing.
+    const routed: ModelPrices = {
+      prices: [{ id: "p2", model: "cx/gpt-5.6-sol", price: { input: 1, output: 4 }, updatedAt: "2026-10-20T00:00:00.000Z" }],
+      models: [{ model: "openai/cx/gpt-5.6-sol(medium)", builtIn: null, price: { input: 1, output: 4 } }],
+    }
+    mockApi({ "GET /api/settings/api-keys": noKeys, "GET /api/settings/model-prices": routed })
+    renderWithProviders(<App />, { route: "/llm-connections" })
+
+    await pricesTable()
+    expect(screen.queryByText(/has no price|have no price/)).not.toBeInTheDocument()
+  })
+
+  it("keeps the model fixed when editing a saved price", async () => {
+    mockApi({ "GET /api/settings/api-keys": noKeys, "GET /api/settings/model-prices": PRICES })
+    renderWithProviders(<App />, { route: "/llm-connections" })
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit the price for openai/my-proxy" }))
+    const dialog = await screen.findByRole("dialog")
+    expect(within(dialog).getByLabelText("Model")).toHaveAttribute("readonly")
+    expect(within(dialog).getByLabelText("Input")).toHaveValue("1.5")
   })
 
   it("checks prices before sending them", async () => {

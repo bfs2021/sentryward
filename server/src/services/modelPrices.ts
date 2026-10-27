@@ -23,8 +23,9 @@ export async function priceOverridesFor(workspaceId: string): Promise<PriceOverr
 }
 
 // The workspace's prices, and the models its recent reviews called with the
-// price each would get without one (null: unknown), so an admin can see which
-// models still need a price.
+// price each would get without one and the one reviews get now (null:
+// unknown), so an admin can see which models still need a price. The current
+// price goes through priceFor, so a price saved under a shorter id counts.
 export async function listModelPrices(workspaceId: string, now = new Date()) {
   const [prices, jobs] = await Promise.all([
     prisma.modelPrice.findMany({ where: { workspaceId }, select: PRICE_FIELDS, orderBy: { model: "asc" } }),
@@ -38,11 +39,12 @@ export async function listModelPrices(workspaceId: string, now = new Date()) {
     }),
   ]);
   const used = new Set(jobs.flatMap((job) => digestModels(job.summary)));
+  const overrides: PriceOverrides = Object.fromEntries(prices.map((row) => [row.model, asPrice(row)]));
   return {
     prices: prices.map(({ input, output, cached, cacheWrite, reasoning, ...rest }) => ({
       ...rest,
       price: asPrice({ input, output, cached, cacheWrite, reasoning }),
     })),
-    models: [...used].sort().map((model) => ({ model, builtIn: priceFor(model) })),
+    models: [...used].sort().map((model) => ({ model, builtIn: priceFor(model), price: priceFor(model, overrides) })),
   };
 }

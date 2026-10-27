@@ -1,5 +1,7 @@
 import type { UsageReport } from "./types"
 
+export { costUnknown } from "@/features/reviews/cost"
+
 const usd = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -12,11 +14,6 @@ const count = new Intl.NumberFormat("en-US")
 // four decimals show.
 export function formatUsd(amount: number) {
   return usd.format(amount)
-}
-
-// A cost no call had a price for reads as unknown rather than $0.00.
-export function costUnknown(row: { calls: number; unpricedCalls: number }) {
-  return row.calls > 0 && row.unpricedCalls === row.calls
 }
 
 export function formatCount(value: number) {
