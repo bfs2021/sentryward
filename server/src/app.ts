@@ -5,6 +5,7 @@ import helmet from "helmet";
 import { env } from "./config/env.ts";
 import { adminRouter } from "./routes/admin.routes.ts";
 import { authRouter } from "./routes/auth.routes.ts";
+import { benchmarksRouter } from "./routes/benchmarks.routes.ts";
 import { configRouter } from "./routes/config.routes.ts";
 import { connectionsRouter } from "./routes/connections.routes.ts";
 import { findingsRouter } from "./routes/findings.routes.ts";
@@ -47,6 +48,7 @@ app.get("/api/health", (_req, res) => {
 
 app.use("/api/auth", authRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/benchmarks", benchmarksRouter);
 app.use("/api/connections", connectionsRouter);
 app.use("/api/repos", reposRouter);
 app.use("/api/config", configRouter);

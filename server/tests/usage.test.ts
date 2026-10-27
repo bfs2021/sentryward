@@ -88,6 +88,7 @@ describe("buildUsageReport", () => {
     expect(report.totals).toEqual({
       reviews: 2,
       calls: 3,
+      unpricedCalls: 0,
       inputTokens: 2_000_000,
       cachedInputTokens: 400_000,
       outputTokens: 1_200_000,
@@ -98,6 +99,7 @@ describe("buildUsageReport", () => {
         model: HAIKU,
         provider: "anthropic",
         calls: 1,
+        unpricedCalls: 0,
         inputTokens: 1_000_000,
         cachedInputTokens: 0,
         outputTokens: 1_000_000,
@@ -108,6 +110,7 @@ describe("buildUsageReport", () => {
         model: SONNET,
         provider: "anthropic",
         calls: 2,
+        unpricedCalls: 0,
         inputTokens: 1_000_000,
         cachedInputTokens: 400_000,
         outputTokens: 200_000,
@@ -147,6 +150,22 @@ describe("buildUsageReport", () => {
     expect(report.totals).toMatchObject({ reviews: 3, inputTokens: 2_000_010, cost: { usd: 2 } });
     expect(report.byModel.find((m) => m.model === PROXY)!.cost.total).toBe(0);
     expect(buildRecentUsage(jobs, 1, 10).reviews.map((r) => r.usd)).toEqual([2, 0, 0]);
+  });
+
+  it("gives each recent review its calls and unpriced calls, so its cost can read as unknown", () => {
+    const jobs = [job("2026-10-23T08:00:00Z", { [PROXY]: { calls: 2, unpricedCalls: 2, inputTokens: 10, outputTokens: 10 } })];
+    expect(buildRecentUsage(jobs, 1, 10).reviews[0]).toMatchObject({ calls: 2, unpricedCalls: 2, usd: 0 });
+  });
+
+  it("counts the calls no price was known for, so the page can show their cost as unknown", () => {
+    const report = buildUsageReport(
+      [job("2026-10-23T08:00:00Z", { [PROXY]: { calls: 2, inputTokens: 10, outputTokens: 10, unpricedCalls: 2 } })],
+      "7d",
+      NOW,
+    );
+    expect(report.byModel[0]).toMatchObject({ calls: 2, unpricedCalls: 2 });
+    expect(report.byRepository[0]).toMatchObject({ calls: 2, unpricedCalls: 2 });
+    expect(report.totals.unpricedCalls).toBe(2);
   });
 
   it("counts runs without usage as reviews but leaves their tokens out", () => {

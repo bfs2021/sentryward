@@ -12,6 +12,8 @@ export interface CostBreakdown {
 
 export interface UsageTokens {
   calls: number
+  // Calls no price was known for; when every call is one, the cost is unknown.
+  unpricedCalls: number
   // Includes cachedInputTokens.
   inputTokens: number
   cachedInputTokens: number
@@ -22,7 +24,7 @@ export interface ModelUsageRow extends UsageTokens {
   model: string
   provider: string
   lastUsed: string
-  // All zero for a model without a price.
+  // All zero for a model without a price (see unpricedCalls).
   cost: CostBreakdown
 }
 
@@ -41,6 +43,8 @@ export interface RecentReviewUsage {
   fullPath: string
   createdAt: string
   models: string[]
+  calls: number
+  unpricedCalls: number
   inputTokens: number
   outputTokens: number
   usd: number

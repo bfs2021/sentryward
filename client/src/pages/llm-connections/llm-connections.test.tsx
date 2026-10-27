@@ -57,6 +57,25 @@ describe("LLM Connections page", () => {
     expect(screen.queryByRole("tab", { name: "Profile" })).not.toBeInTheDocument()
   })
 
+  it("keeps model prices on their own tab", async () => {
+    mockApi({
+      "GET /api/settings/api-keys": noKeys,
+      "GET /api/settings/model-prices": {
+        prices: [{ id: "p1", model: "openai/my-proxy", price: { input: 1.5, output: 6 }, updatedAt: "2026-10-20T00:00:00.000Z" }],
+        models: [],
+      },
+    })
+    renderWithProviders(<App />, { route: "/llm-connections" })
+
+    expect(await screen.findByText("No API keys yet")).toBeInTheDocument()
+    expect(screen.queryByRole("table", { name: "Model prices" })).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole("tab", { name: "Model prices" }))
+
+    expect(await screen.findByRole("table", { name: "Model prices" })).toBeInTheDocument()
+    expect(screen.queryByText("No API keys yet")).not.toBeInTheDocument()
+  })
+
   it("shows one add button and an empty state when no key is stored", async () => {
     mockApi({ "GET /api/settings/api-keys": noKeys })
     renderWithProviders(<App />, { route: "/llm-connections" })

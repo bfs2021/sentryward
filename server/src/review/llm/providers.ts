@@ -5,7 +5,7 @@ import { APICallError, generateText, NoObjectGeneratedError, Output, streamText,
 import type { z } from "zod";
 import type { Config } from "../config/schema.ts";
 import type { LlmUsage } from "../core/models.ts";
-import { callCost, priceFor } from "../core/pricing/pricing.ts";
+import { callPricing, priceFor } from "../core/pricing/pricing.ts";
 import { effectiveCapabilities, type CapabilityLedger, type CapabilityOverride } from "./capabilities.ts";
 import { excerpt, formatInstruction, parseLenient } from "./format.ts";
 import { thinkingBudget, thinkingProviderOptions, type ThinkingLevel } from "./thinking.ts";
@@ -149,7 +149,8 @@ type ResponseTokens = Pick<
 
 // What an LlmUsage records about one call: its tokens, the detail counts only
 // when there were any (so usage from providers without caching looks as it
-// always did), and its cost at today's prices, kept with the call.
+// always did), and its cost at the built-in prices, kept with the call (the
+// worker re-prices a review's calls at its workspace's prices).
 export function callUsage(response: ResponseTokens) {
   const detail = (key: "cachedInputTokens" | "cacheWriteTokens" | "reasoningTokens") =>
     response[key] ? { [key]: response[key] } : {};
@@ -160,7 +161,7 @@ export function callUsage(response: ResponseTokens) {
     outputTokens: response.outputTokens,
     ...detail("reasoningTokens"),
   };
-  return { ...tokens, cost: callCost(tokens, priceFor(response.model)) };
+  return { ...tokens, ...callPricing(tokens, priceFor(response.model)) };
 }
 
 // The one seam between the engine and a model provider. Tests pass their own.

@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import { HttpError } from "../lib/httpError.ts";
 import { prisma } from "../lib/prisma.ts";
-import { median } from "../lib/stats.ts";
+import { median, percent } from "../lib/stats.ts";
 import { Prisma } from "../generated/prisma/client.ts";
 import { reviewResultSchema } from "../review/core/models.ts";
 import { CATEGORIES, SEVERITIES, type Category } from "../review/core/severity.ts";
@@ -59,10 +59,6 @@ const SORT_ORDER: Record<ListQuery["sort"], (dir: Dir) => Prisma.FindingOrderByW
 };
 
 type BreakdownRow<K> = { key: K; found: number; falsePositives: number; rate: number | null };
-
-function percent(part: number, whole: number) {
-  return whole ? Math.round((part / whole) * 100) : null;
-}
 
 function breakdownRow<K>(key: K, found: number, falsePositives: number): BreakdownRow<K> {
   return { key, found, falsePositives, rate: percent(falsePositives, found) };

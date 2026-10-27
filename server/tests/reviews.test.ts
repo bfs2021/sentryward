@@ -347,7 +347,7 @@ describe("GET /api/reviews/stats", () => {
       failed: 1,
       duration: { median: 90_000, max: 120_000 },
       // Only the completed job carries a summary digest; the bare rows add nothing.
-      tokens: { calls: 2, inputTokens: 200, outputTokens: 40 },
+      tokens: { calls: 2, unpricedCalls: 0, inputTokens: 200, outputTokens: 40 },
       // 200 input and 40 output tokens of claude-sonnet-5-5 at $2 / $10 per million,
       // recorded when the sample review ran.
       cost: { usd: 0.0008 },
@@ -388,8 +388,16 @@ describe("GET /api/reviews/stats cost", () => {
     await run(3, { usageTotals: { calls: 1, inputTokens: 1000, outputTokens: 100 } });
 
     const res = await request(app).get("/api/reviews/stats").set("Cookie", cookie);
-    expect(res.body.tokens).toEqual({ calls: 4, inputTokens: 1150, outputTokens: 115 });
+    expect(res.body.tokens).toEqual({ calls: 4, unpricedCalls: 0, inputTokens: 1150, outputTokens: 115 });
     expect(res.body.cost).toEqual({ usd: 1.75 });
+  });
+
+  it("counts the calls no price was known for, so the cost can read as unknown", async () => {
+    await run(1, { usageByModel: { "openai/my-proxy": { calls: 2, inputTokens: 60, outputTokens: 6, unpricedCalls: 2 } } });
+
+    const res = await request(app).get("/api/reviews/stats").set("Cookie", cookie);
+    expect(res.body.tokens).toMatchObject({ calls: 2, unpricedCalls: 2 });
+    expect(res.body.cost).toEqual({ usd: 0 });
   });
 });
 

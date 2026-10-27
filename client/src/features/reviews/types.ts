@@ -85,12 +85,15 @@ export type DropReason =
 
 export interface UsageTotals {
   calls: number
+  // Calls no price was known for; absent on digests from before they were counted.
+  unpricedCalls?: number
   inputTokens: number
   outputTokens: number
 }
 
 // Summed from the costs reviews recorded when they ran, at that day's prices;
-// a model without a price counted as $0.
+// a call without a price adds nothing, and when no call had one the cost reads
+// as unknown (see costUnknown).
 export interface CostEstimate {
   usd: number
 }
@@ -150,8 +153,9 @@ export interface ReviewResult {
     steps?: number
     toolCalls?: Record<string, number>
   }[]
-  // costUsd is absent on results stored before costs were recorded.
-  usageTotals: { calls: number; inputTokens: number; outputTokens: number; costUsd?: number }
+  // costUsd is absent on results stored before costs were recorded, and
+  // unpricedCalls on those from before calls without a price were counted.
+  usageTotals: { calls: number; inputTokens: number; outputTokens: number; costUsd?: number; unpricedCalls?: number }
   verdict: { verdict: Verdict; blockOn: Severity; blocking: string[] }
   summary: ReviewSummary
 }

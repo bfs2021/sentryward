@@ -195,7 +195,9 @@ export const llmUsageSchema = z.object({
   // A call whose reply could not be used, kept because its tokens were billed.
   failed: z.literal(true).optional(),
   // USD at the prices in effect when the call was made (core/pricing). Absent
-  // on results stored before costs were recorded.
+  // on results stored before costs were recorded, and on calls no price was
+  // known for, which are flagged unpriced instead so they read as unknown
+  // rather than free.
   cost: z
     .object({
       input: z.number().min(0),
@@ -206,6 +208,7 @@ export const llmUsageSchema = z.object({
       total: z.number().min(0),
     })
     .optional(),
+  unpriced: z.literal(true).optional(),
 });
 export type LlmUsage = z.infer<typeof llmUsageSchema>;
 

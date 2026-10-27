@@ -50,12 +50,22 @@ function digestOf(job: UsageJob) {
 
 const providerOf = (model: string) => model.split("/")[0]!;
 
+// The models a review called, from its digest.
+export function digestModels(summary: unknown): string[] {
+  const byModel = (summary as { usageByModel?: UsageByModel } | null)?.usageByModel ?? {};
+  return Object.entries(byModel)
+    .filter(([, usage]) => usedTokens(usage))
+    .map(([model]) => model);
+}
+
 // Tokens and the recorded cost of a set of models. Digests stored before costs
-// were recorded add their tokens but no cost.
-function totalsOf(byModel: UsageByModel) {
-  const totals = { calls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, usd: 0 };
+// were recorded add their tokens but no cost; unpricedCalls counts the calls
+// no price was known for, so a reader can say the cost is unknown.
+export function totalsOf(byModel: UsageByModel) {
+  const totals = { calls: 0, unpricedCalls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, usd: 0 };
   for (const usage of Object.values(byModel)) {
     totals.calls += usage.calls;
+    totals.unpricedCalls += usage.unpricedCalls ?? 0;
     totals.inputTokens += usage.inputTokens;
     totals.cachedInputTokens += usage.cachedInputTokens ?? 0;
     totals.outputTokens += usage.outputTokens;
@@ -76,6 +86,7 @@ export function digestTotals(summary: unknown) {
   const old = digest?.usageTotals;
   return {
     calls: old?.calls ?? 0,
+    unpricedCalls: 0,
     inputTokens: old?.inputTokens ?? 0,
     cachedInputTokens: 0,
     outputTokens: old?.outputTokens ?? 0,
@@ -100,6 +111,7 @@ export interface UsageReport {
   totals: {
     reviews: number;
     calls: number;
+    unpricedCalls: number;
     inputTokens: number;
     cachedInputTokens: number;
     outputTokens: number;
@@ -110,6 +122,7 @@ export interface UsageReport {
     model: string;
     provider: string;
     calls: number;
+    unpricedCalls: number;
     inputTokens: number;
     cachedInputTokens: number;
     outputTokens: number;
@@ -122,6 +135,7 @@ export interface UsageReport {
     fullPath: string;
     reviews: number;
     calls: number;
+    unpricedCalls: number;
     inputTokens: number;
     cachedInputTokens: number;
     outputTokens: number;
@@ -137,6 +151,9 @@ export interface RecentUsage {
   fullPath: string;
   createdAt: string;
   models: string[];
+  // With unpricedCalls, so a review no call had a price for reads as unknown.
+  calls: number;
+  unpricedCalls: number;
   inputTokens: number;
   outputTokens: number;
   usd: number;
@@ -184,6 +201,7 @@ export function buildUsageReport(jobs: UsageJob[], period: UsagePeriod, now: Dat
         model,
         provider: providerOf(model),
         calls: usage.calls,
+        unpricedCalls: usage.unpricedCalls ?? 0,
         inputTokens: usage.inputTokens,
         cachedInputTokens: usage.cachedInputTokens ?? 0,
         outputTokens: usage.outputTokens,
@@ -251,6 +269,8 @@ export function buildRecentUsage(jobs: UsageJob[], page: number, limit: number) 
       fullPath: job.repository.fullPath,
       createdAt: job.createdAt.toISOString(),
       models: Object.keys(byModel!).sort(),
+      calls: totals.calls,
+      unpricedCalls: totals.unpricedCalls,
       inputTokens: totals.inputTokens,
       outputTokens: totals.outputTokens,
       usd: totals.usd,

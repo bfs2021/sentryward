@@ -10,6 +10,32 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- Model and review-cost benchmarking (#107). Workspace admins can set their
+  own model prices under LLM Connections > Model prices (`GET`/`PUT
+  /api/settings/model-prices`, `DELETE /api/settings/model-prices/:id`,
+  new `model_prices` table); a review's calls are priced at them when it
+  runs, ahead of the built-in table. A model nothing prices now records no
+  cost and is flagged `unpriced`, so its cost reads as unknown instead of $0
+  on the Usage page (totals, table and recent reviews), the Reviews stats
+  strip and the review sidebar; the digest's `usageTotals`, review stats
+  tokens and recent usage rows carry `unpricedCalls` for it. Ollama models
+  stay free unless priced. A workspace price keyed by any prefix-stripped
+  form of a router id (`cx/gpt-5.6-sol` for `openai/cx/gpt-5.6-sol`) applies,
+  and the price list's models carry the `price` reviews get now, so the
+  "no price" warning clears for them. A saved price's model id can't be
+  changed when editing. The
+  review digest now keeps per-model call time and unpriced call counts, and
+  the number of findings dropped as duplicates. A Benchmarks page (`GET
+  /api/benchmarks`) compares, over a period and optionally one repository,
+  cost per review, tokens and mean call time per model, cost, median duration
+  and duplicate rate per repository, and confirmed and false-positive
+  findings per model by language and by category, naming the best model
+  among those with enough decided findings. Rates are over decided findings
+  (confirmed plus false positives), as in the calibration stats, and cost
+  per review is over the reviews that called a model. Price overrides are
+  loaded before a review's model calls. Reviews from before this change have no
+  call time or duplicate count and are left out of those figures. Closes #107.
+
 - Extended thinking, agentic context and model capabilities (#139).
   `llm.thinking` (`off`, `low`, `medium`, `high`) and `llm.verify_thinking`
   let review and verification calls reason first, mapped to each provider's
@@ -158,6 +184,9 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- Model prices moved to their own tab on the LLM Connections page
+  (`/llm-connections?tab=prices`), next to the Connections tab. The
+  Benchmarks page's "Unknown" cost link opens that tab.
 - The Delete account card moved to the bottom of the Profile settings tab
   and the Account tab is gone. Old `/settings?tab=account` links open the
   Profile tab. Closes #146.

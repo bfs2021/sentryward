@@ -240,11 +240,13 @@ export async function getReviewStats(req: Request, res: Response) {
   // Token totals and costs come from each job's summary digest. Costs were
   // fixed when each review ran; jobs reviewed before the digest carried them
   // contribute nothing until they are re-run.
-  const tokens = { calls: 0, inputTokens: 0, outputTokens: 0 };
+  // unpricedCalls lets the client show the cost as unknown when no call had a price.
+  const tokens = { calls: 0, unpricedCalls: 0, inputTokens: 0, outputTokens: 0 };
   let usd = 0;
   for (const job of jobs) {
     const totals = digestTotals(job.summary);
     tokens.calls += totals.calls;
+    tokens.unpricedCalls += totals.unpricedCalls;
     tokens.inputTokens += totals.inputTokens;
     tokens.outputTokens += totals.outputTokens;
     usd += totals.usd;
