@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import { Navigate, useSearchParams } from "react-router"
-import { KeyRound, LockKeyhole, TriangleAlert, UserRound } from "lucide-react"
+import { KeyRound, LockKeyhole, UserRound } from "lucide-react"
 import { PageHeader } from "@/components/PageHeader"
 import { PageShell } from "@/components/PageShell"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -16,7 +16,6 @@ const TAB_ITEMS = [
   { value: "profile", label: "Profile", icon: UserRound },
   { value: "password", label: "Password", icon: LockKeyhole },
   { value: "tokens", label: "API tokens", icon: KeyRound },
-  { value: "account", label: "Account", icon: TriangleAlert },
 ] as const
 type Tab = (typeof TAB_ITEMS)[number]["value"]
 const TABS: readonly string[] = TAB_ITEMS.map((item) => item.value)
@@ -46,7 +45,7 @@ export function SettingsPage() {
 
   return (
     <PageShell>
-      <PageHeader title="Settings" description="Manage your profile, password, API tokens and account." />
+      <PageHeader title="Settings" description="Manage your profile, password and API tokens." />
       <Tabs className="max-w-3xl" value={tab} onValueChange={(value) => setParams({ tab: value }, { replace: true })}>
         <TabsList>
           {TAB_ITEMS.map((item) => (
@@ -64,6 +63,9 @@ export function SettingsPage() {
             <Section title="Profile" description="Your name and the email you sign in with.">
               <ProfileForm user={user} />
             </Section>
+            <Section title="Delete account" description="Remove your account and everything it owns.">
+              <DeleteAccount />
+            </Section>
           </div>
         </TabsContent>
         <TabsContent value="password">
@@ -80,11 +82,6 @@ export function SettingsPage() {
             description="Personal tokens for scripts and CI. Revoke any you no longer use."
           >
             <ApiTokens />
-          </Section>
-        </TabsContent>
-        <TabsContent value="account">
-          <Section title="Delete account" description="Remove your account and everything it owns.">
-            <DeleteAccount />
           </Section>
         </TabsContent>
       </Tabs>

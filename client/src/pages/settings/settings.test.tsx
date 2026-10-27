@@ -79,11 +79,15 @@ describe("Settings page", () => {
     expect(await screen.findByText("Password is incorrect")).toBeInTheDocument()
   })
 
-  it("deletes the account after confirming with the password", async () => {
+  it("deletes the account from the profile tab after confirming with the password", async () => {
     const fetchSpy = mockApi({ "DELETE /api/settings/account": () => jsonResponse(204) })
+    // The old Account tab link falls back to Profile, which now holds the card.
     renderWithProviders(<App />, { route: "/settings?tab=account" })
 
-    await userEvent.click(await screen.findByRole("button", { name: "Delete account" }))
+    const deleteButton = await screen.findByRole("button", { name: "Delete account" })
+    expect(screen.getByRole("tab", { name: "Profile", selected: true })).toBeInTheDocument()
+    expect(screen.queryByRole("tab", { name: "Account" })).not.toBeInTheDocument()
+    await userEvent.click(deleteButton)
     const dialog = await screen.findByRole("dialog")
     await userEvent.type(within(dialog).getByLabelText("Password"), "secret")
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete permanently" }))
