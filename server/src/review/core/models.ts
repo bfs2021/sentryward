@@ -174,7 +174,8 @@ export const omissionSchema = z.object({
 export type Omission = z.infer<typeof omissionSchema>;
 
 export const llmUsageSchema = z.object({
-  purpose: z.enum(["review", "walkthrough", "verify"]),
+  // probe: a check of what the model supports, run before the review used it.
+  purpose: z.enum(["review", "walkthrough", "verify", "probe"]),
   model: z.string(),
   // Total input, cache reads included.
   inputTokens: z.number().int().min(0),
@@ -187,6 +188,10 @@ export const llmUsageSchema = z.object({
   reasoningTokens: z.number().int().min(0).optional(),
   latencyMs: z.number().int().min(0),
   chunk: z.number().int().positive().optional(),
+  // An agentic pass (review.context: agentic): its model calls, and its tool
+  // calls by tool name. The token counts above sum every step.
+  steps: z.number().int().positive().optional(),
+  toolCalls: z.record(z.string(), z.number().int().min(0)).optional(),
   // A call whose reply could not be used, kept because its tokens were billed.
   failed: z.literal(true).optional(),
   // USD at the prices in effect when the call was made (core/pricing). Absent

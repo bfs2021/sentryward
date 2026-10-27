@@ -9,6 +9,10 @@ export type ReviewTrigger = "manual" | "published" | "all"
 export type SummaryTrigger = "manual" | "published"
 export type HighLevelSummaryPlacement = "description" | "walkthrough"
 export type VerifyMode = "off" | "blocking" | "all"
+// Mirror server/src/review/config/schema.ts.
+export type ThinkingLevel = "off" | "low" | "medium" | "high"
+export type ThinkingSupportSetting = "auto" | "options" | "model" | "none"
+export type ContextMode = "static" | "agentic"
 
 // A team rule; mirrors ruleSchema in server/src/review/config/schema.ts.
 export interface Rule {
@@ -40,6 +44,11 @@ export interface ConfigOverride {
     // Legacy endpoint fields are accepted until the setting is saved again.
     baseUrl?: string | null
     endpointKey?: LlmProviderName | null
+    thinking?: ThinkingLevel
+    // null uses thinking.
+    verifyThinking?: ThinkingLevel | null
+    // Dashboard only: what the connection's models support, when detection is wrong.
+    capabilities?: { thinking?: ThinkingSupportSetting; tools?: "auto" | boolean }
   }
   review?: {
     categories?: string[]
@@ -57,6 +66,8 @@ export interface ConfigOverride {
     verify?: VerifyMode
     toolFindings?: boolean
     toolFindingsBlock?: boolean
+    context?: ContextMode
+    agent?: { maxSteps?: number; maxToolTokens?: number; maxSearches?: number }
   }
   output?: {
     walkthrough?: boolean
@@ -124,6 +135,9 @@ export interface EffectiveConfig {
     baseUrl: string | null
     // The stored key sent to baseUrl; null sends each model's own provider key.
     endpointKey: LlmProviderName | null
+    thinking: ThinkingLevel
+    verifyThinking: ThinkingLevel | null
+    capabilities: { thinking: ThinkingSupportSetting; tools: "auto" | boolean }
   }
   review: {
     categories: string[]
@@ -141,6 +155,8 @@ export interface EffectiveConfig {
     verify: VerifyMode
     toolFindings: boolean
     toolFindingsBlock: boolean
+    context: ContextMode
+    agent: { maxSteps: number; maxToolTokens: number; maxSearches: number }
   }
   output: {
     walkthrough: boolean

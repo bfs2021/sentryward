@@ -2,6 +2,7 @@ import express, { Router } from "express";
 import { createToken, listTokens, revokeToken } from "../controllers/apiTokens.controller.ts";
 import { AVATAR_MAX_BYTES, AVATAR_TYPES, removeAvatar, uploadAvatar } from "../controllers/avatar.controller.ts";
 import {
+  apiKeyCapabilities,
   apiKeyModels,
   apiKeyStatus,
   changePassword,
@@ -30,6 +31,7 @@ settingsRouter.use("/api-keys", requireWorkspace);
 settingsRouter.get("/api-keys", listApiKeys);
 settingsRouter.get("/api-keys/:provider/status", apiKeyStatus);
 settingsRouter.get("/api-keys/:provider/models", apiKeyModels);
+settingsRouter.get("/api-keys/:provider/capabilities", apiKeyCapabilities);
 settingsRouter.post("/api-keys/:provider/test", testApiKeyModel);
 settingsRouter.put("/api-keys/:provider", requireWorkspaceRole("admin"), saveApiKey);
 settingsRouter.delete("/api-keys/:provider", requireWorkspaceRole("admin"), deleteApiKey);

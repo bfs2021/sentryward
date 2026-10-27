@@ -18,6 +18,10 @@ const modelString = z
   .string()
   .regex(/^(anthropic|openai|google|ollama)\/[\w.:()/-]+$/, 'Use "provider/model", e.g. anthropic/claude-sonnet-5-5');
 
+// Extended thinking per call. Each level maps onto the provider's own option
+// (llm/thinking.ts); whether it is sent depends on what the endpoint supports.
+export const THINKING_LEVELS = ["off", "low", "medium", "high"] as const;
+const thinkingLevel = z.enum(THINKING_LEVELS);
 
 const llmShape = {
   model: modelString,
@@ -30,6 +34,22 @@ const llmShape = {
   maxTokens: z.number().int().min(1000).max(64000),
   // Prompt token ceiling; null derives it from the model's context window.
   contextBudget: z.number().int().min(4000).nullable(),
+  // For review passes; the walkthrough always runs without it.
+  thinking: thinkingLevel,
+  // For verification; null uses `thinking`.
+  verifyThinking: thinkingLevel.nullable(),
+};
+
+// What the selected connection's models support, when the user knows better
+// than detection does. "auto" uses what probes and earlier calls recorded
+// (llm/capabilities.ts). Dashboard only: a repository file must not change how
+// credentials and endpoints are used.
+export const THINKING_SUPPORT_SETTINGS = ["auto", "options", "model", "none"] as const;
+const capabilitiesShape = {
+  // options: send the provider's thinking options; model: the model id itself
+  // thinks (only the output budget changes); none: never think.
+  thinking: z.enum(THINKING_SUPPORT_SETTINGS),
+  tools: z.union([z.literal("auto"), z.boolean()]),
 };
 
 // Settable only from the dashboard, never from a repository file or a trigger.
@@ -47,9 +67,21 @@ const dashboardLlmShape = {
   // Which stored provider key is sent to baseUrl; null sends each model's own
   // provider key. Names a key slot, never holds the key.
   endpointKey: z.enum(["anthropic", "openai", "google", "ollama"]).nullable(),
+  capabilities: z.strictObject(capabilitiesShape),
 };
 
 export const VERIFY_MODES = ["off", "blocking", "all"] as const;
+export const CONTEXT_MODES = ["static", "agentic"] as const;
+
+// Caps on one agentic pass (review.context: agentic).
+const agentShape = {
+  // Model calls per pass, the forced final report included.
+  maxSteps: z.number().int().min(2).max(20),
+  // Tokens the tools may return in one pass before they ask for the report.
+  maxToolTokens: z.number().int().min(1000).max(100_000),
+  // Code searches across the whole review: GitHub rate-limits search hard.
+  maxSearches: z.number().int().min(0).max(10),
+};
 
 const reviewShape = {
   categories: z.array(categorySchema).min(1),
@@ -84,6 +116,11 @@ const reviewShape = {
   toolFindings: z.boolean(),
   // Let those tool findings reach blockOn and fail the verdict.
   toolFindingsBlock: z.boolean(),
+  // static: each pass sees the diff and the context gathered for it.
+  // agentic: a pass may also read files and search code through tools
+  // until it reports, within review.agent's caps.
+  context: z.enum(CONTEXT_MODES),
+  agent: z.strictObject(agentShape),
 };
 
 export const SUMMARY_LOCATIONS = ["dynamic", "description", "comment"] as const;
@@ -309,7 +346,8 @@ export const configOverrideSchema = z
   .strictObject({
     ...topLevelShape,
     llm: z.strictObject(llmShape).partial(),
-    review: z.strictObject(reviewShape).partial(),
+    // Nested objects are partial too, so a layer may set one cap alone.
+    review: z.strictObject({ ...reviewShape, agent: z.strictObject(agentShape).partial() }).partial(),
     output: z.strictObject(outputShape).partial(),
     triggers: z.strictObject(triggersShape).partial(),
   })
@@ -320,7 +358,10 @@ export type ConfigOverride = z.infer<typeof configOverrideSchema>;
 // the dashboard. Only these layers may set endpoints; the repository file and
 // triggers use configOverrideSchema, which rejects them as unknown settings.
 export const dashboardOverrideSchema = configOverrideSchema.extend({
-  llm: z.strictObject(dashboardLlmShape).partial().optional(),
+  llm: z
+    .strictObject({ ...dashboardLlmShape, capabilities: z.strictObject(capabilitiesShape).partial() })
+    .partial()
+    .optional(),
 });
 export type DashboardOverride = z.infer<typeof dashboardOverrideSchema>;
 
@@ -335,9 +376,12 @@ export const DEFAULT_CONFIG: Config = {
     temperature: 0.2,
     maxTokens: 8000,
     contextBudget: null,
+    thinking: "off",
+    verifyThinking: null,
     connection: null,
     baseUrl: null,
     endpointKey: null,
+    capabilities: { thinking: "auto", tools: "auto" },
   },
   review: {
     categories: ["security", "bug", "performance", "logic", "reliability"],
@@ -355,6 +399,8 @@ export const DEFAULT_CONFIG: Config = {
     verify: "blocking",
     toolFindings: true,
     toolFindingsBlock: false,
+    context: "static",
+    agent: { maxSteps: 8, maxToolTokens: 30_000, maxSearches: 5 },
   },
   output: {
     walkthrough: true,

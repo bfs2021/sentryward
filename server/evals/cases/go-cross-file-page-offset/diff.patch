@@ -1,0 +1,18 @@
+diff --git a/paging/paging.go b/paging/paging.go
+index d1195ab..b6e6df5 100644
+--- a/paging/paging.go
++++ b/paging/paging.go
+@@ -1,9 +1,9 @@
+ package paging
+ 
+-// Offset is the first row of a page. Pages are numbered from 1.
++// Offset is the first row of a page.
+ func Offset(page, size int) int {
+-	if page < 1 {
+-		page = 1
++	if page < 0 {
++		page = 0
+ 	}
+-	return (page - 1) * size
++	return page * size
+ }

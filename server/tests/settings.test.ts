@@ -542,7 +542,8 @@ describe("POST /api/settings/api-keys/:provider/test", () => {
     expect(res.status).toBe(200);
     expect(res.body.result).toMatchObject({ ok: true, inputTokens: 40, outputTokens: 5 });
     expect(JSON.stringify(res.body)).not.toContain("secret");
-    expect(calls).toHaveLength(1);
+    // The test call, then the capability probe's thinking and tool calls.
+    expect(calls).toHaveLength(3);
     expect(calls[0]!.headers.authorization).toBe("Bearer ollama-secret-1234");
     expect(JSON.parse(calls[0]!.body!)).toMatchObject({ model: "qwen3", max_tokens: 256 });
   });

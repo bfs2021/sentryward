@@ -16,6 +16,9 @@ const schema: ConfigSchema = {
       connection: null,
       baseUrl: null,
       endpointKey: null,
+      thinking: "off",
+      verifyThinking: null,
+      capabilities: { thinking: "auto", tools: "auto" },
     },
     review: {
       categories: ["security", "bug"],
@@ -33,6 +36,8 @@ const schema: ConfigSchema = {
       verify: "blocking",
       toolFindings: true,
       toolFindingsBlock: false,
+      context: "static",
+      agent: { maxSteps: 8, maxToolTokens: 30000, maxSearches: 5 },
     },
     output: {
       walkthrough: true,
@@ -121,10 +126,21 @@ describe("toSettings", () => {
 
   it("saves the trigger choices and skip lists", () => {
     const form = toForm({})
-    expect(form.choices).toEqual({ review: INHERIT, summary: INHERIT, highLevelSummaryPlacement: INHERIT, verify: INHERIT })
+    const inherit = {
+      review: INHERIT,
+      summary: INHERIT,
+      highLevelSummaryPlacement: INHERIT,
+      verify: INHERIT,
+      context: INHERIT,
+      thinking: INHERIT,
+      verifyThinking: INHERIT,
+      thinkingSupport: INHERIT,
+      toolSupport: INHERIT,
+    }
+    expect(form.choices).toEqual(inherit)
     const next = {
       ...form,
-      choices: { review: "manual", summary: "manual", highLevelSummaryPlacement: INHERIT, verify: INHERIT },
+      choices: { ...inherit, review: "manual", summary: "manual" },
       lists: { ...form.lists, ignoreTitles: [" WIP", "Do not review ", " "], skipAuthors: ["dependabot[bot]"] },
     }
     expect(toSettings({}, next)).toEqual({
@@ -394,6 +410,52 @@ describe("validateForm", () => {
 
   it("accepts Ollama model ids", () => {
     expect(validateForm({ ...form, model: "ollama/qwen3" })).toEqual({})
+  })
+})
+
+describe("thinking, capabilities and agentic context", () => {
+  it("round-trips nested settings and keeps tool support a boolean", () => {
+    const saved = {
+      llm: { thinking: "medium" as const, verifyThinking: "low" as const, capabilities: { tools: false } },
+      review: { context: "agentic" as const, agent: { maxSteps: 4 } },
+    }
+    const form = toForm(saved)
+    expect(form.choices).toMatchObject({ thinking: "medium", verifyThinking: "low", toolSupport: "false", thinkingSupport: INHERIT })
+    expect(form.numbers).toMatchObject({ maxSteps: "4", maxToolTokens: "" })
+    expect(toSettings(saved, form)).toEqual(saved)
+
+    const changed = toSettings(saved, {
+      ...form,
+      choices: { ...form.choices, toolSupport: "true", thinkingSupport: "model" },
+      numbers: { ...form.numbers, maxSteps: "", maxSearches: "2" },
+    })
+    expect(changed.llm?.capabilities).toEqual({ thinking: "model", tools: true })
+    expect(changed.review?.agent).toEqual({ maxSearches: 2 })
+  })
+
+  it("drops a nested object once nothing in it is set", () => {
+    const saved = { review: { agent: { maxSteps: 4 } }, llm: { capabilities: { tools: true } } }
+    const form = toForm(saved)
+    const cleared = toSettings(saved, {
+      ...form,
+      choices: { ...form.choices, toolSupport: INHERIT },
+      numbers: { ...form.numbers, maxSteps: "" },
+    })
+    expect(cleared).toEqual({})
+  })
+
+  it("rejects agent caps outside the server's bounds", () => {
+    const form = toForm({})
+    expect(validateForm({ ...form, numbers: { ...form.numbers, maxSteps: "1", maxSearches: "11" } })).toMatchObject({
+      maxSteps: expect.any(String),
+      maxSearches: expect.any(String),
+    })
+  })
+
+  it("does not pin agent caps the profile already gives", () => {
+    expect(withoutDefaults({ review: { agent: { maxSteps: 8, maxSearches: 2 } } }, schema)).toEqual({
+      review: { agent: { maxSearches: 2 } },
+    })
   })
 })
 

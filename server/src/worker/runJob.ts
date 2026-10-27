@@ -17,8 +17,14 @@ import {
   type ApiKeys,
   type Endpoint,
   type Generate,
+  type GenerateOptions,
   type ProviderBaseUrls,
 } from "../review/llm/providers.ts";
+import {
+  abortableGenerateAgentic,
+  createGenerateAgentic,
+  type GenerateAgentic,
+} from "../review/llm/agentic.ts";
 import type { WalkthroughIssues } from "../review/llm/walkthrough.ts";
 import { runReview } from "../review/pipeline.ts";
 import { publishes, publishReview, resolvesThreads } from "../review/publish/publisher.ts";
@@ -33,6 +39,8 @@ import {
   recordCredentials,
 } from "../services/providers/credentials.ts";
 import { llmCredentialsFor } from "../services/llm.ts";
+import { probeModel } from "../services/llmProbe.ts";
+import { prepareCapabilities, type Probe } from "./capabilities.ts";
 import { CLOSE_CHECK_INTERVAL_MS, watchForClose } from "./closeWatch.ts";
 import { resolveLlm, type LlmCredentials } from "./llmEndpoint.ts";
 import { incrementFor } from "./incremental.ts";
@@ -47,8 +55,17 @@ export interface RunJobDeps {
   adapterFor: (connection: ForgeConnection) => Forge;
   // Whether the forge refuses the connection's credentials outright.
   credentialsRefused?: (connection: ForgeConnection) => Promise<boolean>;
-  generateFor: (keys: ApiKeys, endpoint?: Endpoint, baseUrls?: ProviderBaseUrls) => Generate;
+  generateFor: (keys: ApiKeys, endpoint?: Endpoint, baseUrls?: ProviderBaseUrls, options?: GenerateOptions) => Generate;
   credentialsFor: (workspaceId: string) => Promise<LlmCredentials>;
+  // Model calls for agentic passes (review.context: agentic).
+  generateAgenticFor?: (
+    keys: ApiKeys,
+    endpoint?: Endpoint,
+    baseUrls?: ProviderBaseUrls,
+    options?: GenerateOptions,
+  ) => GenerateAgentic;
+  // Checks what a model supports the first time a review needs to know.
+  probe?: Probe;
   // Absent means every read goes to the forge, as with review.disableCache.
   cache?: ForgeCache;
   closeCheckIntervalMs?: number;
@@ -333,7 +350,21 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
   }
 
   const issues = walkthrough ? await walkthroughIssues(forge, changeSet, config, warnings) : undefined;
-  const generate = deps.generateFor(keys, endpoint, baseUrls);
+  const capabilities = await prepareCapabilities({
+    workspaceId: repo.connection.workspaceId,
+    config,
+    keys,
+    endpoint,
+    baseUrls,
+    probe: deps.probe ?? probeModel,
+    warnings,
+  });
+  const generateOptions: GenerateOptions = { ledger: capabilities.ledger, override: config.llm.capabilities };
+  const generate = deps.generateFor(keys, endpoint, baseUrls, generateOptions);
+  const generateAgentic =
+    config.review.context === "agentic"
+      ? (deps.generateAgenticFor ?? createGenerateAgentic)(keys, endpoint, baseUrls, generateOptions)
+      : undefined;
   // Files at the head sha never change, so they share the config file's cache
   // key shape. Code search results are not fixed by a sha and stay uncached.
   const fileCache = cacheFor(config.review.disableCache);
@@ -401,11 +432,18 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
         increment,
         toolAnnotations: tools,
       },
-      { generate: abortableGenerate(generate, watch.signal), context },
+      {
+        generate: abortableGenerate(generate, watch.signal),
+        context,
+        ...(generateAgentic ? { generateAgentic: abortableGenerateAgentic(generateAgentic, watch.signal) } : {}),
+      },
     );
   } finally {
     watch.stop();
+    // What the calls learned holds whether or not this run is kept.
+    await capabilities.persist();
   }
+  if (capabilities.usage.length) result = { ...result, usage: [...capabilities.usage, ...result.usage] };
   // Nothing is published for a review cancelled or a change no longer open.
   if (await watch.closedNow()) {
     await cancel(publishes(config));

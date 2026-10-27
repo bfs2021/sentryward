@@ -1,4 +1,5 @@
 import type { Config } from "../config/schema.ts";
+import { effectiveOutputTokens } from "../llm/thinking.ts";
 
 // A deliberately rough estimate. Exact counts differ per provider and tokenizer;
 // the budget keeps a safety margin rather than pretending to precision.
@@ -21,9 +22,12 @@ export const MAX_CONTEXT_TOKENS_PER_PASS = 20_000;
 const SAFETY_TOKENS = 2_000;
 const MIN_DIFF_TOKENS = 2_000;
 
+// The window less the whole reply, thinking budget included: Anthropic counts
+// thinking inside max_tokens, so leaving it out would overflow the window.
 function promptCeiling(config: Config): number {
   const provider = config.llm.model.split("/")[0] ?? "anthropic";
-  return config.llm.contextBudget ?? (CONTEXT_WINDOW[provider] ?? 128_000) - config.llm.maxTokens;
+  const reply = effectiveOutputTokens(config.llm.maxTokens, config.llm.thinking);
+  return config.llm.contextBudget ?? (CONTEXT_WINDOW[provider] ?? 128_000) - reply;
 }
 
 // Diff tokens one pass may carry once the fixed prompt and the reply are paid for.

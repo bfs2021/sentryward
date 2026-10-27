@@ -22,6 +22,8 @@ import {
   updateProfileSchema,
 } from "../schemas/settings.schema.ts";
 import { assertAnotherAdminRemains } from "../services/admins.ts";
+import { clearCapabilities, endpointKey, listCapabilities, recordCapabilities } from "../services/llmCapabilities.ts";
+import { probeModel } from "../services/llmProbe.ts";
 import { assertEmailAvailable, emailTaken, isUniqueViolation } from "../services/users.ts";
 import { releaseWorkspaces } from "../services/workspaces.ts";
 import { clearAuthCookie, publicUser, setAuthCookie } from "./auth.controller.ts";
@@ -184,11 +186,46 @@ export async function testApiKeyModel(req: Request, res: Response) {
     throw new HttpError(400, "Validation failed", { model: [`This connection can only run ${provider}/... models`] });
   }
 
-  const result = await testLlmModel(provider, model, {
-    apiKey: storedApiKey(credential),
-    baseUrl: credential.baseUrl ?? undefined,
+  const apiKey = storedApiKey(credential);
+  const baseUrl = credential.baseUrl ?? undefined;
+  const result = await testLlmModel(provider, model, { apiKey, baseUrl });
+  if (!result.ok) {
+    res.json({ result });
+    return;
+  }
+  // A model that answers is probed for what reviews may ask of it, and the
+  // answer kept for them. A probe that fails costs the test nothing.
+  const endpoint = baseUrl ? { baseUrl, apiKey } : undefined;
+  const probe = await probeModel(model, apiKey ? { [provider]: apiKey } : {}, endpoint).catch(() => undefined);
+  if (!probe) {
+    res.json({ result });
+    return;
+  }
+  const workspaceId = req.workspaceId!;
+  await recordCapabilities(workspaceId, () => ({ provider: modelProvider, endpoint: endpointKey(baseUrl) }), [
+    { model, capabilities: probe.capabilities, source: "probe", detail: probe.detail },
+  ]);
+  res.json({
+    result: {
+      ...result,
+      capabilities: {
+        thinking: probe.capabilities.thinking ?? null,
+        tools: probe.capabilities.tools ?? null,
+        detail: probe.detail,
+      },
+    },
   });
-  res.json({ result });
+}
+
+// What probes and reviews found this connection's models support, including
+// for a provider keyed only from the server environment.
+export async function apiKeyCapabilities(req: Request, res: Response) {
+  const { provider } = apiKeyParamsSchema.parse(req.params);
+  const credential = await prisma.llmCredential.findUnique({
+    where: { workspaceId_provider: { workspaceId: req.workspaceId!, provider } },
+    select: { baseUrl: true },
+  });
+  res.json({ capabilities: await listCapabilities(req.workspaceId!, provider, credential?.baseUrl) });
 }
 
 export async function saveApiKey(req: Request, res: Response) {
@@ -206,20 +243,31 @@ export async function saveApiKey(req: Request, res: Response) {
   await verifyLlmConnection(provider, apiKey, baseUrl);
   const workspaceId = req.workspaceId!;
   const encryptedKey = apiKey ? encrypt(apiKey) : null;
+  const previous = await prisma.llmCredential.findUnique({
+    where: { workspaceId_provider: { workspaceId, provider } },
+    select: { baseUrl: true },
+  });
   const credential = await prisma.llmCredential.upsert({
     where: { workspaceId_provider: { workspaceId, provider } },
     create: { workspaceId, provider, encryptedKey, baseUrl },
     update: { encryptedKey, baseUrl: baseUrl ?? null },
   });
+  await clearCapabilities(workspaceId, provider, previous?.baseUrl);
+  if (previous?.baseUrl !== credential.baseUrl) await clearCapabilities(workspaceId, provider, credential.baseUrl);
   res.json({ key: publicKey(provider, credential) });
 }
 
 export async function deleteApiKey(req: Request, res: Response) {
   const { provider } = apiKeyParamsSchema.parse(req.params);
+  const credential = await prisma.llmCredential.findUnique({
+    where: { workspaceId_provider: { workspaceId: req.workspaceId!, provider } },
+    select: { baseUrl: true },
+  });
   const { count } = await prisma.llmCredential.deleteMany({ where: { workspaceId: req.workspaceId, provider } });
   if (count === 0) {
     throw new HttpError(404, "No key stored for this provider");
   }
+  await clearCapabilities(req.workspaceId!, provider, credential?.baseUrl);
   res.status(204).end();
 }
 

@@ -1,7 +1,18 @@
 import { useMemo, useState, type ReactNode } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { CircleCheck, CircleX, FlaskConical, KeyRound, Loader2, MoreHorizontal, Plus, RefreshCw, Trash2 } from "lucide-react"
+import {
+  CircleCheck,
+  CircleX,
+  FlaskConical,
+  KeyRound,
+  ListChecks,
+  Loader2,
+  MoreHorizontal,
+  Plus,
+  RefreshCw,
+  Trash2,
+} from "lucide-react"
 import { toast } from "sonner"
 import { z } from "zod"
 import { SearchableSelect } from "@/components/SearchableSelect"
@@ -52,6 +63,7 @@ import {
   useApiKeys,
   useApiKeyStatuses,
   useDeleteApiKey,
+  useLlmCapabilities,
   useLlmModels,
   useSaveApiKey,
   useTestLlmModel,
@@ -59,6 +71,7 @@ import {
   type ApiKey,
   type LlmConnectionStatus,
   type LlmProvider,
+  type ThinkingSupport,
 } from "./api"
 import { ApiKeyStatusBadge } from "./ApiKeyStatusBadge"
 import { LLM_PROVIDERS } from "./providers"
@@ -280,11 +293,13 @@ function compareKeys(
 function KeyActions({
   apiKey,
   onTest,
+  onCapabilities,
   onReplace,
   onRemove,
 }: {
   apiKey: ApiKey
   onTest: () => void
+  onCapabilities: () => void
   onReplace: () => void
   onRemove: () => void
 }) {
@@ -306,6 +321,10 @@ function KeyActions({
         <DropdownMenuItem onSelect={onTest} disabled={apiKey.undecryptable}>
           <FlaskConical />
           Test model
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onCapabilities}>
+          <ListChecks />
+          Capabilities
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={onReplace}>
           <RefreshCw />
@@ -404,10 +423,18 @@ function TestModelForm({ apiKey }: { apiKey: ApiKey }) {
         {modelError && <FieldError>{modelError}</FieldError>}
       </Field>
       {result?.ok && (
-        <p role="status" className="flex items-center gap-2 text-sm">
-          <CircleCheck className="size-4 shrink-0 text-emerald-700 dark:text-emerald-400" />
-          Responded in {result.latencyMs} ms, {result.inputTokens} input / {result.outputTokens} output tokens
-        </p>
+        <div role="status" className="flex flex-col gap-2 text-sm">
+          <p className="flex items-center gap-2">
+            <CircleCheck className="size-4 shrink-0 text-emerald-700 dark:text-emerald-400" />
+            Responded in {result.latencyMs} ms, {result.inputTokens} input / {result.outputTokens} output tokens
+          </p>
+          {result.capabilities && (
+            <div className="flex flex-wrap items-center gap-2">
+              <CapabilityBadges thinking={result.capabilities.thinking} tools={result.capabilities.tools} />
+              <span className="text-xs text-muted-foreground">{result.capabilities.detail}</span>
+            </div>
+          )}
+        </div>
       )}
       {result && !result.ok && (
         <p role="alert" className="flex items-start gap-2 text-sm text-destructive">
@@ -457,6 +484,87 @@ function TestModelDialog({ apiKey, onOpenChange }: { apiKey: ApiKey | null; onOp
   )
 }
 
+const THINKING_LABELS: Record<ThinkingSupport, string> = {
+  options: "Thinking",
+  model: "Thinking model",
+  none: "No thinking",
+}
+
+function CapabilityBadges({ thinking, tools }: { thinking: ThinkingSupport | null; tools: boolean | null }) {
+  return (
+    <>
+      <Badge variant={thinking && thinking !== "none" ? "secondary" : "outline"}>
+        {thinking ? THINKING_LABELS[thinking] : "Thinking unknown"}
+      </Badge>
+      <Badge variant={tools ? "secondary" : "outline"}>
+        {tools === null ? "Tools unknown" : tools ? "Tools" : "No tools"}
+      </Badge>
+    </>
+  )
+}
+
+function CapabilitiesList({ provider }: { provider: LlmProvider }) {
+  const capabilities = useLlmCapabilities(provider)
+  if (capabilities.isPending) return <p className="text-sm text-muted-foreground">Loading...</p>
+  if (capabilities.isError) return <p role="alert" className="text-sm text-destructive">Could not load capabilities</p>
+  const rows = capabilities.data.capabilities
+  if (!rows.length) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        Nothing recorded yet. Test a model, or run a review with thinking or agentic context on, to detect what it supports.
+      </p>
+    )
+  }
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Model</TableHead>
+          <TableHead>Supports</TableHead>
+          <TableHead>Checked</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((row) => (
+          <TableRow key={`${row.endpoint ?? ""}:${row.model}`}>
+            <TableCell className="font-mono text-xs">{row.model}</TableCell>
+            <TableCell>
+              <div className="flex flex-wrap gap-1">
+                <CapabilityBadges thinking={row.thinking} tools={row.tools} />
+              </div>
+              {row.detail && <p className="mt-1 text-xs text-muted-foreground">{row.detail}</p>}
+            </TableCell>
+            <TableCell className="text-xs text-muted-foreground">
+              {formatDate(row.checkedAt)} ({row.source === "probe" ? "probe" : "review"})
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  )
+}
+
+// Beside the table for the same reason as RemoveKeyDialog.
+function CapabilitiesDialog({ apiKey, onOpenChange }: { apiKey: ApiKey | null; onOpenChange: (open: boolean) => void }) {
+  return (
+    <Dialog open={apiKey !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl">
+        {apiKey && (
+          <>
+            <DialogHeader>
+              <DialogTitle>{LLM_PROVIDERS[apiKey.provider].label} model capabilities</DialogTitle>
+              <DialogDescription>
+                What each model was found to support on this connection. Reviews skip what is missing, with a warning.
+              </DialogDescription>
+            </DialogHeader>
+            <CapabilitiesList provider={apiKey.provider} />
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function KeysTable({
   keys,
   statuses,
@@ -470,6 +578,7 @@ function KeysTable({
   const { sort, onSort } = useSort<SortKey>()
   const [removing, setRemoving] = useState<ApiKey | null>(null)
   const [testing, setTesting] = useState<ApiKey | null>(null)
+  const [inspecting, setInspecting] = useState<ApiKey | null>(null)
 
   const sorted = useMemo(() => {
     if (!sort) return keys
@@ -537,6 +646,7 @@ function KeysTable({
                   <KeyActions
                     apiKey={key}
                     onTest={() => setTesting(key)}
+                    onCapabilities={() => setInspecting(key)}
                     onReplace={() => onReplace(key.provider)}
                     onRemove={() => setRemoving(key)}
                   />
@@ -555,6 +665,7 @@ function KeysTable({
       />
       <RemoveKeyDialog apiKey={removing} onOpenChange={(open) => !open && setRemoving(null)} />
       <TestModelDialog apiKey={testing} onOpenChange={(open) => !open && setTesting(null)} />
+      <CapabilitiesDialog apiKey={inspecting} onOpenChange={(open) => !open && setInspecting(null)} />
     </>
   )
 }

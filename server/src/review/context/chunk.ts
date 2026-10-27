@@ -15,6 +15,8 @@ export interface Chunk {
   tokens: number;
   // Rendered CONTEXT blocks for this pass, empty when there are none.
   context: string;
+  // What an agentic pass read through its tools, rendered the same way.
+  toolContext?: string;
 }
 
 export interface ChunkPlan {

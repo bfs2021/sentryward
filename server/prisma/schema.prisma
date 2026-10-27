@@ -71,13 +71,14 @@ model Workspace {
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
-  personalOwner  User?             @relation("PersonalWorkspace", fields: [personalOwnerId], references: [id], onDelete: Cascade)
-  memberships    Membership[]
-  connections    ForgeConnection[]
-  llmCredentials LlmCredential[]
-  invites        Invite[]
-  oauthStates    OAuthState[]
-  notifications  NotificationTarget[]
+  personalOwner   User?                @relation("PersonalWorkspace", fields: [personalOwnerId], references: [id], onDelete: Cascade)
+  memberships     Membership[]
+  connections     ForgeConnection[]
+  llmCredentials  LlmCredential[]
+  llmCapabilities LlmCapability[]
+  invites         Invite[]
+  oauthStates     OAuthState[]
+  notifications   NotificationTarget[]
 
   @@map("workspaces")
 }
@@ -413,50 +414,50 @@ model PostedFinding {
 // a run still reports it, resolved once a run that read its file does not);
 // "ignored" is only ever set by the user and survives later runs.
 model Finding {
-  id           String          @id @default(uuid()) @db.Uuid
-  repositoryId String          @map("repository_id") @db.Uuid
-  number       Int
-  fingerprint  String
-  state        FindingState    @default(open)
-  lifecycle    FindingLifecycle @default(new)
+  id            String           @id @default(uuid()) @db.Uuid
+  repositoryId  String           @map("repository_id") @db.Uuid
+  number        Int
+  fingerprint   String
+  state         FindingState     @default(open)
+  lifecycle     FindingLifecycle @default(new)
   // Snapshot from the latest run that reported it, so lists never load results.
-  title        String
-  file         String
-  startLine    Int             @map("start_line")
+  title         String
+  file          String
+  startLine     Int              @map("start_line")
   // Null on rows recorded before it was kept.
-  endLine      Int?            @map("end_line")
-  severity     FindingSeverity
-  category     String
-  kind         String
-  changeTitle  String          @map("change_title")
+  endLine       Int?             @map("end_line")
+  severity      FindingSeverity
+  category      String
+  kind          String
+  changeTitle   String           @map("change_title")
   // Forge login of whoever opened the change; unknown for backfilled rows.
-  author       String?
+  author        String?
   // The model of the review pass that raised it, for the false-positive
   // breakdown. Null for tool and rule findings and rows nothing could be
   // backfilled for. Frozen with lastJobId while ignored, so a dismissal stays
   // with the model and run that were dismissed.
-  model        String?
+  model         String?
   // The confidence first reported for it, for the calibration endpoint, which
   // windows by firstSeenAt. Later runs only fill it while null, so with model
   // changing between runs the two can come from different models (rare).
   // Self-reported, so never a probability by itself. Null for tool and rule
   // findings.
-  confidence   Float?
+  confidence    Float?
   // The `.sentryward.yaml` rule a rule finding violates, for the per-rule
   // breakdown. Null for model and tool findings (an analyzer's own rule id is
   // not kept here).
-  ruleId       String?         @map("rule_id")
-  lastJobId    String?         @map("last_job_id") @db.Uuid
-  firstSeenAt  DateTime        @default(now()) @map("first_seen_at") @db.Timestamptz
-  lastSeenAt   DateTime        @default(now()) @map("last_seen_at") @db.Timestamptz
-  resolvedAt   DateTime?       @map("resolved_at") @db.Timestamptz
-  ignoredAt    DateTime?       @map("ignored_at") @db.Timestamptz
+  ruleId        String?          @map("rule_id")
+  lastJobId     String?          @map("last_job_id") @db.Uuid
+  firstSeenAt   DateTime         @default(now()) @map("first_seen_at") @db.Timestamptz
+  lastSeenAt    DateTime         @default(now()) @map("last_seen_at") @db.Timestamptz
+  resolvedAt    DateTime?        @map("resolved_at") @db.Timestamptz
+  ignoredAt     DateTime?        @map("ignored_at") @db.Timestamptz
   // Set together with ignoredAt and cleared on reopen.
-  ignoreReason IgnoreReason?   @map("ignore_reason")
-  ignoreNote   String?         @map("ignore_note")
+  ignoreReason  IgnoreReason?    @map("ignore_reason")
+  ignoreNote    String?          @map("ignore_note")
   // The forge thread could not be moved to match `state` (a failed resolve or
   // reopen). Later runs retry it until the forge agrees.
-  threadPending Boolean        @default(false) @map("thread_pending")
+  threadPending Boolean          @default(false) @map("thread_pending")
 
   repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
   lastJob    ReviewJob? @relation(fields: [lastJobId], references: [id], onDelete: SetNull)
@@ -533,6 +534,32 @@ model LlmCredential {
 
   @@unique([workspaceId, provider])
   @@map("llm_credentials")
+}
+
+// What a model supports on one endpoint, from probes and from what review
+// calls observed (review/llm/capabilities.ts). Keyed by the endpoint rather
+// than the credential row, so providers keyed from the server environment have
+// results too, and a connection pointed at a new host starts over.
+model LlmCapability {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  provider    String
+  // The normalized base URL, or "" for the provider's official API.
+  endpoint    String
+  // "provider/model", as configs name it.
+  model       String
+  // options | model | none; null is unknown.
+  thinking    String?
+  tools       Boolean?
+  // probe | runtime
+  source      String
+  detail      String?
+  checkedAt   DateTime @default(now()) @map("checked_at") @db.Timestamptz
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, provider, endpoint, model])
+  @@map("llm_capabilities")
 }
 
 enum NotificationKind {

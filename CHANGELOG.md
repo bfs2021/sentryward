@@ -10,6 +10,25 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- Extended thinking, agentic context and model capabilities (#139).
+  `llm.thinking` (`off`, `low`, `medium`, `high`) and `llm.verify_thinking`
+  let review and verification calls reason first, mapped to each provider's
+  own option on native and proxied endpoints, with the budget added to the
+  output limit and the prompt ceiling, and temperature left out. The `strict`
+  profile thinks `high`. `review.context: agentic` lets a pass read files and
+  search code through read-only tools at the head revision before reporting
+  through a `report_findings` tool, within `review.agent` caps; what it read
+  reaches the verifier, and usage records steps and tool calls. What each
+  model supports on each connection (thinking, tools) is probed when a model
+  is tested or first used (in parallel, with a timeout, and an inconclusive
+  probe is retried after a day rather than before every review), corrected at
+  runtime when an endpoint refuses an option or a custom endpoint ignores
+  thinking options (one retry without it, a review warning), shown under a
+  connection's Capabilities, and overridable in Configuration > LLM
+  (dashboard only). New endpoint `GET /api/settings/api-keys/:provider/capabilities`.
+  The eval runner gains `--thinking`, `--context` and `--compare`, and three
+  cross-file cases.
+
 - Estimated model cost for reviews. Each model call now records its prompt
   cache reads and writes and reasoning tokens alongside input and output, and
   its cost, computed when the call is made from a built-in price table (exact

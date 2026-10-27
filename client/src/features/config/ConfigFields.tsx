@@ -32,7 +32,9 @@ import { ReviewPreview } from "./ReviewPreview"
 import { CONFIG_TABS, TAB_ERRORS, type ConfigTab } from "./tabs"
 import {
   AUTO,
+  at,
   CHOICES,
+  choiceKey,
   EMPTY_RULE,
   FLAGS,
   INHERIT,
@@ -204,7 +206,18 @@ function configuredConnectionLabel(llm: EffectiveConfig["llm"]) {
   return "not configured"
 }
 
-const CHOICE_INFO: Record<ChoiceName, { label: string; description: string; options: { value: string; label: string }[] }> = {
+const THINKING_OPTIONS = [
+  { value: "off", label: "Off" },
+  { value: "low", label: "Low (2k tokens)" },
+  { value: "medium", label: "Medium (8k tokens)" },
+  { value: "high", label: "High (24k tokens)" },
+]
+
+const CHOICE_INFO: Record<
+  ChoiceName,
+  // nullLabel names a saved null, e.g. "same as thinking".
+  { label: string; description: string; options: { value: string; label: string }[]; nullLabel?: string }
+> = {
   review: {
     label: "Code review trigger",
     description: "Which pull and merge requests are reviewed automatically when opened or marked ready.",
@@ -238,6 +251,47 @@ const CHOICE_INFO: Record<ChoiceName, { label: string; description: string; opti
       { value: "off", label: "Off" },
       { value: "blocking", label: "Blocking findings" },
       { value: "all", label: "All findings" },
+    ],
+  },
+  context: {
+    label: "Review context",
+    description:
+      "Static shows each pass the diff and the code gathered for it. Agentic also lets the model read files and search code until it reports, within the agent limits below; models that cannot call tools fall back to static.",
+    options: [
+      { value: "static", label: "Static" },
+      { value: "agentic", label: "Agentic" },
+    ],
+  },
+  thinking: {
+    label: "Thinking",
+    description:
+      "Lets review passes reason before answering, at the cost of output tokens. The walkthrough never thinks. Models or endpoints without thinking run without it, with a warning.",
+    options: THINKING_OPTIONS,
+  },
+  verifyThinking: {
+    label: "Verification thinking",
+    description: "Thinking for the verification calls.",
+    options: THINKING_OPTIONS,
+    nullLabel: "Same as thinking",
+  },
+  thinkingSupport: {
+    label: "Thinking support",
+    description:
+      "What the selected connection's models support. Auto uses what probes and reviews detected; set it when detection is wrong.",
+    options: [
+      { value: "auto", label: "Auto (detected)" },
+      { value: "options", label: "Thinking options" },
+      { value: "model", label: "The model thinks by itself" },
+      { value: "none", label: "No thinking" },
+    ],
+  },
+  toolSupport: {
+    label: "Tool support",
+    description: "Whether the connection passes tool calls through, which agentic context needs.",
+    options: [
+      { value: "auto", label: "Auto (detected)" },
+      { value: "true", label: "Tools work" },
+      { value: "false", label: "No tools" },
     ],
   },
 }
@@ -303,6 +357,9 @@ const NUMBER_INFO: Record<NumberName, { label: string; description: string }> = 
     label: "Min confidence",
     description: "Findings below this self-reported confidence (0 to 1) are dropped. It is the model's own estimate, not a measured probability.",
   },
+  maxSteps: { label: "Agent steps", description: "Model calls per agentic pass, the final report included." },
+  maxToolTokens: { label: "Agent tool tokens", description: "What tools may return in one pass before the model must report." },
+  maxSearches: { label: "Agent searches", description: "Code searches across the whole review. GitHub rate-limits search." },
 }
 
 // "x (from y)" for any config value, e.g. "critical (from global config)".
@@ -1017,11 +1074,16 @@ export function ConfigFields(props: {
   }
 
   function choiceField(name: ChoiceName, off = false) {
-    const { section } = CHOICES.find((choice) => choice.name === name)!
-    const path = `${section}.${name}`
-    const fallback = inherited ? ((inherited[section] as Record<string, unknown>)[name] as string) : undefined
+    const spec = CHOICES.find((choice) => choice.name === name)!
+    const path = `${spec.section}.${choiceKey(spec)}`
+    const raw = inherited ? at(inherited, path) : undefined
+    // Booleans are offered as "true" and "false".
+    const fallback = typeof raw === "boolean" ? String(raw) : (raw as string | null | undefined)
     const info = CHOICE_INFO[name]
-    const label = (value: unknown) => info.options.find((option) => option.value === value)?.label ?? value
+    const label = (value: unknown) =>
+      value === null && info.nullLabel
+        ? info.nullLabel
+        : (info.options.find((option) => option.value === String(value))?.label ?? value)
     return (
       <ChoiceField
         id={`choice-${name}`}
@@ -1030,9 +1092,11 @@ export function ConfigFields(props: {
         onChange={(value) => props.onChange({ ...form, choices: { ...form.choices, [name]: value } })}
         options={info.options}
         // The global config selects the fallback itself, so it stays the raw value.
-        {...(isRepo ? { inherit: { description: inheritedHint(path, fallback && label(fallback)) } } : { fallback })}
+        {...(isRepo
+          ? { inherit: { description: inheritedHint(path, fallback === undefined ? undefined : label(fallback)) } }
+          : { fallback: fallback ?? undefined })}
         description={info.description}
-        effective={config && effective(path, label((config[section] as Record<string, unknown>)[name]))}
+        effective={config && effective(path, label(at(config, path)))}
         disabled={disabled || off}
       />
     )
@@ -1070,7 +1134,7 @@ export function ConfigFields(props: {
   function numberField(name: NumberName) {
     const spec = NUMBERS.find((number) => number.name === name)!
     const path = `${spec.section}.${name}`
-    const fallback = inherited ? (inherited[spec.section] as Record<string, unknown>)[name] as number | null : undefined
+    const fallback = inherited ? (at(inherited, path) as number | null) : undefined
     const { label, description } = NUMBER_INFO[name]
     return (
       <TextField
@@ -1087,7 +1151,7 @@ export function ConfigFields(props: {
         min={spec.nullable ? undefined : spec.min}
         max={spec.nullable ? undefined : spec.max}
         step={spec.nullable ? undefined : spec.step}
-        effective={config && effective(path, (config[spec.section] as Record<string, unknown>)[name])}
+        effective={config && effective(path, at(config, path))}
         error={errors[name]}
         disabled={disabled}
       />
@@ -1235,6 +1299,20 @@ export function ConfigFields(props: {
             {numberField("maxTokens")}
             {numberField("contextBudget")}
           </div>
+          <div className="grid gap-4 @md/field-group:grid-cols-2">
+            {choiceField("thinking")}
+            {choiceField("verifyThinking")}
+          </div>
+        </Section>
+        <FieldSeparator />
+        <Section
+          title="Connection capabilities"
+          description="Detected per model by a probe when a model is tested or first used, and corrected by reviews. Set these only when detection is wrong."
+        >
+          <div className="grid gap-4 @md/field-group:grid-cols-2">
+            {choiceField("thinkingSupport")}
+            {choiceField("toolSupport")}
+          </div>
         </Section>
       </>
     ),
@@ -1293,6 +1371,15 @@ export function ConfigFields(props: {
           {choiceField("verify")}
           <ToggleList>{toggles(["toolFindings"])}</ToggleList>
           <ToggleList>{toggles(["toolFindingsBlock"], !toolFindingsOn)}</ToggleList>
+        </Section>
+        <FieldSeparator />
+        <Section title="Review context" description="How much code each pass may read beyond its diff.">
+          {choiceField("context")}
+          <div className="grid gap-4 @md/field-group:grid-cols-3">
+            {numberField("maxSteps")}
+            {numberField("maxToolTokens")}
+            {numberField("maxSearches")}
+          </div>
         </Section>
       </>
     ),

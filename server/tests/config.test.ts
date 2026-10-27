@@ -410,6 +410,32 @@ describe("parseRepoFile", () => {
     });
   });
 
+  it("reads thinking and agentic context, one agent cap at a time", () => {
+    const file = "llm:\n  thinking: medium\n  verify_thinking: low\nreview:\n  context: agentic\n  agent:\n    max_steps: 4\n";
+    const { override, warnings } = parseRepoFile(".sentryward.yaml", file);
+    expect(warnings).toEqual([]);
+    const { config, sources } = resolveConfig({ repoFile: override });
+    expect(config.llm).toMatchObject({ thinking: "medium", verifyThinking: "low" });
+    expect(config.review.context).toBe("agentic");
+    expect(config.review.agent).toEqual({ maxSteps: 4, maxToolTokens: 30_000, maxSearches: 5 });
+    expect(sources["review.agent.maxSteps"]).toBe("repoFile");
+    expect(sources["review.agent.maxSearches"]).toBe("default");
+  });
+
+  it("refuses capability settings, which only the dashboard may set", () => {
+    const { override, warnings } = parseRepoFile(".sentryward.yaml", "llm:\n  capabilities:\n    tools: true\n");
+    expect(override).toBeUndefined();
+    expect(warnings[0]).toMatch(/unknown setting capabilities/);
+    const { config } = resolveConfig({ global: { llm: { capabilities: { thinking: "none" } } } });
+    expect(config.llm.capabilities).toEqual({ thinking: "none", tools: "auto" });
+  });
+
+  it("thinks hard in the strict profile and not at all in the fast one", () => {
+    expect(resolveConfig({ repoFile: { profile: "strict" } }).config.llm.thinking).toBe("high");
+    expect(resolveConfig({ repoFile: { profile: "fast" } }).config.llm.thinking).toBe("off");
+    expect(resolveConfig({}).config.llm.thinking).toBe("off");
+  });
+
   it("ignores the whole file and names an unknown setting in snake_case", () => {
     const { override, warnings } = parseRepoFile(
       ".sentryward.yaml",

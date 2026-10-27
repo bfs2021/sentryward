@@ -1,0 +1,8 @@
+title: Avoid allocating empty tag lists
+description: tags_for reuses one empty list for items without tags.
+language: python
+expected:
+  - file: app/tags.py
+    lines: [11, 11]
+    category: [bug, logic]
+    description: the shared _NO_TAGS list is returned to callers that mutate it (labels in app/report.py appends "overdue"), so every untagged item starts showing the tags appended for others

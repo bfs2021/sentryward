@@ -67,13 +67,47 @@ export function useLlmModels(provider: LlmProvider | null) {
   })
 }
 
+export type ThinkingSupport = "options" | "model" | "none"
+
+// What a probe or a review found one model supports on this connection; null
+// is unknown.
+export interface ModelCapability {
+  model: string
+  // The custom host, or null for the provider's official API.
+  endpoint: string | null
+  thinking: ThinkingSupport | null
+  tools: boolean | null
+  source: "probe" | "runtime"
+  detail: string | null
+  checkedAt: string
+}
+
 export type ModelTestResult =
-  | { ok: true; latencyMs: number; inputTokens: number; outputTokens: number }
+  | {
+      ok: true
+      latencyMs: number
+      inputTokens: number
+      outputTokens: number
+      // Absent when the probe after the test could not run.
+      capabilities?: { thinking: ThinkingSupport | null; tools: boolean | null; detail: string }
+    }
   | { ok: false; reason: "revoked" | "model" | "unreachable" | "output"; message: string }
 
-// A test changes nothing stored, so nothing is invalidated.
+export function useLlmCapabilities(provider: LlmProvider | null) {
+  return useQuery({
+    queryKey: [...API_KEYS_QUERY_KEY, provider, "capabilities"],
+    queryFn: () => api<{ capabilities: ModelCapability[] }>(`/settings/api-keys/${provider}/capabilities`),
+    enabled: Boolean(provider),
+  })
+}
+
+// A passing test probes the model and stores what it found, so the
+// connection's capabilities are read afresh.
 export function useTestLlmModel() {
+  const queryClient = useQueryClient()
   return useMutation({
+    onSuccess: (_data, { provider }) =>
+      queryClient.invalidateQueries({ queryKey: [...API_KEYS_QUERY_KEY, provider, "capabilities"] }),
     mutationFn: ({ provider, model }: { provider: LlmProvider; model: string }) =>
       api<{ result: ModelTestResult }>(`/settings/api-keys/${provider}/test`, {
         method: "POST",

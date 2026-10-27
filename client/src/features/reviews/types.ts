@@ -139,7 +139,17 @@ export interface ReviewResult {
   }
   coverage: { reviewedFiles: string[]; omissions: Omission[]; passes: number }
   validation: { dropped: Record<string, number>; demoted: number }
-  usage: { purpose: string; model: string; inputTokens: number; outputTokens: number; latencyMs: number }[]
+  usage: {
+    purpose: string
+    model: string
+    inputTokens: number
+    outputTokens: number
+    reasoningTokens?: number
+    latencyMs: number
+    // Agentic passes: model calls, and tool calls by name.
+    steps?: number
+    toolCalls?: Record<string, number>
+  }[]
   // costUsd is absent on results stored before costs were recorded.
   usageTotals: { calls: number; inputTokens: number; outputTokens: number; costUsd?: number }
   verdict: { verdict: Verdict; blockOn: Severity; blocking: string[] }

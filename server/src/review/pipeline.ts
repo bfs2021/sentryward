@@ -19,8 +19,11 @@ import { planChunks, type Chunk } from "./context/chunk.ts";
 import { gatherContext, type ContextSource } from "./context/gather.ts";
 import { classifyFiles } from "./context/ignore.ts";
 import { MAX_MANIFEST_CHARS, MAX_REJECTED_CHARS, reviewSystemPrompt, type ManifestEntry } from "./llm/prompt.ts";
-import { failedUsage, spentBy, type Generate } from "./llm/providers.ts";
-import { reviewChunk } from "./llm/review.ts";
+import { searchBudget } from "./agent/tools.ts";
+import { ToolsUnsupportedError, toolsUnsupportedWarning, type GenerateAgentic } from "./llm/agentic.ts";
+import { reviewChunkAgentic } from "./llm/agenticReview.ts";
+import { errorMessage, failedUsage, spentBy, type Generate } from "./llm/providers.ts";
+import { reviewChunk, type ChunkReview } from "./llm/review.ts";
 import { generateWalkthrough, type WalkthroughIssues } from "./llm/walkthrough.ts";
 import { compareFindings, validateFindings, validateToolFindings, type DropReason, type TaggedFinding } from "./validate/validator.ts";
 import { verifyFindings } from "./validate/verify.ts";
@@ -34,6 +37,9 @@ export interface ReviewDeps {
   // Surrounding code for each pass, when review.fileContext is on. Absent
   // means the passes see the diff alone.
   context?: ContextSource;
+  // Passes that may call tools, when review.context is agentic. Needs
+  // `context` as well, which the tools read through.
+  generateAgentic?: GenerateAgentic;
 }
 
 export interface RunReviewInput {
@@ -84,6 +90,8 @@ const USER_PROMPT_ALLOWANCE = 3_000 + Math.ceil(MAX_REJECTED_CHARS / 4);
 // A multi-pass review also lists the whole change in every pass, capped at
 // MAX_MANIFEST_CHARS.
 const MANIFEST_ALLOWANCE = Math.ceil(MAX_MANIFEST_CHARS / 4);
+// The agentic instructions and the tool definitions, on top of the review's.
+const AGENTIC_ALLOWANCE = 2_000;
 
 function lineCounts(changeSet: ChangeSet): ReviewResult["files"] {
   return changeSet.files.map((file) => {
@@ -117,10 +125,6 @@ function sameProblem(model: Finding, tool: Finding): boolean {
   );
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 // One review, start to finish, with no I/O but the model calls. Every failure
 // below the top is recorded in the result rather than thrown: a failed pass
 // makes the review partial, a failed walkthrough is a warning.
@@ -138,7 +142,16 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
   // walkthrough and manifest still describe the whole change.
   const { increment } = input;
   const scoped = increment ? reviewable.filter((file) => increment.paths.has(file.path)) : reviewable;
-  let overhead = estimateTokens(reviewSystemPrompt(config)) + USER_PROMPT_ALLOWANCE;
+  const agentic = config.review.context === "agentic" && !!deps.generateAgentic && !!deps.context;
+  if (config.review.context === "agentic" && !agentic) {
+    warnings.push("Agentic context needs a code source and a tool-capable model call; passes used static context");
+  }
+  // An agentic pass's conversation grows by what its tools return, so that
+  // much of the window is kept free of diff.
+  let overhead =
+    estimateTokens(reviewSystemPrompt(config)) +
+    USER_PROMPT_ALLOWANCE +
+    (agentic ? AGENTIC_ALLOWANCE + config.review.agent.maxToolTokens : 0);
   let plan = planChunks(scoped, diffTokenBudget(config, overhead), config.review.maxChunks);
   // Only a change that needs several passes gets the manifest, so only then is
   // it paid for, and a single-pass review is planned exactly as before. Should
@@ -202,12 +215,44 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
 
   const raw: TaggedFinding[] = [];
   let failedPasses = 0;
-  const outcomes = await mapLimit(chunks, deps.concurrency ?? 3, async (chunk) => {
+  // Shared by every pass: GitHub rate-limits code search per token.
+  const searches = searchBudget(config.review.agent.maxSearches);
+  type PassOutcome =
+    | { chunk: Chunk; review: ChunkReview; error?: undefined; spent?: undefined }
+    | { chunk: Chunk; review?: undefined; error: string; spent: LlmUsage[] };
+  const reviewPass = async (chunk: Chunk): Promise<PassOutcome> => {
+    const review = () => reviewChunk(deps.generate, changeSet, chunk, chunks.length, config, input.rejectedFindings, manifest);
+    if (!agentic) return { chunk, review: await review() };
     try {
+      const { toolContext, ...result } = await reviewChunkAgentic(
+        deps.generateAgentic!,
+        changeSet,
+        chunk,
+        chunks.length,
+        config,
+        { source: deps.context!, searches },
+        input.rejectedFindings,
+        manifest,
+      );
+      return { chunk: toolContext ? { ...chunk, toolContext } : chunk, review: result };
+    } catch (err) {
+      if (!(err instanceof ToolsUnsupportedError)) throw err;
+      // Without tools the pass is still worth a static review.
+      const fallback = await review();
+      const refused = failedUsage(err.spent, "review", chunk.index);
       return {
         chunk,
-        review: await reviewChunk(deps.generate, changeSet, chunk, chunks.length, config, input.rejectedFindings, manifest),
+        review: {
+          ...fallback,
+          failedUsage: [...refused, ...fallback.failedUsage],
+          warnings: [toolsUnsupportedWarning(err.model), ...fallback.warnings],
+        },
       };
+    }
+  };
+  const outcomes = await mapLimit(chunks, deps.concurrency ?? 3, async (chunk): Promise<PassOutcome> => {
+    try {
+      return await reviewPass(chunk);
     } catch (err) {
       return { chunk, error: errorMessage(err), spent: failedUsage(spentBy(err), "review", chunk.index) };
     }
@@ -217,6 +262,7 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
       const { model } = outcome.review.usage;
       raw.push(...outcome.review.findings.map((finding) => ({ ...finding, model })));
       usage.push(...outcome.review.failedUsage, outcome.review.usage);
+      warnings.push(...outcome.review.warnings);
       continue;
     }
     usage.push(...outcome.spent);
@@ -311,7 +357,8 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
     schemaVersion: RESULT_SCHEMA_VERSION,
     status,
     errors,
-    warnings,
+    // Passes and checks repeat the same note (one per call), so each is listed once.
+    warnings: [...new Set(warnings)],
     change: {
       ...changeSet.forgeRef,
       title: changeSet.title,
