@@ -193,15 +193,15 @@ describe("createGenerateAgentic", () => {
     expect((error as Error).message).toMatch(/ended after 3 steps without reporting/);
   });
 
-  it("reads a text answer like a static pass when tools were stripped", async () => {
+  it("reads a text answer like a static pass, without taking it as missing tools", async () => {
     vi.stubGlobal("fetch", fetchStub([step(chat({ text: REPORT }))]).fetch);
     const { ledger } = memoryLedger();
 
     const response = await createGenerateAgentic({}, router, {}, { ledger })(agenticRequest());
 
     expect(response.object.findings).toHaveLength(1);
-    expect(response.warnings).toContain(toolsUnsupportedWarning("openai/gpt-x"));
-    expect(ledger.get("openai/gpt-x")).toEqual({ tools: false });
+    expect(response.warnings ?? []).not.toContain(toolsUnsupportedWarning("openai/gpt-x"));
+    expect(ledger.get("openai/gpt-x")).toEqual({});
   });
 
   it("turns a refusal of tools into ToolsUnsupportedError, and remembers", async () => {
@@ -213,6 +213,41 @@ describe("createGenerateAgentic", () => {
 
     await expect(createGenerateAgentic({}, router, {}, { ledger })(agenticRequest())).rejects.toBeInstanceOf(ToolsUnsupportedError);
     expect(ledger.get("openai/gpt-x")).toEqual({ tools: false });
+  });
+
+  it.each([
+    "Invalid schema for function report_findings: 'findings' is not valid",
+    "tool_use ids were found without tool_result blocks immediately after",
+  ])("does not remember a 400 that names tools without refusing them: %s", async (text) => {
+    vi.stubGlobal("fetch", fetchStub([{ method: "POST", url: ROUTER, status: 400, body: { error: { message: text } } }]).fetch);
+    const { ledger } = memoryLedger();
+
+    const error = await createGenerateAgentic({}, router, {}, { ledger })(agenticRequest()).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(ModelCallError);
+    expect(error).not.toBeInstanceOf(ToolsUnsupportedError);
+    expect(ledger.get("openai/gpt-x")).toEqual({});
+  });
+
+  it("drops thinking, not tools, when thinking is refused beside a forced tool", async () => {
+    const { fetch, calls } = fetchStub([
+      {
+        method: "POST",
+        url: ROUTER,
+        status: 400,
+        body: { error: { message: "Thinking may not be enabled when tool_choice forces tool use." } },
+        times: 1,
+      },
+      step(chat({ tool: { name: "report_findings", args: REPORT } })),
+    ]);
+    vi.stubGlobal("fetch", fetch);
+    const { ledger } = memoryLedger();
+
+    const response = await createGenerateAgentic({}, router, {}, { ledger })(agenticRequest({ thinking: "high" }));
+
+    expect(response.object.findings).toHaveLength(1);
+    expect(calls).toHaveLength(2);
+    expect(ledger.get("openai/gpt-x")).toEqual({ thinking: "none", tools: true });
   });
 
   it("does not offer tools to a model recorded without them", async () => {
@@ -302,6 +337,35 @@ describe("runReview with agentic context", () => {
     expect(result.status).toBe("completed");
     expect(requests.map((r) => r.schemaName)).toEqual(["code_review"]);
     expect(result.warnings).toContain(toolsUnsupportedWarning("anthropic/claude-sonnet-5-5"));
+  });
+
+  it("reviews a pass statically when one model lacks tools and another fails otherwise", async () => {
+    const { generateAgentic } = fakeAgentic((request) =>
+      request.model === "openai/gpt-x" ? new ToolsUnsupportedError("openai/gpt-x") : new ModelCallError("503 busy", []),
+    );
+    const { generate, requests } = fakeModel({ code_review: { findings: [] } });
+
+    const result = await runReview(
+      { changeSet: makeChangeSet(), config: config({ llm: { fallbackModels: ["openai/gpt-x"] } }) },
+      { generate, generateAgentic, context: source().context, now },
+    );
+
+    expect(result.status).toBe("completed");
+    expect(requests.map((r) => r.schemaName)).toEqual(["code_review"]);
+    expect(result.warnings).toContain(toolsUnsupportedWarning("openai/gpt-x"));
+  });
+
+  it("does not try the fallbacks of a cancelled pass", async () => {
+    const { generateAgentic, requests } = fakeAgentic(() => new DOMException("Review cancelled", "AbortError"));
+    const { generate } = fakeModel({ code_review: { findings: [] } });
+
+    const result = await runReview(
+      { changeSet: makeChangeSet(), config: config({ llm: { fallbackModels: ["openai/gpt-x"] } }) },
+      { generate, generateAgentic, context: source().context, now },
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(result.coverage.omissions).toEqual([expect.objectContaining({ reason: "chunk_failed" })]);
   });
 
   it("counts a pass that fails its loop as chunk_failed", async () => {

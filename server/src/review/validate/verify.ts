@@ -9,8 +9,8 @@ import type { ContextBlock } from "../context/fileContext.ts";
 import { fillContext } from "../context/gather.ts";
 import { renderFileDiff } from "../context/diffText.ts";
 import { VERIFY_SYSTEM_PROMPT } from "../llm/prompt.ts";
-import { failedUsage, spentBy, type Generate } from "../llm/providers.ts";
-import { verifyFinding, type FindingVerification } from "../llm/verify.ts";
+import { errorMessage, failedUsage, modelChain, spentBy, type Generate } from "../llm/providers.ts";
+import { VERIFY_OUTPUT_TOKENS, verifyFinding, type FindingVerification } from "../llm/verify.ts";
 import { ruleFloor } from "../rules.ts";
 import { compareFindings, demoteFinding, stronger, type DropReason } from "./validator.ts";
 
@@ -34,10 +34,6 @@ export interface VerifyResult {
   demoted: number;
   usage: LlmUsage[];
   warnings: string[];
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 // Fixed prompt text next to the measured system prompt, as for a pass.
@@ -77,14 +73,30 @@ function codeFor(finding: Finding, chunks: Chunk[], config: Config): { diff: str
     }
   }
   const overhead = estimateTokens(VERIFY_SYSTEM_PROMPT) + PROMPT_ALLOWANCE;
-  const diff = fillContext(blocks, diffTokenBudget(config, overhead));
+  const sizing = verifySizing(config);
+  const diff = fillContext(blocks, diffTokenBudget(sizing, overhead));
   // An agentic pass's reads come after what was gathered for it: the verifier
   // sees the code the finding was reported from.
   const texts = [...reporting, ...ofFile].flatMap((chunk) => [chunk.context, chunk.toolContext ?? ""]);
   const contexts = [...new Set(texts.filter(Boolean))].map(
     (text, index): ContextBlock => ({ path: "", label: "context", priority: index, text, tokens: estimateTokens(text) }),
   );
-  return { diff, context: fillContext(contexts, contextTokenBudget(config, overhead, estimateTokens(diff))) };
+  return { diff, context: fillContext(contexts, contextTokenBudget(sizing, overhead, estimateTokens(diff))) };
+}
+
+// The budget helpers size a prompt from config.llm, which describes a review
+// pass. A verify call runs its own model at its own thinking level with a
+// smaller reply, and its prompt must leave room for exactly that reply.
+function verifySizing(config: Config): Config {
+  return {
+    ...config,
+    llm: {
+      ...config.llm,
+      model: modelChain(config.llm, "verify")[0]!,
+      thinking: config.llm.verifyThinking ?? config.llm.thinking,
+      maxTokens: Math.min(config.llm.maxTokens, VERIFY_OUTPUT_TOKENS),
+    },
+  };
 }
 
 // A second, independent look at the findings that matter. Verification only

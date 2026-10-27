@@ -20,8 +20,10 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   through a `report_findings` tool, within `review.agent` caps; what it read
   reaches the verifier, and usage records steps and tool calls. What each
   model supports on each connection (thinking, tools) is probed when a model
-  is tested or first used, corrected at runtime when an endpoint refuses or
-  ignores an option (one retry without it, a review warning), shown under a
+  is tested or first used (in parallel, with a timeout, and an inconclusive
+  probe is retried after a day rather than before every review), corrected at
+  runtime when an endpoint refuses an option or a custom endpoint ignores
+  thinking options (one retry without it, a review warning), shown under a
   connection's Capabilities, and overridable in Configuration > LLM
   (dashboard only). New endpoint `GET /api/settings/api-keys/:provider/capabilities`.
   The eval runner gains `--thinking`, `--context` and `--compare`, and three

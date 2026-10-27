@@ -22,7 +22,7 @@ import { MAX_MANIFEST_CHARS, MAX_REJECTED_CHARS, reviewSystemPrompt, type Manife
 import { searchBudget } from "./agent/tools.ts";
 import { ToolsUnsupportedError, toolsUnsupportedWarning, type GenerateAgentic } from "./llm/agentic.ts";
 import { reviewChunkAgentic } from "./llm/agenticReview.ts";
-import { failedUsage, modelChain, spentBy, type Generate } from "./llm/providers.ts";
+import { errorMessage, failedUsage, spentBy, type Generate } from "./llm/providers.ts";
 import { reviewChunk, type ChunkReview } from "./llm/review.ts";
 import { generateWalkthrough, type WalkthroughIssues } from "./llm/walkthrough.ts";
 import { compareFindings, validateFindings, validateToolFindings, type DropReason, type TaggedFinding } from "./validate/validator.ts";
@@ -123,10 +123,6 @@ function sameProblem(model: Finding, tool: Finding): boolean {
     model.startLine <= tool.endLine &&
     tool.startLine <= model.endLine
   );
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 // One review, start to finish, with no I/O but the model calls. Every failure
@@ -249,7 +245,7 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
         review: {
           ...fallback,
           failedUsage: [...refused, ...fallback.failedUsage],
-          warnings: [toolsUnsupportedWarning(modelChain(config.llm, "review")[0]!), ...fallback.warnings],
+          warnings: [toolsUnsupportedWarning(err.model), ...fallback.warnings],
         },
       };
     }

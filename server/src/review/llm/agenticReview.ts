@@ -5,17 +5,22 @@ import type { Chunk } from "../context/chunk.ts";
 import type { ContextSource } from "../context/gather.ts";
 import { ToolsUnsupportedError, agenticSystemPrompt, type AgenticResponse, type GenerateAgentic } from "./agentic.ts";
 import { reviewSystemPrompt, reviewUserPrompt, type ManifestEntry } from "./prompt.ts";
-import { callUsage, failedUsage, ModelCallError, modelChain, spentBy, type SpentTokens } from "./providers.ts";
+import {
+  callUsage,
+  errorMessage,
+  failedUsage,
+  isAbort,
+  ModelCallError,
+  modelChain,
+  spentBy,
+  type SpentTokens,
+} from "./providers.ts";
 import type { ChunkReview } from "./review.ts";
 import { repairReviewOutput, reviewOutputSchema, type ReviewOutput } from "./schemas.ts";
 
 export interface AgenticChunkReview extends ChunkReview {
   // What the pass read through its tools, as CONTEXT blocks for the verifier.
   toolContext: string;
-}
-
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 // A pass that starts from the same diff and gathered context as a static one,
@@ -56,7 +61,7 @@ export async function reviewChunkAgentic(
       });
     } catch (err) {
       // A cancelled review has no use for the fallbacks either.
-      if (err instanceof Error && err.name === "AbortError") throw err;
+      if (isAbort(err)) throw err;
       errors.push(err);
       failedAttempts.push(...spentBy(err));
       continue;
@@ -78,9 +83,11 @@ export async function reviewChunkAgentic(
       toolContext: readsContext(reads),
     };
   }
-  if (errors.every((err) => err instanceof ToolsUnsupportedError)) {
-    throw new ToolsUnsupportedError(models.join(", "), failedAttempts);
-  }
+  // One model without tools is enough for a static review to be worth it: it
+  // tries the whole chain again, so a fallback that failed for another reason
+  // (a 5xx, say) gets a second chance there.
+  const unsupported = models.filter((_, i) => errors[i] instanceof ToolsUnsupportedError);
+  if (unsupported.length) throw new ToolsUnsupportedError(unsupported.join(", "), failedAttempts);
   if (errors.length === 1) throw errors[0];
-  throw new ModelCallError(errors.map((err, i) => `${models[i]}: ${message(err)}`).join(" | "), failedAttempts);
+  throw new ModelCallError(errors.map((err, i) => `${models[i]}: ${errorMessage(err)}`).join(" | "), failedAttempts);
 }

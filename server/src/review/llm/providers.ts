@@ -88,8 +88,12 @@ export function languageModel(
 
 // A 400 that names one of the options we added, as opposed to one about the
 // prompt itself. Only then is the call worth repeating without them.
-const THINKING_PARAMS = /thinking|reasoning|budget|effort|temperature/i;
-export const TOOL_PARAMS = /\btools?\b|tool_choice|function/i;
+export const THINKING_PARAMS = /thinking|reasoning|budget|effort|temperature/i;
+// Narrower than "mentions tools": a 400 about a tool's schema or about
+// tool_use/tool_result pairing names tools too, but says nothing about whether
+// the endpoint takes them, and what matches here is remembered.
+export const TOOLS_UNSUPPORTED =
+  /\b(tools?|tool_choice|function[ _]?call(ing|s)?)\b[^.]*\b(not supported|unsupported|not available|not allowed|unrecognized|unknown)\b|\b(does not|doesn't|do not|cannot) support\b[^.]*\b(tools?|function[ _]?call(ing|s)?)\b|\b(unrecognized|unknown|unsupported|extra)\b[^.]*\b(tools|tool_choice)\b/i;
 
 export function rejectsParams(err: unknown, params: RegExp): boolean {
   if (!APICallError.isInstance(err) || err.statusCode !== 400) return false;
@@ -320,7 +324,8 @@ export function createGenerate(
       }
     };
 
-    const attempt = async (mode: ThinkingMode): Promise<{ object: T; usage: ModelUsage; reasoned: boolean }> => {
+    // `reasoned` is undefined when the reply cannot tell either way.
+    const attempt = async (mode: ThinkingMode): Promise<{ object: T; usage: ModelUsage; reasoned?: boolean }> => {
       const call = {
         model,
         // The format goes in the prompt even when the provider enforces it, so a
@@ -357,8 +362,14 @@ export function createGenerate(
         return { object: result.output as T, usage: result.usage, reasoned: reasoned(result.usage, result.reasoningText) };
       } catch (err) {
         // A near-miss the provider let through is repaired rather than lost.
+        // The error keeps no reasoning text, so only its tokens can prove
+        // thinking; their absence proves nothing.
         if (NoObjectGeneratedError.isInstance(err)) {
-          return { object: lenient(err.text, err.usage), usage: err.usage, reasoned: false };
+          return {
+            object: lenient(err.text, err.usage),
+            usage: err.usage,
+            reasoned: reasoned(err.usage, undefined) || undefined,
+          };
         }
         throw err;
       }
@@ -380,7 +391,7 @@ export function createGenerate(
         model: request.model,
         capabilities: { thinking: "none" },
         source: "runtime",
-        detail: `Rejected thinking options: ${excerpt(message(err), 200)}`,
+        detail: `Rejected thinking options: ${excerpt(errorMessage(err), 200)}`,
       });
       warnings.push(thinkingUnavailable(request.model));
       mode = "off";
@@ -389,7 +400,10 @@ export function createGenerate(
     if (mode === "options") {
       if (outcome.reasoned) {
         options.ledger?.observe({ model: request.model, capabilities: { thinking: "options" }, source: "runtime" });
-      } else {
+      } else if (outcome.reasoned === false && !native) {
+        // An official API that took the options without a 400 honours them
+        // (OpenAI at low effort may spend no reasoning tokens on a short
+        // reply); only a proxy can silently drop them.
         options.ledger?.observe({
           model: request.model,
           capabilities: { thinking: "none" },
@@ -408,8 +422,12 @@ export function createGenerate(
   };
 }
 
-function message(err: unknown): string {
+export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+export function isAbort(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
 }
 
 export type ModelPurpose = "review" | "walkthrough" | "verify";
@@ -439,14 +457,16 @@ export async function generateWithFallback<T>(
       const spent = [...failedAttempts, ...(response.failedAttempts ?? [])];
       return spent.length ? { ...response, failedAttempts: spent } : response;
     } catch (err) {
-      // A cancelled review has no use for the fallbacks either.
-      if (request.abortSignal?.aborted) throw err;
+      // A cancelled review has no use for the fallbacks either. The signal is
+      // usually added below this call (abortableGenerate), so the error's name
+      // is what tells.
+      if (request.abortSignal?.aborted || isAbort(err)) throw err;
       errors.push(err);
       failedAttempts.push(...spentBy(err));
     }
   }
-  if (errors.length === 1) throw errors[0] instanceof Error ? errors[0] : new Error(message(errors[0]));
-  throw new ModelCallError(errors.map((err, i) => `${models[i]}: ${message(err)}`).join(" | "), failedAttempts);
+  if (errors.length === 1) throw errors[0] instanceof Error ? errors[0] : new Error(errorMessage(errors[0]));
+  throw new ModelCallError(errors.map((err, i) => `${models[i]}: ${errorMessage(err)}`).join(" | "), failedAttempts);
 }
 
 // Every request made through the result carries the signal, and none starts

@@ -23,7 +23,9 @@ export function watchForClose(isClosed: () => Promise<boolean>, intervalMs = CLO
   const check = async (): Promise<boolean> => {
     if (controller.signal.aborted) return true;
     const closed = await isClosed().catch(() => false);
-    if (closed) controller.abort(new Error("Review cancelled"));
+    // Named AbortError, like the SDK's own, so every layer that stops on a
+    // cancel (the fallback loops among them) recognises it.
+    if (closed) controller.abort(new DOMException("Review cancelled", "AbortError"));
     return closed;
   };
   const schedule = () => {

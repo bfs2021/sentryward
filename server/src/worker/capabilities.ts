@@ -1,15 +1,18 @@
 import type { Config } from "../review/config/schema.ts";
 import type { LlmUsage } from "../review/core/models.ts";
 import { effectiveCapabilities } from "../review/llm/capabilities.ts";
-import { callUsage, modelChain, type ApiKeys, type Endpoint, type ProviderBaseUrls } from "../review/llm/providers.ts";
+import {
+  callUsage,
+  errorMessage,
+  modelChain,
+  type ApiKeys,
+  type Endpoint,
+  type ProviderBaseUrls,
+} from "../review/llm/providers.ts";
 import { capabilityLedgerFor, endpointOf } from "../services/llmCapabilities.ts";
 import type { probeModel } from "../services/llmProbe.ts";
 
 export type Probe = typeof probeModel;
-
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 // What this review needs to know about its models: thinking when it asks for
 // it, tools when its passes are agentic. Nothing else is worth a probe.
@@ -40,29 +43,41 @@ export async function prepareCapabilities(input: {
   const wanted = needs(config);
   if (wanted.thinking || wanted.tools) {
     const models = [...new Set([...modelChain(config.llm, "review"), ...modelChain(config.llm, "verify")])];
-    for (const model of models) {
-      if (stored.known(model)) continue;
+    const unknown = models.filter((model) => {
+      if (stored.known(model)) return false;
       const caps = effectiveCapabilities(model, {
         native: !where(model).endpoint,
         detected: stored.ledger.get(model),
         override: config.llm.capabilities,
       });
-      if ((!wanted.thinking || caps.thinking) && (!wanted.tools || caps.tools !== undefined)) continue;
-      try {
-        const probe = await input.probe(model, input.keys, input.endpoint, input.baseUrls);
-        usage.push(
-          ...probe.spent.map((tokens) => ({
-            purpose: "probe" as const,
-            model,
-            ...callUsage(tokens),
-            latencyMs: tokens.latencyMs,
-          })),
-        );
-        stored.ledger.observe({ model, capabilities: probe.capabilities, source: "probe", detail: probe.detail });
-      } catch (err) {
-        input.warnings.push(`Could not check what ${model} supports: ${message(err)}`);
+      return !((!wanted.thinking || caps.thinking) && (!wanted.tools || caps.tools !== undefined));
+    });
+    // The models are independent, so the review waits for one round of probes
+    // rather than one per model; results are taken in model order.
+    const probes = await Promise.allSettled(
+      unknown.map((model) => input.probe(model, input.keys, input.endpoint, input.baseUrls)),
+    );
+    probes.forEach((outcome, i) => {
+      const model = unknown[i]!;
+      if (outcome.status === "rejected") {
+        input.warnings.push(`Could not check what ${model} supports: ${errorMessage(outcome.reason)}`);
+        return;
       }
-    }
+      const probe = outcome.value;
+      usage.push(
+        ...probe.spent.map((tokens) => ({
+          purpose: "probe" as const,
+          model,
+          ...callUsage(tokens),
+          latencyMs: tokens.latencyMs,
+        })),
+      );
+      const observation = { model, capabilities: probe.capabilities, source: "probe" as const, detail: probe.detail };
+      // The ledger keeps only changes, and an answer of nothing changes
+      // nothing; it is stored anyway so the next review does not probe again.
+      if (Object.keys(probe.capabilities).length) stored.ledger.observe(observation);
+      else stored.observations.push(observation);
+    });
   }
   return {
     ledger: stored.ledger,

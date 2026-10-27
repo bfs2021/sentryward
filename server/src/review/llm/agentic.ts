@@ -4,8 +4,10 @@ import { effectiveCapabilities } from "./capabilities.ts";
 import { excerpt, formatInstruction, parseLenient } from "./format.ts";
 import {
   TEMPERATURE_WITH_THINKING,
-  TOOL_PARAMS,
+  THINKING_PARAMS,
+  TOOLS_UNSUPPORTED,
   completeCall,
+  errorMessage,
   languageModel,
   ModelCallError,
   reasoned,
@@ -48,7 +50,10 @@ export type GenerateAgentic = <T>(request: AgenticRequest<T>) => Promise<Agentic
 
 // The endpoint or model cannot take tools; the pass is reviewed statically.
 export class ToolsUnsupportedError extends ModelCallError {
-  constructor(model: string, spent: SpentTokens[] = []) {
+  constructor(
+    readonly model: string,
+    spent: SpentTokens[] = [],
+  ) {
     super(`${model} cannot call tools on this connection`, spent);
     this.name = "ToolsUnsupportedError";
   }
@@ -56,10 +61,6 @@ export class ToolsUnsupportedError extends ModelCallError {
 
 export function toolsUnsupportedWarning(model: string): string {
   return `${model} cannot call tools on this connection, so its passes used static context`;
-}
-
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 const CACHED = { anthropic: { cacheControl: { type: "ephemeral" } } } as const;
@@ -130,26 +131,28 @@ export function createGenerateAgentic(
         break;
       } catch (err) {
         if (request.abortSignal?.aborted) throw err;
-        if (rejectsParams(err, TOOL_PARAMS)) {
-          options.ledger?.observe({
-            model: request.model,
-            capabilities: { tools: false },
-            source: "runtime",
-            detail: `Rejected tools: ${excerpt(message(err), 200)}`,
-          });
-          throw new ToolsUnsupportedError(request.model, [...failedAttempts, spent(undefined)]);
-        }
-        if (mode === "options" && rejectsParams(err, /thinking|reasoning|budget|effort|temperature/i)) {
+        // Thinking first: Anthropic's refusal of thinking beside a forced tool
+        // names tool_choice too, and is cured by dropping the thinking.
+        if (mode === "options" && rejectsParams(err, THINKING_PARAMS)) {
           failedAttempts.push(spent(undefined));
           options.ledger?.observe({
             model: request.model,
             capabilities: { thinking: "none" },
             source: "runtime",
-            detail: `Rejected thinking options: ${excerpt(message(err), 200)}`,
+            detail: `Rejected thinking options: ${excerpt(errorMessage(err), 200)}`,
           });
           warnings.push(thinkingUnavailable(request.model));
           mode = "off";
           continue;
+        }
+        if (rejectsParams(err, TOOLS_UNSUPPORTED)) {
+          options.ledger?.observe({
+            model: request.model,
+            capabilities: { tools: false },
+            source: "runtime",
+            detail: `Rejected tools: ${excerpt(errorMessage(err), 200)}`,
+          });
+          throw new ToolsUnsupportedError(request.model, [...failedAttempts, spent(undefined)]);
         }
         // The SDK's complaint about a forced report the model did not make:
         // the steps before it were billed, but the SDK keeps no count of them.
@@ -159,7 +162,7 @@ export function createGenerateAgentic(
             [...failedAttempts, spent(undefined)],
           );
         }
-        throw new ModelCallError(message(err), [...failedAttempts, ...spentBy(err)]);
+        throw new ModelCallError(errorMessage(err), [...failedAttempts, ...spentBy(err)]);
       }
     }
 
@@ -169,13 +172,16 @@ export function createGenerateAgentic(
     }
     if (mode === "options") {
       const thought = result.steps.some((step) => reasoned(step.usage as ModelUsage, step.reasoningText));
-      options.ledger?.observe({
-        model: request.model,
-        capabilities: { thinking: thought ? "options" : "none" },
-        source: "runtime",
-        ...(thought ? {} : { detail: "Ignored thinking options" }),
-      });
-      if (!thought) warnings.push(thinkingUnavailable(request.model));
+      // As in createGenerate: only a proxy can silently drop the options.
+      if (thought || !native) {
+        options.ledger?.observe({
+          model: request.model,
+          capabilities: { thinking: thought ? "options" : "none" },
+          source: "runtime",
+          ...(thought ? {} : { detail: "Ignored thinking options" }),
+        });
+      }
+      if (!thought && !native) warnings.push(thinkingUnavailable(request.model));
     }
     if (Object.keys(toolCalls).length) {
       options.ledger?.observe({ model: request.model, capabilities: { tools: true }, source: "runtime" });
@@ -204,21 +210,14 @@ export function createGenerateAgentic(
       try {
         return respond(parseLenient(raw, request.schema, request.repair));
       } catch (err) {
-        throw fail(`The report did not match the schema: ${message(err)}`);
+        throw fail(`The report did not match the schema: ${errorMessage(err)}`);
       }
     }
-    // An endpoint that strips tools answers in text: read it like a static
-    // pass would, and remember not to offer tools again.
+    // A text answer is read like a static pass would. It is not taken as
+    // missing tool support: the prompt allows it, and a model with nothing
+    // worth reading gives it. An endpoint that strips tools is found by the
+    // probe, which forces a tool call.
     const text = result.steps.map((step) => step.text).filter(Boolean).at(-1) ?? result.text;
-    if (!Object.keys(toolCalls).length) {
-      options.ledger?.observe({
-        model: request.model,
-        capabilities: { tools: false },
-        source: "runtime",
-        detail: "Answered in text with tools offered",
-      });
-      warnings.push(toolsUnsupportedWarning(request.model));
-    }
     try {
       return respond(parseLenient(text ?? "", request.schema, request.repair));
     } catch {

@@ -3,8 +3,10 @@ import { z } from "zod";
 import type { ModelCapabilities } from "../review/llm/capabilities.ts";
 import { excerpt } from "../review/llm/format.ts";
 import {
-  TOOL_PARAMS,
+  THINKING_PARAMS,
+  TOOLS_UNSUPPORTED,
   completeCall,
+  errorMessage,
   languageModel,
   reasoned,
   rejectsParams,
@@ -31,9 +33,11 @@ const PROBE_OUTPUT_TOKENS = 256;
 // A probe answers a question about the endpoint; the SDK's retries on a busy
 // host would only make the dashboard wait.
 const PROBE_RETRIES = 0;
+// Probes run before a review starts, so a host that hangs must not hold it.
+const PROBE_TIMEOUT_MS = 20_000;
 
 function message(err: unknown): string {
-  return excerpt(err instanceof Error ? err.message : String(err), 160);
+  return excerpt(errorMessage(err), 160);
 }
 
 // A refusal of what was asked for answers the question; anything else (a
@@ -49,6 +53,7 @@ async function probeThinking(model: string, resolved: ResolvedModel, spent: Spen
   try {
     const result = await completeCall(resolved.native, {
       ...base,
+      abortSignal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       maxRetries: PROBE_RETRIES,
       ...thinkingSettings(resolved.provider, "low", "options", { temperature: 0, maxOutputTokens: PROBE_OUTPUT_TOKENS }),
     });
@@ -58,7 +63,7 @@ async function probeThinking(model: string, resolved: ResolvedModel, spent: Spen
       : { thinking: "none" as const, note: "thinking options were ignored" };
   } catch (err) {
     spent.push(spentTokens(model, undefined, started));
-    if (!refusal(err, /thinking|reasoning|budget|effort|temperature/i)) {
+    if (!refusal(err, THINKING_PARAMS)) {
       return { note: `thinking unknown (${message(err)})` };
     }
   }
@@ -68,6 +73,7 @@ async function probeThinking(model: string, resolved: ResolvedModel, spent: Spen
   try {
     const result = await completeCall(resolved.native, {
       ...base,
+      abortSignal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       maxRetries: PROBE_RETRIES,
       temperature: 0,
       maxOutputTokens: PROBE_OUTPUT_TOKENS,
@@ -90,6 +96,7 @@ async function probeTools(model: string, resolved: ResolvedModel, spent: SpentTo
       prompt: 'Call the ping tool with value "ok".',
       tools: { ping: tool({ description: "Answers pong.", inputSchema: z.object({ value: z.string() }) }) },
       toolChoice: "required",
+      abortSignal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       maxRetries: PROBE_RETRIES,
       temperature: 0,
       maxOutputTokens: PROBE_OUTPUT_TOKENS,
@@ -104,7 +111,9 @@ async function probeTools(model: string, resolved: ResolvedModel, spent: SpentTo
       : { tools: false, note: "tools were stripped: the reply was text" };
   } catch (err) {
     spent.push(spentTokens(model, undefined, started));
-    if (refusal(err, TOOL_PARAMS)) return { tools: false, note: "tools are refused" };
+    if (refusal(err, TOOLS_UNSUPPORTED)) return { tools: false, note: "tools are refused" };
+    // A slow host says nothing about tool calls.
+    if (err instanceof Error && err.name === "TimeoutError") return { note: `tools unknown (${message(err)})` };
     // The SDK's own complaint about a text reply to a required tool call.
     if (err instanceof Error && err.name === "AI_ToolChoiceViolationError") {
       return { tools: false, note: "tools were stripped: the reply was text" };

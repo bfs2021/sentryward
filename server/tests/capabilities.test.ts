@@ -237,6 +237,22 @@ describe("thinking on an official API", () => {
     expect(response.warnings).toEqual([TEMPERATURE_WITH_THINKING]);
   });
 
+  it("does not take a native reply without reasoning as ignored options", async () => {
+    vi.stubGlobal(
+      "fetch",
+      fetchStub([{ method: "POST", url: MESSAGES, body: message([{ type: "text", text: '{"ok":true}' }]) }]).fetch,
+    );
+    const { ledger } = memoryLedger();
+
+    const response = await createGenerate({ anthropic: "sk-ant" }, undefined, {}, { ledger })(
+      ask("anthropic/claude-sonnet-5-5", "low"),
+    );
+
+    expect(response.object).toEqual({ ok: true });
+    expect(response.warnings).toEqual([TEMPERATURE_WITH_THINKING]);
+    expect(ledger.get("anthropic/claude-sonnet-5-5")).toEqual({});
+  });
+
   it("runs a native model without thinking support as asked, minus thinking", async () => {
     const { fetch, calls } = fetchStub([
       {
@@ -288,6 +304,17 @@ describe("probeModel", () => {
     const probe = await probeModel("openai/gpt-x", {}, router);
 
     expect(probe.capabilities.tools).toBe(false);
+  });
+
+  it("keeps both answers unknown when the host times out", async () => {
+    vi.stubGlobal("fetch", async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
+
+    const probe = await probeModel("openai/gpt-x", {}, router);
+
+    expect(probe.capabilities).toEqual({});
+    expect(probe.detail).toMatch(/thinking unknown.*tools unknown/);
   });
 
   it("records thinking as refused and keeps an unrelated failure unknown", async () => {
@@ -350,6 +377,53 @@ describe("stored capabilities", () => {
     expect(second.usage).toEqual([]);
     const stored = await prisma.llmCapability.findFirstOrThrow({ where: { workspaceId, model: "openai/gpt-x" } });
     expect(stored).toMatchObject({ endpoint: "http://router.test/v1", thinking: "none", tools: false, source: "probe" });
+  });
+
+  it("stores a probe that answered nothing, and asks again only after a day", async () => {
+    const config: Config = { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, model: "openai/gpt-x", thinking: "medium" } };
+    const probe = vi.fn<Probe>(async () => ({
+      capabilities: {},
+      detail: "thinking unknown (busy); tools unknown (busy)",
+      spent: [],
+    }));
+    const prepare = async () => {
+      const prepared = await prepareCapabilities({ workspaceId, config, keys: {}, endpoint: router, baseUrls: {}, probe, warnings: [] });
+      await prepared.persist();
+      return prepared;
+    };
+
+    await prepare();
+    await prepare();
+    expect(probe).toHaveBeenCalledTimes(1);
+    const stored = await prisma.llmCapability.findFirstOrThrow({ where: { workspaceId, model: "openai/gpt-x" } });
+    expect(stored).toMatchObject({ thinking: null, tools: null, detail: "thinking unknown (busy); tools unknown (busy)" });
+
+    await prisma.llmCapability.update({
+      where: { id: stored.id },
+      data: { checkedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) },
+    });
+    await prepare();
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it("probes the models a review needs at the same time", async () => {
+    const config: Config = {
+      ...DEFAULT_CONFIG,
+      llm: { ...DEFAULT_CONFIG.llm, model: "openai/gpt-x", fallbackModels: ["openai/gpt-y"], thinking: "medium" },
+    };
+    let running = 0;
+    let peak = 0;
+    const probe = vi.fn<Probe>(async (model) => {
+      peak = Math.max(peak, ++running);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      running--;
+      return { capabilities: { thinking: "options" as const }, detail: model, spent: [] };
+    });
+
+    const prepared = await prepareCapabilities({ workspaceId, config, keys: {}, endpoint: router, baseUrls: {}, probe, warnings: [] });
+
+    expect(peak).toBe(2);
+    expect(prepared.ledger.get("openai/gpt-y")).toEqual({ thinking: "options" });
   });
 
   it("does not probe when nothing needs an answer, or the table has one", async () => {

@@ -53,16 +53,24 @@ export async function recordCapabilities(
   }
 }
 
+// A probe that answered neither question is stored too, so a flaky endpoint
+// is not probed (and billed) before every review; it is asked again after this.
+export const PROBE_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
+
 // A ledger seeded with what this workspace recorded for the endpoints the
 // review will call; `persist` stores what the review observed. Persisting is
 // best effort for the caller: a lost note is learned again next time.
 export async function capabilityLedgerFor(workspaceId: string, where: ReturnType<typeof endpointOf>) {
   const rows = await prisma.llmCapability.findMany({ where: { workspaceId } });
   const initial: Record<string, ModelCapabilities> = {};
+  const checked = new Set<string>();
   for (const row of rows) {
     try {
       const at = where(row.model);
-      if (at.provider === row.provider && at.endpoint === row.endpoint) initial[row.model] = fromRow(row);
+      if (at.provider !== row.provider || at.endpoint !== row.endpoint) continue;
+      initial[row.model] = fromRow(row);
+      const answered = row.thinking !== null || row.tools !== null;
+      if (answered || Date.now() - row.checkedAt.getTime() < PROBE_RETRY_AFTER_MS) checked.add(row.model);
     } catch {
       // A model id from an older release that no longer parses.
     }
@@ -71,7 +79,7 @@ export async function capabilityLedgerFor(workspaceId: string, where: ReturnType
   return {
     ledger,
     observations,
-    known: (model: string) => model in initial,
+    known: (model: string) => checked.has(model),
     persist: () => recordCapabilities(workspaceId, where, observations.splice(0)),
   };
 }
