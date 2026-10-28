@@ -13,6 +13,7 @@ describe("ApiKeyStatusBadge", () => {
     ["active", "Active", "text-emerald-700"],
     ["revoked", "Inactive", "text-destructive"],
     ["unreachable", "Unknown", "text-amber-700"],
+    ["blocked", "Blocked by policy", "text-destructive"],
   ] as const)("renders the %s state with its color", (status, label, colorClass) => {
     render(<ApiKeyStatusBadge status={status} />)
 

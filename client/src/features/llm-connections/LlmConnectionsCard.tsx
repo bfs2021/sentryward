@@ -252,7 +252,7 @@ function AddConnectionSheet({
 type SortKey = "provider" | "host" | "status" | "updatedAt"
 
 // Problems first when sorting ascending; still-checking rows go last.
-const STATUS_RANK: Record<LlmConnectionStatus, number> = { revoked: 0, unreachable: 1, active: 2 }
+const STATUS_RANK: Record<LlmConnectionStatus, number> = { blocked: 0, revoked: 1, unreachable: 2, active: 3 }
 
 const STATUS_OPTIONS = (Object.keys(STATUS_RANK) as LlmConnectionStatus[])
   .sort((a, b) => STATUS_RANK[a] - STATUS_RANK[b])
@@ -276,7 +276,7 @@ function compareKeys(
   const rank = (apiKey: ApiKey) => {
     if (apiKey.undecryptable) return -1
     const status = statuses[apiKey.provider]
-    return status ? STATUS_RANK[status] : 3
+    return status ? STATUS_RANK[status] : 4
   }
   switch (key) {
     case "provider":

@@ -40,6 +40,7 @@ model User {
   passwordResets     PasswordReset[]   @relation("PasswordResetUser")
   passwordResetsMade PasswordReset[]   @relation("PasswordResetCreator")
   apiTokens          ApiToken[]
+  llmRequestLogs     LlmRequestLog[]
 
   @@map("users")
 }
@@ -80,6 +81,8 @@ model Workspace {
   invites         Invite[]
   oauthStates     OAuthState[]
   notifications   NotificationTarget[]
+  privacy         WorkspacePrivacy?
+  llmRequestLogs  LlmRequestLog[]
 
   @@map("workspaces")
 }
@@ -626,4 +629,82 @@ model NotificationTarget {
 
   @@index([workspaceId])
   @@map("notification_targets")
+}
+
+// Instance-wide privacy policy, edited by instance admins. A single row (id 1,
+// enforced by a CHECK constraint); a missing row means no restrictions. Kept
+// out of the review config so no repository file or dashboard override can
+// loosen it.
+model InstanceSettings {
+  id                 Int      @id @default(1)
+  // Empty lists allow everything.
+  allowedProviders   String[] @default([]) @map("allowed_providers")
+  allowedHosts       String[] @default([]) @map("allowed_hosts")
+  // Only endpoints that resolve to private or loopback addresses are allowed.
+  localOnly          Boolean  @default(false) @map("local_only")
+  // Null falls back to REVIEW_RETENTION_DAYS, so existing installs keep theirs.
+  retentionDays      Int?     @map("retention_days")
+  // Null keeps the audit log forever. Instance-only, so a workspace admin
+  // cannot erase its trail.
+  auditRetentionDays Int?     @map("audit_retention_days")
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("instance_settings")
+}
+
+// A workspace's own privacy policy. It can only narrow the instance one: both
+// layers must allow a model, local-only applies if either sets it, and the
+// shorter retention wins.
+model WorkspacePrivacy {
+  workspaceId      String   @id @map("workspace_id") @db.Uuid
+  allowedProviders String[] @default([]) @map("allowed_providers")
+  allowedHosts     String[] @default([]) @map("allowed_hosts")
+  localOnly        Boolean  @default(false) @map("local_only")
+  retentionDays    Int?     @map("retention_days")
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("workspace_privacy")
+}
+
+// One row per outbound model request: where it went and what it cost, never
+// the prompt, reply or error text (any of which can quote code). Jobs and
+// repositories are referenced by value with name snapshots, so review
+// retention and deleting a workspace leave the trail intact; only
+// auditRetentionDays removes rows.
+model LlmRequestLog {
+  id                String   @id @default(uuid()) @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+  workspaceId       String?  @map("workspace_id") @db.Uuid
+  workspaceName     String   @map("workspace_name")
+  repositoryId      String?  @map("repository_id") @db.Uuid
+  // host/fullPath at the time of the request.
+  repository        String?
+  changeNumber      Int?     @map("change_number")
+  jobId             String?  @map("job_id") @db.Uuid
+  replyId           String?  @map("reply_id") @db.Uuid
+  // Set for requests made from the dashboard (connection tests).
+  userId            String?  @map("user_id") @db.Uuid
+  // review | walkthrough | verify | probe | reply | test
+  purpose           String
+  provider          String
+  // hostname[:port]
+  host              String
+  model             String
+  inputTokens       Int      @default(0) @map("input_tokens")
+  cachedInputTokens Int      @default(0) @map("cached_input_tokens")
+  outputTokens      Int      @default(0) @map("output_tokens")
+  reasoningTokens   Int      @default(0) @map("reasoning_tokens")
+  latencyMs         Int      @default(0) @map("latency_ms")
+  // ok | failed
+  outcome           String
+  errorKind         String?  @map("error_kind")
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([createdAt])
+  @@map("llm_request_logs")
 }

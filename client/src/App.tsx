@@ -9,6 +9,8 @@ import { DashboardLayout } from "@/layouts/DashboardLayout"
 
 // Pages load on demand to keep the entry chunk small. The guards and the layout
 // stay static so they render (and redirect) without waiting on a chunk.
+const AdminAuditLogPage = lazy(() => import("@/pages/admin/AdminAuditLogPage").then((m) => ({ default: m.AdminAuditLogPage })))
+const AdminSettingsPage = lazy(() => import("@/pages/admin/AdminSettingsPage").then((m) => ({ default: m.AdminSettingsPage })))
 const AdminUsersPage = lazy(() => import("@/pages/admin/AdminUsersPage").then((m) => ({ default: m.AdminUsersPage })))
 const ConfigurationPage = lazy(() => import("@/pages/config/ConfigurationPage").then((m) => ({ default: m.ConfigurationPage })))
 const FindingsPage = lazy(() => import("@/pages/findings/FindingsPage").then((m) => ({ default: m.FindingsPage })))
@@ -18,6 +20,7 @@ const InvitePage = lazy(() => import("@/pages/invite/InvitePage").then((m) => ({
 const LlmConnectionsPage = lazy(() => import("@/pages/llm-connections/LlmConnectionsPage").then((m) => ({ default: m.LlmConnectionsPage })))
 const NotificationsPage = lazy(() => import("@/pages/notifications/NotificationsPage").then((m) => ({ default: m.NotificationsPage })))
 const LoginPage = lazy(() => import("@/pages/auth/LoginPage").then((m) => ({ default: m.LoginPage })))
+const PrivacyPage = lazy(() => import("@/pages/privacy/PrivacyPage").then((m) => ({ default: m.PrivacyPage })))
 const RegisterPage = lazy(() => import("@/pages/auth/RegisterPage").then((m) => ({ default: m.RegisterPage })))
 const RepositoriesPage = lazy(() => import("@/pages/forge/RepositoriesPage").then((m) => ({ default: m.RepositoriesPage })))
 const ResetPasswordPage = lazy(() => import("@/pages/auth/ResetPasswordPage").then((m) => ({ default: m.ResetPasswordPage })))
@@ -69,6 +72,9 @@ export function App() {
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/workspace" element={<WorkspacePage />} />
               <Route path="/admin/users" element={<AdminUsersPage />} />
+              <Route path="/admin/settings" element={<AdminSettingsPage />} />
+              <Route path="/admin/audit-log" element={<AdminAuditLogPage />} />
+              <Route path="/privacy" element={<PrivacyPage />} />
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/home" replace />} />
