@@ -45,12 +45,24 @@ function stubHome({
   repos = [repo(true)],
   trigger = "published",
   reviews = [listItem],
-}: { connections?: unknown[]; repos?: unknown[]; trigger?: string; reviews?: unknown[] } = {}) {
+  keys = [apiKey],
+  keyStatuses = { anthropic: "active" },
+}: {
+  connections?: unknown[]
+  repos?: unknown[]
+  trigger?: string
+  reviews?: unknown[]
+  keys?: unknown[]
+  keyStatuses?: Record<string, string>
+} = {}) {
   mockApi({
     "GET /api/connections": { connections, availableApps: ["github"] },
     "GET /api/repos": { repos },
     "GET /api/config/global": globalConfig(trigger),
-    "GET /api/settings/api-keys": { keys: [apiKey] },
+    "GET /api/settings/api-keys": { keys },
+    ...Object.fromEntries(
+      Object.entries(keyStatuses).map(([provider, status]) => [`GET /api/settings/api-keys/${provider}/status`, { status }]),
+    ),
     "GET /api/reviews?limit=5": { reviews, total: reviews.length, page: 1, limit: 5 },
   })
   renderWithProviders(<App />, { route: "/home" })
@@ -67,6 +79,28 @@ describe("Home page", () => {
 
     const hero = (await screen.findByText(title)).closest("[data-slot=card]") as HTMLElement
     expect(within(hero).getByRole("link", { name: button })).toHaveAttribute("href", href)
+  })
+
+  it("asks for an LLM connection when none is usable", async () => {
+    stubHome({ keys: [], keyStatuses: {} })
+
+    const hero = (await screen.findByRole("heading", { name: "Connect an LLM provider" })).closest("[data-slot=card]") as HTMLElement
+    expect(within(hero).getByRole("link", { name: "Add an LLM connection" })).toHaveAttribute("href", "/llm-connections")
+  })
+
+  it("counts a server-provided LLM key as usable", async () => {
+    stubHome({
+      keys: [{ ...apiKey, stored: false, last4: null, serverDefault: true }],
+      keyStatuses: {},
+    })
+
+    expect(await screen.findByText("Reviews are on")).toBeInTheDocument()
+  })
+
+  it("treats a revoked LLM connection as missing", async () => {
+    stubHome({ keyStatuses: { anthropic: "revoked" } })
+
+    expect(await screen.findByRole("heading", { name: "Connect an LLM provider" })).toBeInTheDocument()
   })
 
   it("summarises repositories and the review configuration", async () => {

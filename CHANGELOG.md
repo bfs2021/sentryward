@@ -283,6 +283,11 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- The home status no longer says "Reviews are on" when the workspace has no
+  usable LLM connection: it asks for one first. A server-provided key counts
+  as usable, while a revoked, unreachable or policy-blocked stored key counts
+  as missing. Closes #152.
+
 - An open finding in a file the change later deletes is now resolved (as
   invalidated) instead of staying open forever: a deleted file is never
   reviewed, so the run never got to say the finding was gone.
