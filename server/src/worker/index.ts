@@ -5,7 +5,7 @@ import { execute } from "./execute.ts";
 import { claimNext, recoverStale } from "./queue.ts";
 import { claimNextReply, recoverStaleReplies } from "./replyQueue.ts";
 import { executeReply } from "./executeReply.ts";
-import { pruneReviews } from "./retention.ts";
+import { runRetention } from "./retention.ts";
 
 let stopping = false;
 const running = new Set<Promise<void>>();
@@ -48,14 +48,20 @@ async function tick(): Promise<void> {
 
 // Runs after the claims so a long first pass or a failing prune never holds
 // up reviews.
+// The periods are read from the instance and workspace privacy settings on
+// each pass, so a change applies within the hour.
 async function prune(): Promise<void> {
-  if (!env.REVIEW_RETENTION_DAYS || Date.now() - lastPruneAt < RETENTION_INTERVAL_MS) return;
+  if (Date.now() - lastPruneAt < RETENTION_INTERVAL_MS) return;
   // Set first so a failing prune waits for the next interval instead of
   // retrying every poll.
   lastPruneAt = Date.now();
-  const pruned = await pruneReviews(env.REVIEW_RETENTION_DAYS);
-  if (pruned.deleted || pruned.trimmed) {
-    console.log(`[worker] retention: deleted ${pruned.deleted} job(s), expired ${pruned.trimmed} result(s)`);
+  const r = await runRetention();
+  if (r.deleted || r.trimmed || r.changes || r.auditRows) {
+    console.log(
+      `[worker] retention: deleted ${r.deleted} job(s), expired ${r.trimmed} result(s), ` +
+        `purged ${r.changes} change(s) (${r.findings} finding(s), ${r.replies} reply(ies)), ` +
+        `${r.auditRows} audit row(s)`,
+    );
   }
 }
 

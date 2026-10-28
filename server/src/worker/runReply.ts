@@ -9,6 +9,9 @@ import { answerThreadQuestion } from "../review/llm/threadAnswer.ts";
 import { BRAND_FOOTER } from "../review/render/markdown.ts";
 import { adapterForConnection, type Forge } from "../services/forge.ts";
 import { llmCredentialsFor } from "../services/llm.ts";
+import { auditedGenerate } from "../services/llmAudit.ts";
+import { guardModels, policyFor, type EffectivePolicy } from "../services/privacyPolicy.ts";
+import type { Resolve } from "../lib/hostSafety.ts";
 import { resolveLlm, type LlmCredentials } from "./llmEndpoint.ts";
 import { finishReply } from "./replyQueue.ts";
 
@@ -27,7 +30,13 @@ export interface RunReplyDeps {
   adapterFor: (connection: ForgeConnection) => Forge;
   generateFor: (keys: ApiKeys, endpoint?: Endpoint, baseUrls?: ProviderBaseUrls) => Generate;
   credentialsFor: (workspaceId: string) => Promise<LlmCredentials>;
+  policyFor?: (workspaceId: string) => Promise<EffectivePolicy>;
+  resolveHost?: Resolve;
 }
+
+// Posted on the forge, so it names no host or rule: commenters on a change
+// need not learn how the instance is set up. The dashboard records why.
+export const POLICY_BLOCKED_ANSWER = "Answers on this thread are turned off by this workspace's privacy settings.";
 
 const defaultDeps: RunReplyDeps = {
   adapterFor: adapterForConnection,
@@ -62,7 +71,7 @@ export async function runReply(
 ): Promise<void> {
   const repo = await prisma.repository.findUnique({
     where: { id: reply.repositoryId },
-    include: { connection: { include: { workspace: { select: { reviewSettings: true } } } } },
+    include: { connection: { include: { workspace: { select: { reviewSettings: true, name: true } } } } },
   });
   if (!repo) {
     throw new Error("The repository is no longer connected");
@@ -98,6 +107,7 @@ export async function runReply(
   });
 
   let text: string;
+  let error: string | null = null;
   if (!finding) {
     text = "This finding is not tracked any more, so there is nothing to update.";
   } else if (reply.kind === "ignore") {
@@ -132,21 +142,37 @@ export async function runReply(
       const model = modelChain(config.llm, "review")[0]!;
       const credentials = await deps.credentialsFor(repo.connection.workspaceId);
       const llm = resolveLlm(config, [model], credentials);
-      const base = deps.generateFor(llm.keys, llm.endpoint, llm.baseUrls);
-      const generate = signal ? abortableGenerate(base, signal) : base;
-      // At the head the finding was raised on: its lines number that revision,
-      // and the change may have moved on since.
-      const content = await forge.getFileAtRef(repo.fullPath, detail.file, result.change.headSha);
-      text = await answerThreadQuestion(
-        generate,
-        { finding: detail, code: codeAround(content, detail.startLine, detail.endLine), reply: reply.body },
-        { ...config, llm: { ...config.llm, fallbackModels: llm.fallbackModels } },
-      );
-      if (!text) text = "I could not produce an answer to this.";
+      const policy = await (deps.policyFor ?? policyFor)(repo.connection.workspaceId);
+      const guard = await guardModels(policy, [model, ...llm.fallbackModels], llm.endpoint, llm.baseUrls, deps.resolveHost);
+      const refused = guard.rejected.get(model);
+      if (refused) {
+        text = POLICY_BLOCKED_ANSWER;
+        error = refused.message;
+      } else {
+        const fallbackModels = llm.fallbackModels.filter((fallback) => !guard.rejected.has(fallback));
+        const base = auditedGenerate(deps.generateFor(llm.keys, llm.endpoint, llm.baseUrls), guard.target, {
+          workspaceId: repo.connection.workspaceId,
+          workspaceName: repo.connection.workspace.name,
+          repositoryId: repo.id,
+          repository: `${repo.host}/${repo.fullPath}`,
+          changeNumber: reply.number,
+          replyId: reply.id,
+        }, guard);
+        const generate = signal ? abortableGenerate(base, signal) : base;
+        // At the head the finding was raised on: its lines number that revision,
+        // and the change may have moved on since.
+        const content = await forge.getFileAtRef(repo.fullPath, detail.file, result.change.headSha);
+        text = await answerThreadQuestion(
+          generate,
+          { finding: detail, code: codeAround(content, detail.startLine, detail.endLine), reply: reply.body },
+          { ...config, llm: { ...config.llm, fallbackModels } },
+        );
+        if (!text) text = "I could not produce an answer to this.";
+      }
     }
   }
 
   signal?.throwIfAborted();
   const answerCommentId = await forge.replyToThread(target, reply.threadId, withFooter(text));
-  await finishReply(reply.id, { status: "done", answerCommentId });
+  await finishReply(reply.id, { status: "done", answerCommentId, ...(error ? { error } : {}) });
 }

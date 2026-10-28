@@ -16,6 +16,10 @@ const STATUS_BADGES: Record<LlmConnectionStatus, { className: string; title: str
     className: "border-amber-600/40 text-amber-700 dark:text-amber-400",
     title: "Could not verify the connection with the provider",
   },
+  blocked: {
+    className: "border-destructive/40 text-destructive",
+    title: "The privacy policy does not allow this connection; reviews cannot use it",
+  },
 }
 
 export function ApiKeyStatusBadge({ status }: { status: LlmConnectionStatus | undefined }) {

@@ -40,6 +40,9 @@ import {
   recordCredentials,
 } from "../services/providers/credentials.ts";
 import { llmCredentialsFor } from "../services/llm.ts";
+import { auditedGenerate, auditedGenerateAgentic, auditedProbe, type AuditContext } from "../services/llmAudit.ts";
+import { guardModels, policyFor, type EffectivePolicy } from "../services/privacyPolicy.ts";
+import type { Resolve } from "../lib/hostSafety.ts";
 import { priceOverridesFor } from "../services/modelPrices.ts";
 import { probeModel } from "../services/llmProbe.ts";
 import { prepareCapabilities, type Probe } from "./capabilities.ts";
@@ -71,6 +74,10 @@ export interface RunJobDeps {
   // Absent means every read goes to the forge, as with review.disableCache.
   cache?: ForgeCache;
   closeCheckIntervalMs?: number;
+  // The workspace's effective privacy policy, and the DNS lookup local-only
+  // mode checks hosts with.
+  policyFor?: (workspaceId: string) => Promise<EffectivePolicy>;
+  resolveHost?: Resolve;
 }
 
 const defaultDeps: RunJobDeps = {
@@ -169,7 +176,7 @@ function connectionRefused(connection: ForgeConnection, deps: RunJobDeps): Promi
 export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Promise<void> {
   const repo = await prisma.repository.findUnique({
     where: { id: job.repositoryId },
-    include: { connection: { include: { workspace: { select: { reviewSettings: true } } } } },
+    include: { connection: { include: { workspace: { select: { reviewSettings: true, name: true } } } } },
   });
   if (!repo) {
     throw new Error("The repository is no longer connected");
@@ -264,8 +271,32 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
     deps.credentialsFor(repo.connection.workspaceId),
     priceOverridesFor(repo.connection.workspaceId),
   ]);
-  const { keys, baseUrls, endpoint, fallbackModels, warnings: llmWarnings } = resolveLlm(config, models, credentials);
+  const { keys, baseUrls, endpoint, fallbackModels: keyed, warnings: llmWarnings } = resolveLlm(config, models, credentials);
   const warnings = [...loaded.warnings, ...llmWarnings];
+
+  // The privacy policy is checked against every model this run may call before
+  // anything is posted: a refused primary model fails the job with the policy's
+  // reason, a refused fallback is left out as an unkeyed one is. The repository
+  // file can name any model, so this is checked here rather than on save.
+  const policy = await (deps.policyFor ?? policyFor)(repo.connection.workspaceId);
+  const configured = [...modelChain(config.llm, "review"), ...modelChain(config.llm, "walkthrough"), ...modelChain(config.llm, "verify")];
+  const guard = await guardModels(policy, [...models, ...keyed, ...configured], endpoint, baseUrls, deps.resolveHost);
+  const refused = models.find((model) => guard.rejected.has(model));
+  if (refused) throw guard.rejected.get(refused)!;
+  const fallbackModels = keyed.filter((model) => {
+    const violation = guard.rejected.get(model);
+    if (violation) warnings.push(`Fallback model ${model} skipped: ${violation.message}`);
+    return !violation;
+  });
+  const reviewConfig: Config = { ...config, llm: { ...config.llm, fallbackModels } };
+  const audit: AuditContext = {
+    workspaceId: repo.connection.workspaceId,
+    workspaceName: repo.connection.workspace.name,
+    repositoryId: repo.id,
+    repository: `${repo.host}/${repo.fullPath}`,
+    changeNumber: job.number,
+    jobId: job.id,
+  };
 
   const targetUrl = `${env.CLIENT_ORIGIN}/reviews/${job.id}`;
   const ref = changeSet.forgeRef;
@@ -357,20 +388,26 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
   }
 
   const issues = walkthrough ? await walkthroughIssues(forge, changeSet, config, warnings) : undefined;
+  // Probed with the fallbacks the policy allows, not every configured one.
   const capabilities = await prepareCapabilities({
     workspaceId: repo.connection.workspaceId,
-    config,
+    config: reviewConfig,
     keys,
     endpoint,
     baseUrls,
-    probe: deps.probe ?? probeModel,
+    probe: auditedProbe(deps.probe ?? probeModel, audit, guard),
     warnings,
   });
   const generateOptions: GenerateOptions = { ledger: capabilities.ledger, override: config.llm.capabilities };
-  const generate = deps.generateFor(keys, endpoint, baseUrls, generateOptions);
+  const generate = auditedGenerate(deps.generateFor(keys, endpoint, baseUrls, generateOptions), guard.target, audit, guard);
   const generateAgentic =
     config.review.context === "agentic"
-      ? (deps.generateAgenticFor ?? createGenerateAgentic)(keys, endpoint, baseUrls, generateOptions)
+      ? auditedGenerateAgentic(
+          (deps.generateAgenticFor ?? createGenerateAgentic)(keys, endpoint, baseUrls, generateOptions),
+          guard.target,
+          audit,
+          guard,
+        )
       : undefined;
   // Files at the head sha never change, so they share the config file's cache
   // key shape. Code search results are not fixed by a sha and stay uncached.
@@ -427,11 +464,7 @@ export async function runJob(job: ReviewJob, deps: RunJobDeps = defaultDeps): Pr
     result = await runReview(
       {
         changeSet,
-        config: {
-          ...config,
-          llm: { ...config.llm, fallbackModels },
-          output: { ...config.output, walkthrough },
-        },
+        config: { ...reviewConfig, output: { ...config.output, walkthrough } },
         warnings,
         issues,
         ignoredFingerprints,

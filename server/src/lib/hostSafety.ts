@@ -67,3 +67,31 @@ export async function assertSafeUrl(url: string): Promise<void> {
   }
   await assertPublicHostname(parsed.hostname, "URL");
 }
+
+// IPv4-mapped IPv6 (::ffff:10.0.0.1) is checked as the IPv4 address it wraps,
+// so a private address cannot pass as an unlisted IPv6 one.
+export function isPrivateAddress(address: string): boolean {
+  const bare = address.replace(/^\[|\]$/g, "");
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(bare);
+  if (mapped) return blocked.check(mapped[1], "ipv4");
+  const family = isIP(bare);
+  if (family === 0) return false;
+  return blocked.check(bare, family === 6 ? "ipv6" : "ipv4");
+}
+
+export type Resolve = (hostname: string) => Promise<{ address: string }[]>;
+
+const resolveAll: Resolve = (hostname) => lookup(hostname, { all: true });
+
+// Whether a host is reached on this machine or the private network: the test
+// behind local-only mode, applied in every environment. Names are trusted only
+// by what they resolve to (Docker service names and host.docker.internal pass
+// that way); a lookup failure counts as external. Like the checks above, it
+// does not cover DNS rebinding between this check and the request.
+export async function isInternalHost(hostname: string, resolve: Resolve = resolveAll): Promise<boolean> {
+  const bare = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (bare === "localhost" || bare.endsWith(".localhost")) return true;
+  if (isIP(bare)) return isPrivateAddress(bare);
+  const addresses = await resolve(bare).catch(() => []);
+  return addresses.length > 0 && addresses.every(({ address }) => isPrivateAddress(address));
+}

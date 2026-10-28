@@ -4,13 +4,15 @@ import { api } from "@/lib/api"
 const API_KEYS_QUERY_KEY = ["settings", "api-keys"]
 
 export type LlmProvider = "anthropic" | "openai" | "google" | "ollama"
-export type LlmConnectionStatus = "active" | "revoked" | "unreachable"
+// blocked: the privacy policy refuses the connection's host or provider.
+export type LlmConnectionStatus = "active" | "revoked" | "unreachable" | "blocked"
 
 // Shared with the status filter and the status badge so both read the same.
 export const STATUS_LABELS: Record<LlmConnectionStatus, string> = {
   active: "Active",
   revoked: "Inactive",
   unreachable: "Unknown",
+  blocked: "Blocked by policy",
 }
 
 export interface ApiKey {

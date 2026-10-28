@@ -13,6 +13,7 @@ import {
   KeyRound,
   LogOut,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
   UserCog,
   Users,
@@ -65,6 +66,7 @@ const NAV = [
   { to: "/configuration", label: "Configuration", icon: SlidersHorizontal },
   { to: "/llm-connections", label: "LLM Connections", icon: KeyRound },
   { to: "/notifications", label: "Notifications", icon: Bell },
+  { to: "/privacy", label: "Privacy", icon: ShieldCheck },
 ]
 
 type NavGroupDef = { label: string; icon: typeof House; items: typeof NAV }
@@ -76,14 +78,15 @@ const USER_MANAGEMENT_NAV: NavGroupDef = {
   icon: UserCog,
   items: [
     { to: "/admin/users", label: "Users", icon: Users },
+    { to: "/admin/settings", label: "Instance settings", icon: Settings },
     { to: "/workspace", label: "Teams", icon: UsersRound },
   ],
 }
 
-// Users is for instance admins; Teams manages the current team, so it only
-// exists in a team workspace (a personal one has no members).
+// The /admin pages are for instance admins; Teams manages the current team, so
+// it only exists in a team workspace (a personal one has no members).
 function userManagementItems(isAdmin: boolean, inTeam: boolean) {
-  return USER_MANAGEMENT_NAV.items.filter((item) => (item.to === "/admin/users" ? isAdmin : inTeam))
+  return USER_MANAGEMENT_NAV.items.filter((item) => (item.to.startsWith("/admin") ? isAdmin : inTeam))
 }
 
 // Where you are, for the top bar; each page renders its own h1.

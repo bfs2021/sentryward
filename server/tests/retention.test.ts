@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { Prisma } from "../src/generated/prisma/client.ts";
 import type { ReviewStatus } from "../src/generated/prisma/client.ts";
 import { prisma } from "../src/lib/prisma.ts";
-import { pruneReviews } from "../src/worker/retention.ts";
+import { pruneReviews, purgeStaleChanges, runRetention } from "../src/worker/retention.ts";
 import { createUser } from "./helpers/users.ts";
 
 const NOW = new Date("2026-06-01T00:00:00Z");
@@ -10,11 +10,15 @@ const OLD = new Date("2026-04-01T00:00:00Z"); // 61 days before NOW
 const RECENT = new Date("2026-05-20T00:00:00Z"); // 12 days before NOW
 
 let repoId: string;
+let workspaceId: string;
 
 beforeEach(async () => {
+  await prisma.llmRequestLog.deleteMany();
+  await prisma.instanceSettings.deleteMany();
   await prisma.workspace.deleteMany();
   await prisma.user.deleteMany();
   const { workspace } = await createUser();
+  workspaceId = workspace.id;
   const connection = await prisma.forgeConnection.create({
     data: { workspaceId: workspace.id, provider: "gitlab", host: "gitlab.com", kind: "token", accountLogin: "dev" },
   });
@@ -33,6 +37,7 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  await prisma.instanceSettings.deleteMany();
   await prisma.$disconnect();
 });
 
@@ -155,5 +160,158 @@ describe("pruneReviews", () => {
 
     expect(await pruneReviews(30, { now: NOW })).toEqual({ deleted: 0, trimmed: 0 });
     expect(await load(failed.id)).toMatchObject({ resultExpiredAt: null, error: "Could not fetch the change" });
+  });
+});
+
+// Another workspace with its own repository, for scoping.
+async function otherRepo() {
+  const { workspace } = await createUser("other@example.com");
+  const connection = await prisma.forgeConnection.create({
+    data: { workspaceId: workspace.id, provider: "gitlab", host: "gitlab.com", kind: "token", accountLogin: "other" },
+  });
+  const repo = await prisma.repository.create({
+    data: {
+      connectionId: connection.id,
+      provider: "gitlab",
+      host: "gitlab.com",
+      fullPath: "other/web",
+      externalId: "2",
+      defaultBranch: "main",
+      enabled: true,
+    },
+  });
+  return { workspaceId: workspace.id, repoId: repo.id };
+}
+
+async function finding(seenAt: Date, overrides: Partial<Prisma.FindingUncheckedCreateInput> = {}) {
+  return prisma.finding.create({
+    data: {
+      repositoryId: repoId,
+      number: 7,
+      fingerprint: "fp",
+      title: "Bug",
+      file: "a.ts",
+      startLine: 1,
+      severity: "major",
+      category: "bug",
+      kind: "inline",
+      changeTitle: "T",
+      firstSeenAt: seenAt,
+      lastSeenAt: seenAt,
+      ...overrides,
+    },
+  });
+}
+
+async function threadReply(createdAt: Date, status: "done" | "queued" = "done", repositoryId = repoId) {
+  return prisma.threadReply.create({
+    data: {
+      repositoryId,
+      number: 7,
+      fingerprint: "fp",
+      threadId: "t",
+      commentId: `c-${Math.random()}`,
+      actor: "alice",
+      kind: "question",
+      body: "Why?",
+      status,
+      createdAt,
+    },
+  });
+}
+
+describe("pruneReviews scoped to workspaces", () => {
+  it("only prunes the workspaces named", async () => {
+    const mine = await job("superseded", OLD);
+    const other = await otherRepo();
+    const theirs = await job("superseded", OLD, { repositoryId: other.repoId });
+
+    expect(await pruneReviews(30, { now: NOW, workspaceIds: [other.workspaceId] })).toEqual({ deleted: 1, trimmed: 0 });
+    expect(await load(mine.id)).not.toBeNull();
+    expect(await load(theirs.id)).toBeNull();
+  });
+});
+
+describe("purgeStaleChanges", () => {
+  it("purges a change gone quiet: findings, posted comments, replies and the kept result", async () => {
+    const newest = await job("completed", OLD);
+    await finding(OLD);
+    await prisma.postedFinding.create({
+      data: { repositoryId: repoId, number: 7, fingerprint: "fp", forgeCommentId: "1", createdAt: OLD },
+    });
+    await threadReply(OLD);
+
+    const purged = await purgeStaleChanges(30, { now: NOW, workspaceIds: [workspaceId] });
+
+    expect(purged).toEqual({ changes: 1, findings: 1, postedFindings: 1, replies: 1 });
+    expect(await prisma.finding.count()).toBe(0);
+    expect(await prisma.postedFinding.count()).toBe(0);
+    expect(await prisma.threadReply.count()).toBe(0);
+    expect(await load(newest.id)).toMatchObject({ result: null, summary: { title: "T" }, resultExpiredAt: NOW });
+    // A second pass has nothing left to do.
+    expect((await purgeStaleChanges(30, { now: NOW, workspaceIds: [workspaceId] })).changes).toBe(0);
+  });
+
+  it("leaves a change with recent activity of any kind alone", async () => {
+    await job("completed", OLD);
+    await finding(OLD, { ignoredAt: RECENT });
+    await finding(OLD, { fingerprint: "other", number: 8 });
+    await threadReply(RECENT, "done");
+
+    const purged = await purgeStaleChanges(30, { now: NOW, workspaceIds: [workspaceId] });
+
+    // Change 7 was ignored and replied to recently; change 8 has only an old finding.
+    expect(purged).toEqual({ changes: 1, findings: 1, postedFindings: 0, replies: 0 });
+    expect(await prisma.finding.count({ where: { number: 7 } })).toBe(1);
+  });
+
+  it("waits while a review or reply of the change is in flight", async () => {
+    await finding(OLD);
+    const queued = await threadReply(OLD, "queued");
+    expect((await purgeStaleChanges(30, { now: NOW })).changes).toBe(0);
+
+    await prisma.threadReply.delete({ where: { id: queued.id } });
+    await job("queued", null, { createdAt: OLD });
+    expect((await purgeStaleChanges(30, { now: NOW })).changes).toBe(0);
+  });
+});
+
+describe("runRetention", () => {
+  it("does nothing when no retention is set anywhere", async () => {
+    const old = await job("superseded", OLD);
+    await finding(OLD);
+
+    const result = await runRetention({ now: NOW });
+
+    expect(result).toMatchObject({ deleted: 0, changes: 0, auditRows: 0 });
+    expect(await load(old.id)).not.toBeNull();
+  });
+
+  it("applies the shorter of the instance and workspace periods per workspace", async () => {
+    await prisma.instanceSettings.create({ data: { id: 1, retentionDays: 365 } });
+    const other = await otherRepo();
+    await prisma.workspacePrivacy.create({ data: { workspaceId: other.workspaceId, retentionDays: 30 } });
+    const mine = await job("superseded", OLD);
+    const theirs = await job("superseded", OLD, { repositoryId: other.repoId });
+    await threadReply(OLD, "done", other.repoId);
+
+    const result = await runRetention({ now: NOW });
+
+    // 61 days old: past the other workspace's 30, inside the instance's 365.
+    expect(await load(mine.id)).not.toBeNull();
+    expect(await load(theirs.id)).toBeNull();
+    expect(result).toMatchObject({ deleted: 1, replies: 1 });
+  });
+
+  it("purges audit rows past the instance's audit period", async () => {
+    await prisma.instanceSettings.create({ data: { id: 1, auditRetentionDays: 30 } });
+    const base = { workspaceName: "W", purpose: "review", provider: "anthropic", host: "h", model: "anthropic/m", outcome: "ok" };
+    await prisma.llmRequestLog.create({ data: { ...base, createdAt: OLD } });
+    const recent = await prisma.llmRequestLog.create({ data: { ...base, createdAt: RECENT } });
+
+    const result = await runRetention({ now: NOW });
+
+    expect(result.auditRows).toBe(1);
+    expect((await prisma.llmRequestLog.findMany()).map((row) => row.id)).toEqual([recent.id]);
   });
 });

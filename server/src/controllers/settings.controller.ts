@@ -4,7 +4,7 @@ import { DecryptError, decrypt, encrypt } from "../lib/crypto.ts";
 import { HttpError } from "../lib/httpError.ts";
 import { hashPassword, verifyPassword } from "../lib/password.ts";
 import { prisma } from "../lib/prisma.ts";
-import { PROVIDERS, providerOf, type ProviderName } from "../review/llm/providers.ts";
+import { createGenerate, PROVIDERS, providerOf, type ProviderName } from "../review/llm/providers.ts";
 import {
   LlmConnectionError,
   listLlmModels,
@@ -24,6 +24,8 @@ import {
 import { assertAnotherAdminRemains } from "../services/admins.ts";
 import { clearCapabilities, endpointKey, listCapabilities, recordCapabilities } from "../services/llmCapabilities.ts";
 import { probeModel } from "../services/llmProbe.ts";
+import { auditedGenerate, recordSpent } from "../services/llmAudit.ts";
+import { checkModel, connectionTarget, policyFor, targetOf, type LlmTarget } from "../services/privacyPolicy.ts";
 import { assertEmailAvailable, emailTaken, isUniqueViolation } from "../services/users.ts";
 import { releaseWorkspaces } from "../services/workspaces.ts";
 import { clearAuthCookie, publicUser, setAuthCookie } from "./auth.controller.ts";
@@ -120,6 +122,17 @@ function storedApiKey(credential: { encryptedKey: string | null }): string | und
   }
 }
 
+// The privacy policy, checked before any request leaves for the connection's
+// host: saving, listing and testing all reach it.
+async function policyRefusal(workspaceId: string, target: LlmTarget) {
+  return checkModel(await policyFor(workspaceId), target);
+}
+
+async function assertAllowed(workspaceId: string, target: LlmTarget, field: "baseUrl" | "model") {
+  const violation = await policyRefusal(workspaceId, target);
+  if (violation) throw new HttpError(400, "Validation failed", { [field]: [violation.message] });
+}
+
 export async function listApiKeys(req: Request, res: Response) {
   const stored = await prisma.llmCredential.findMany({ where: { workspaceId: req.workspaceId } });
   const byProvider = new Map(stored.map((credential) => [credential.provider, credential]));
@@ -137,6 +150,12 @@ export async function apiKeyStatus(req: Request, res: Response) {
     throw new HttpError(404, "No key stored for this provider");
   }
 
+  // A connection the policy now refuses is not called to find out more.
+  const violation = await policyRefusal(req.workspaceId!, connectionTarget(provider, credential.baseUrl));
+  if (violation) {
+    res.json({ status: "blocked", message: violation.message });
+    return;
+  }
   const apiKey = storedApiKey(credential);
   let status: LlmConnectionStatus;
   try {
@@ -159,6 +178,7 @@ export async function apiKeyModels(req: Request, res: Response) {
     throw new HttpError(404, "No key stored for this provider");
   }
 
+  await assertAllowed(req.workspaceId!, connectionTarget(provider, credential.baseUrl), "baseUrl");
   const models = await listLlmModels(provider, storedApiKey(credential), credential.baseUrl ?? undefined);
   res.json({ models });
 }
@@ -188,20 +208,27 @@ export async function testApiKeyModel(req: Request, res: Response) {
 
   const apiKey = storedApiKey(credential);
   const baseUrl = credential.baseUrl ?? undefined;
-  const result = await testLlmModel(provider, model, { apiKey, baseUrl });
+  const workspaceId = req.workspaceId!;
+  const endpoint = baseUrl ? { baseUrl, apiKey } : undefined;
+  const target = targetOf(endpoint, { [provider]: baseUrl })(model);
+  await assertAllowed(workspaceId, target, "model");
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId }, select: { name: true } });
+  const audit = { workspaceId, workspaceName: workspace.name, userId: req.userId };
+  const result = await testLlmModel(provider, model, { apiKey, baseUrl }, (keys, ep) =>
+    auditedGenerate(createGenerate(keys, ep), () => target, audit),
+  );
   if (!result.ok) {
     res.json({ result });
     return;
   }
   // A model that answers is probed for what reviews may ask of it, and the
   // answer kept for them. A probe that fails costs the test nothing.
-  const endpoint = baseUrl ? { baseUrl, apiKey } : undefined;
   const probe = await probeModel(model, apiKey ? { [provider]: apiKey } : {}, endpoint).catch(() => undefined);
   if (!probe) {
     res.json({ result });
     return;
   }
-  const workspaceId = req.workspaceId!;
+  await recordSpent(audit, "probe", target, probe.spent);
   await recordCapabilities(workspaceId, () => ({ provider: modelProvider, endpoint: endpointKey(baseUrl) }), [
     { model, capabilities: probe.capabilities, source: "probe", detail: probe.detail },
   ]);
@@ -240,8 +267,9 @@ export async function saveApiKey(req: Request, res: Response) {
   }
 
   const baseUrl = input.baseUrl ? normalizeBaseUrl(input.baseUrl) : undefined;
-  await verifyLlmConnection(provider, apiKey, baseUrl);
   const workspaceId = req.workspaceId!;
+  await assertAllowed(workspaceId, connectionTarget(provider, baseUrl), "baseUrl");
+  await verifyLlmConnection(provider, apiKey, baseUrl);
   const encryptedKey = apiKey ? encrypt(apiKey) : null;
   const previous = await prisma.llmCredential.findUnique({
     where: { workspaceId_provider: { workspaceId, provider } },

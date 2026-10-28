@@ -9,6 +9,12 @@ import {
   revokeInvite,
   updateUser,
 } from "../controllers/admin.controller.ts";
+import {
+  exportInstanceAuditLog,
+  getInstanceSettings,
+  listInstanceAuditLog,
+  updateInstanceSettings,
+} from "../controllers/privacy.controller.ts";
 import { requireAuth } from "../middleware/requireAuth.ts";
 import { requireInstanceAdmin } from "../middleware/requireInstanceAdmin.ts";
 import { userLimiter } from "../middleware/apiLimiter.ts";
@@ -24,3 +30,7 @@ adminRouter.get("/invites", listInvites);
 adminRouter.post("/invites", postInvite);
 adminRouter.post("/invites/:id/resend", postResendInvite);
 adminRouter.delete("/invites/:id", revokeInvite);
+adminRouter.get("/settings", getInstanceSettings);
+adminRouter.put("/settings", updateInstanceSettings);
+adminRouter.get("/audit-log", listInstanceAuditLog);
+adminRouter.get("/audit-log/export", exportInstanceAuditLog);

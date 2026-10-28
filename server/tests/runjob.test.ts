@@ -18,6 +18,7 @@ import { DEFAULT_CONFIG } from "../src/review/config/schema.ts";
 import { fingerprint } from "../src/review/core/fingerprint.ts";
 import type { FileDiffInput } from "../src/review/diff/parse.ts";
 import { APP_PATCH, makeChangeSet } from "./helpers/changeSet.ts";
+import { mergePolicy, OPEN_LAYER, type PolicyLayer } from "../src/services/privacyPolicy.ts";
 import { WALKTHROUGH, fakeModel, modelFinding } from "./helpers/model.ts";
 
 let repositoryId: string;
@@ -1437,5 +1438,126 @@ describe("runJob on a push after a completed review", () => {
     expect(result.incremental).toBeUndefined();
     expect(result.warnings.join("\n")).toMatch(/review settings changed/);
     expect((await stored()).verdict).not.toBe("blocked");
+  });
+});
+
+describe("privacy policy", () => {
+  const policy = (instance: Partial<PolicyLayer> = {}, workspace: Partial<PolicyLayer> = {}) => async () =>
+    mergePolicy(
+      { ...OPEN_LAYER, auditRetentionDays: null, retentionSource: null, ...instance },
+      { ...OPEN_LAYER, ...workspace },
+    );
+  const publicDns = async () => [{ address: "104.18.1.1" }];
+  const auditRows = (jobId: string) => prisma.llmRequestLog.findMany({ where: { jobId }, orderBy: { createdAt: "asc" } });
+
+  it("fails before posting anything when the review model's provider is not allowed", async () => {
+    const job = await claimedJob();
+    const { runDeps, model, published } = deps({}, { code_review: { findings: [] } });
+
+    await expect(
+      runJob(job, { ...runDeps, policyFor: policy({ allowedProviders: ["openai"] }) }),
+    ).rejects.toThrow(/^Blocked by privacy policy: provider "anthropic" \(model anthropic\/.+\) is not allowed by the instance settings/);
+    expect(model.requests).toHaveLength(0);
+    expect(published.summaries).toEqual([]);
+    expect(published.statuses).toEqual([]);
+  });
+
+  it("refuses an official API host in local-only mode", async () => {
+    const job = await claimedJob();
+    const { runDeps, model } = deps({}, { code_review: { findings: [] } });
+
+    await expect(
+      runJob(job, { ...runDeps, policyFor: policy({}, { localOnly: true }), resolveHost: publicDns }),
+    ).rejects.toThrow(/local-only mode is on, and model anthropic\/.+ would send requests to api\.anthropic\.com/);
+    expect(model.requests).toHaveLength(0);
+  });
+
+  it("runs against an internal endpoint in local-only mode", async () => {
+    const job = await claimedJob();
+    const { runDeps } = deps({}, { code_review: { findings: [] } });
+
+    await runJob(job, {
+      ...runDeps,
+      credentialsFor: async () => ({
+        keys: {},
+        baseUrls: {},
+        connections: { anthropic: { apiKey: "k", baseUrl: "http://llm.internal:4000/v1" } },
+      }),
+      policyFor: policy({ localOnly: true }),
+      resolveHost: async () => [{ address: "10.0.0.8" }],
+    });
+
+    const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(stored.status).toBe("completed");
+    const review = (await auditRows(job.id)).find((row) => row.purpose === "review");
+    expect(review).toMatchObject({ host: "llm.internal:4000", outcome: "ok" });
+  });
+
+  it("leaves out a fallback the policy refuses, with a warning", async () => {
+    const job = await claimedJob();
+    await prisma.repository.update({
+      where: { id: repositoryId },
+      data: { settings: { llm: { fallbackModels: ["openai/gpt-5"] } } },
+    });
+    const { runDeps } = deps({}, { code_review: { findings: [] } });
+
+    await runJob(job, {
+      ...runDeps,
+      credentialsFor: async () => ({
+        keys: {},
+        baseUrls: {},
+        connections: { anthropic: { apiKey: "k", baseUrl: "https://proxy.example.com/v1" } },
+      }),
+      policyFor: policy({}, { allowedProviders: ["anthropic"] }),
+    });
+
+    const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
+    const result = stored.result as unknown as ReviewResult;
+    expect(result.warnings.join("\n")).toContain(
+      "Fallback model openai/gpt-5 skipped: Blocked by privacy policy: provider \"openai\"",
+    );
+    expect((stored.resolvedConfig as { config: { llm: { fallbackModels: string[] } } }).config.llm.fallbackModels).toEqual([
+      "openai/gpt-5",
+    ]);
+  });
+
+  it("records each model request in the audit log without any code", async () => {
+    const job = await claimedJob();
+    const { runDeps } = deps(
+      { "base:.sentryward.yaml": "output:\n  walkthrough: true\n" },
+      { code_review: { findings: [modelFinding()] }, walkthrough: WALKTHROUGH },
+    );
+
+    await runJob(job, runDeps);
+
+    const rows = await auditRows(job.id);
+    expect(rows.map((row) => row.purpose).sort()).toEqual(["review", "verify", "walkthrough"]);
+    expect(rows.find((row) => row.purpose === "review")).toMatchObject({
+      workspaceId,
+      workspaceName: "W",
+      repositoryId,
+      repository: "github.com/acme/web",
+      changeNumber: 42,
+      provider: "anthropic",
+      host: "api.anthropic.com",
+      inputTokens: 100,
+      outputTokens: 20,
+      outcome: "ok",
+      errorKind: null,
+    });
+    const text = JSON.stringify(rows);
+    expect(text).not.toContain("overflows");
+    expect(text).not.toContain("src/app.ts");
+  });
+
+  it("records a failed request by its kind, never its message", async () => {
+    const job = await claimedJob();
+    const { runDeps } = deps({}, { code_review: new Error("provider down: const secret = 1") });
+
+    await runJob(job, runDeps);
+
+    const row = (await auditRows(job.id)).find((r) => r.purpose === "review");
+    expect(row).toMatchObject({ purpose: "review", outcome: "failed", errorKind: "error", inputTokens: 0 });
+    expect(JSON.stringify(row)).not.toContain("secret");
   });
 });

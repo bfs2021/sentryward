@@ -599,6 +599,85 @@ describe("POST /api/settings/api-keys/:provider/test", () => {
   });
 });
 
+describe("privacy policy on LLM connections", () => {
+  const CHAT_URL = /^http:\/\/ollama\.test\/v1\/chat\/completions$/;
+
+  beforeEach(async () => {
+    await prisma.llmRequestLog.deleteMany();
+    await prisma.instanceSettings.deleteMany();
+  });
+
+  afterAll(async () => {
+    await prisma.instanceSettings.deleteMany();
+  });
+
+  it("refuses to save a connection to a disallowed host before calling it", async () => {
+    await prisma.instanceSettings.create({ data: { id: 1, allowedHosts: ["ollama.test"] } });
+
+    const res = await request(app)
+      .put("/api/settings/api-keys/openai")
+      .set("Cookie", cookie)
+      .send({ apiKey: "sk-test-0001" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors.baseUrl[0]).toMatch(/^Blocked by privacy policy: host api\.openai\.com \(the openai connection\)/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await prisma.llmCredential.count()).toBe(0);
+  });
+
+  it("reports a stored connection the policy now refuses as blocked, without calling it", async () => {
+    await prisma.llmCredential.create({
+      data: { workspaceId, provider: "anthropic", encryptedKey: encrypt("sk-ant-secret-1234") },
+    });
+    await prisma.workspacePrivacy.create({ data: { workspaceId, allowedProviders: ["ollama"] } });
+
+    const status = await request(app).get("/api/settings/api-keys/anthropic/status").set("Cookie", cookie);
+    expect(status.body).toMatchObject({ status: "blocked", message: expect.stringContaining("this workspace's privacy settings") });
+
+    const models = await request(app).get("/api/settings/api-keys/anthropic/models").set("Cookie", cookie);
+    expect(models.status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses to test a model the policy does not allow", async () => {
+    await prisma.llmCredential.create({
+      data: { workspaceId, provider: "ollama", encryptedKey: encrypt("k-12345678"), baseUrl: "http://ollama.test/v1" },
+    });
+    await prisma.workspacePrivacy.create({ data: { workspaceId, allowedProviders: ["anthropic"] } });
+
+    const res = await request(app).post("/api/settings/api-keys/ollama/test").set("Cookie", cookie).send({ model: "ollama/qwen3" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors.model[0]).toMatch(/^Blocked by privacy policy: provider "ollama"/);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("records a connection test and its probe in the audit log", async () => {
+    await prisma.llmCredential.create({
+      data: { workspaceId, provider: "ollama", encryptedKey: encrypt("k-12345678"), baseUrl: "http://ollama.test/v1" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      fetchStub([
+        { method: "POST", url: CHAT_URL, body: chatStream('{"ok":true}'), headers: { "content-type": "text/event-stream" } },
+      ]).fetch,
+    );
+
+    await request(app).post("/api/settings/api-keys/ollama/test").set("Cookie", cookie).send({ model: "ollama/qwen3" });
+
+    const rows = await prisma.llmRequestLog.findMany({ where: { workspaceId } });
+    expect(rows.map((row) => row.purpose).sort()).toEqual(["probe", "probe", "test"]);
+    expect(rows.find((row) => row.purpose === "test")).toMatchObject({
+      userId,
+      provider: "ollama",
+      host: "ollama.test",
+      model: "ollama/qwen3",
+      inputTokens: 40,
+      outcome: "ok",
+    });
+  });
+});
+
 describe("testLlmModel", () => {
   it("builds the official client for a connection without a host", async () => {
     const { generate, requests } = fakeModel({ connection_test: { ok: true } });

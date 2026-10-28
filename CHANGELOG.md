@@ -10,6 +10,34 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- Privacy controls (#109). A new "Privacy and data" section of the README
+  lists what Sentryward stores, what is sent to model providers and forges,
+  and how long it is kept. Instance admins get an Instance settings page
+  (`GET`/`PUT /api/admin/settings`, new `instance_settings` table) and
+  workspace admins a Privacy page (`GET`/`PUT /api/privacy`, new
+  `workspace_privacy` table) to restrict model requests to chosen providers
+  and hosts (exact names, `*.example.com` wildcards, optional ports) or to
+  local endpoints only (hosts that resolve to private or loopback addresses).
+  A workspace can only narrow the instance policy. The policy is checked
+  before a review posts anything, for every model it may call, including
+  ones named in `.sentryward.yaml`: a refused review, walkthrough or verify
+  model fails the review with a `Blocked by privacy policy:` reason, a
+  refused fallback is skipped with a warning, thread answers post a short
+  notice instead, and LLM connection save, test and model-list requests to
+  a refused host are rejected before they are sent (the connection shows as
+  "Blocked by policy"). Retention is now configurable from the dashboard
+  (instance period, falling back to `REVIEW_RETENTION_DAYS`, which workspaces
+  can shorten) and also purges the findings, posted-comment records and
+  finished thread replies of changes with no activity for longer than the
+  period. Every outbound model request (reviews, walkthroughs, verification,
+  capability probes, thread answers and connection tests) is recorded in a
+  new `llm_request_logs` audit table with its workspace, repository,
+  purpose, provider, host, model, token counts, latency and outcome, never
+  prompts, code or error text. Admins can browse, filter and export it as
+  CSV or JSON on the Privacy page (`/api/privacy/audit-log`) and, for every
+  workspace, in the Audit log tab of Instance settings
+  (`/api/admin/audit-log`), and an instance audit retention period removes
+  old entries.
 - Cross-file impact analysis (#108). Review context now follows callers of
   changed code more than one hop (`review.impact_depth`, 1-3, default 2, 1 in
   the `fast` profile; also in the dashboard under Findings > Review context):
@@ -204,6 +232,15 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- The Privacy page's Policy tab shows the workspace policy form with an
+  "In effect" summary beside it (the stricter of the instance and workspace
+  policies; stacked on narrow screens). The policy form (also used by
+  Instance settings) is split into "Where code can be sent" and "Data
+  retention" sections. Allowed providers is a multi-select dropdown in
+  which providers the instance blocks are disabled, retention has a "days"
+  unit and presets, retention above the instance limit is caught before
+  saving, and a Reset button undoes unsaved changes. Members see a note
+  that only owners and admins can edit.
 - Model prices moved to their own tab on the LLM Connections page
   (`/llm-connections?tab=prices`), next to the Connections tab. The
   Benchmarks page's "Unknown" cost link opens that tab.

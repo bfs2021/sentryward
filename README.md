@@ -42,6 +42,7 @@ dashboard tracks reviews and findings across runs.
 - [Deploying](#deploying)
 - [Forge connections](#forge-connections), [publishing](#publishing-to-the-forge), [automatic reviews](#automatic-reviews), [notifications](#notifications)
 - [Review configuration](#review-configuration): [LLM connections](#llm-connections-and-custom-endpoints), [Ollama](#ollama), [`.sentryward.yaml`](#sentrywardyaml-reference), [review rules](#review-rules)
+- [Privacy and data](#privacy-and-data): [what is stored](#what-is-stored), [what leaves the server](#what-leaves-the-server), [retention](#retention), [provider restrictions](#provider-and-host-restrictions), [audit log](#audit-log)
 - [API](#api)
 - [Development](#development)
 - [Contributing and license](#contributing-and-license)
@@ -82,7 +83,7 @@ Open http://localhost:5173, register, then follow
 
 The `worker` container runs review jobs: it fetches the PR/MR, resolves the review configuration, sends the diff to the configured model in one or more passes (plus an optional walkthrough), validates the findings, re-checks blocking ones with a second model call (`review.verify`; `llm.walkthrough_model` and `llm.verify_model` can point those two calls at a different model than the review passes) and stores the result on the job. Model keys come from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GOOGLE_GENERATIVE_AI_API_KEY`, unless the repository's workspace has stored its own. The worker polls the `review_jobs` table (claimed with `FOR UPDATE SKIP LOCKED`, so several workers can run side by side); tune it with `WORKER_POLL_INTERVAL_MS`, `WORKER_CONCURRENCY`, `WORKER_LOCK_TIMEOUT_MS`, `WORKER_MAX_ATTEMPTS`, `WORKER_HEARTBEAT_INTERVAL_MS` and `WORKER_MAX_RUN_MS`. While a job runs the worker refreshes its lock every `WORKER_HEARTBEAT_INTERVAL_MS` (default 60s, keep it well below `WORKER_LOCK_TIMEOUT_MS`), so a long-but-healthy review is not reclaimed as a dead worker (the server refuses to start otherwise). `WORKER_MAX_RUN_MS` (default 30m) is the longest a review may take: a run past it is failed, healthy or not, and its slot freed, so raise it for repositories with very large reviews. A run that loses its job this way, or to stale-lock recovery, stops and publishes nothing more.
 
-`REVIEW_RETENTION_DAYS` bounds how long reviews keep their bulky data (unset, the default, keeps everything). Once an hour the worker deletes superseded, skipped and cancelled reviews that finished more than that many days ago, and clears the stored result, resolved configuration and publication record of older completed, partial and failed ones. Those keep their row, status, verdict and summary, so the reviews list, stats and findings list are unaffected, while the review page says the full result has expired and its markdown export answers `410`. The newest completed or partial review of each change is never cleared, however old, so its findings keep their full details, replies on their inline threads can still be answered and the next push still gets an incremental review. A finding last reported by an older, cleared review (for example one ignored a while ago) keeps its row but loses its full details. Failed reviews that stored nothing are left as they are, so they still show their error. Pruning works in batches of 500 rows so it never holds long locks. Because cancelled reviews are deleted, a change cancelled or closed more than the window ago and later reopened at the same commit is reviewed again.
+`REVIEW_RETENTION_DAYS` bounds how long reviews keep their bulky data (unset, the default, keeps everything). Once an hour the worker deletes superseded, skipped and cancelled reviews that finished more than that many days ago, and clears the stored result, resolved configuration and publication record of older completed, partial and failed ones. Those keep their row, status, verdict and summary, so the reviews list, stats and findings list are unaffected, while the review page says the full result has expired and its markdown export answers `410`. The newest completed or partial review of each change is never cleared, however old, so its findings keep their full details, replies on their inline threads can still be answered and the next push still gets an incremental review. A finding last reported by an older, cleared review (for example one ignored a while ago) keeps its row but loses its full details. Failed reviews that stored nothing are left as they are, so they still show their error. Pruning works in batches of 500 rows so it never holds long locks. Because cancelled reviews are deleted, a change cancelled or closed more than the window ago and later reopened at the same commit is reviewed again. An instance admin can set the period from the dashboard instead, which takes precedence over the environment variable, and each workspace can shorten it; see [Retention](#retention).
 
 ## Getting started
 
@@ -595,6 +596,61 @@ Sentryward does not run analyzers itself. With `review.tool_findings` on (the de
 - **GitLab:** the Code Quality (`gl-code-quality-report.json`) and SAST (`gl-sast-report.json`) reports of the head commit's pipeline. GitLab's API only serves files from a job's artifacts archive, so list the report under `artifacts:paths` as well as `artifacts:reports`. Otherwise it is skipped with a warning.
 
 Only results on lines the change added are kept (or anywhere in a changed file, with `review.full_file`). They then pass the same category, `severity_floor`, dismissal and `max_findings` rules as model findings. Severity follows the analyzer's level: a GitHub failure is `major`, a warning `minor` and a notice `info`. A warning is filed under `maintainability`, which is not a default category, so linter warnings only appear when that category is enabled. When the model reported the same problem (same file and category, overlapping lines), the model's finding is kept. Tool findings never block unless `review.tool_findings_block` is on, because the analyzer's own check already passes or fails on the forge. If the results cannot be read (a missing permission, an unreachable report), the review continues with a warning.
+
+## Privacy and data
+
+Sentryward is self-hosted: review data stays in your PostgreSQL database, and source code only leaves the server for the model endpoints and forges you configure. This section lists what is kept and what is sent, and the controls that limit both.
+
+### What is stored
+
+- **Reviews** (`review_jobs`): the change's title, the resolved configuration, the full review result (findings with their file, lines, explanation and suggested fix, the walkthrough, model usage and cost), the record of what was published, and a small summary digest. Diffs and file contents are not stored, only what the model said about them.
+- **Findings** (`findings`): one row per finding per change, with its title, file and line, severity, model, the change's title and author, and its state, including ignore reasons and notes.
+- **Posted comments** (`posted_findings`): which inline comments were posted where, so a later run does not repost them.
+- **Thread replies** (`thread_replies`): replies and `/sentryward` commands left on Sentryward's inline threads, including the commenter's text.
+- **Credentials**: forge tokens, GitHub App installations, LLM API keys and notification URLs, encrypted with `ENCRYPTION_KEY` (AES-256-GCM). Only the last four characters of a key are ever shown.
+- **Model capabilities and prices** per workspace, users, memberships, invites and API tokens (only hashes of invite, reset and API tokens are kept).
+- **The audit log** of outbound model requests (see [Audit log](#audit-log)).
+
+### What leaves the server
+
+- **To model providers**, for each review: the diff of the change, surrounding file context (for agentic reviews, also the files and code-search results the model asks for), the review instructions and the repository's review rules, linked and related issue text for the walkthrough, and dismissed findings used to steer the review. Thread answers send the finding, the code around it and the reply text. Capability probes and connection tests send a fixed one-line prompt. Model list requests (`/models`) send only the key.
+- **To forges**: API reads of the change, files, issues and analyzer results, and the comments, statuses, labels and description updates Sentryward publishes.
+- **Elsewhere**: only the notification targets you configure (webhooks, Slack, email), which receive the review summary.
+
+### Retention
+
+Review data is kept forever unless a retention period is set. An instance admin sets one under **User Management > Instance settings**; when it is empty, `REVIEW_RETENTION_DAYS` from the environment applies, so existing deployments keep their behaviour. A workspace admin can set a shorter period for their workspace on the **Privacy** page; the shorter of the two applies. Once an hour the worker:
+
+- prunes reviews older than the period as [described above](#how-it-works) (deletes runs that reviewed nothing, clears the stored result of older ones);
+- purges changes that have had no activity of any kind (reviews, findings seen, ignored or resolved, replies) for longer than the period: their findings, posted-comment records and finished thread replies are deleted, and the result kept on their newest review is cleared. Review rows and summary digests stay, so usage, cost and the reviews list are unchanged. A change still under review is never purged, so findings do not lose their ignore state mid-review; if a purged change becomes active again it is reviewed afresh (the forge's own markers still stop inline comments from being posted twice), and benchmark and calibration figures no longer count its findings;
+- deletes audit log entries older than the instance's **audit log retention** (empty keeps them forever). Only instance admins set this, so a workspace cannot erase its own trail.
+
+### Provider and host restrictions
+
+Instance admins (Instance settings) and workspace admins (Privacy page) can limit where model requests go:
+
+- **Allowed providers**: the providers models may be named with (`anthropic`, `openai`, `google`, `ollama`). None selected allows all.
+- **Allowed hosts**: where requests may be sent, such as `ollama.internal:11434` or `*.example.com` (any host below `example.com`, not the domain itself). A host without a port matches any port. Empty allows all. A model reached through an official API counts as that API's host (`api.anthropic.com`, `api.openai.com`, `generativelanguage.googleapis.com`).
+- **Local only**: only endpoints whose host is `localhost` or resolves entirely to private or loopback addresses (for example a self-hosted Ollama, a Docker service name or `host.docker.internal`) may be called. Every official provider API is refused, including server-wide keys from the environment.
+
+A workspace can only narrow the instance: a model must pass both layers' lists, and local-only applies if either turns it on. Saving a workspace value the instance does not allow is refused. The policy is checked against every model a review may call, including fallbacks and models named in a repository's `.sentryward.yaml`, before anything is posted: a refused review, walkthrough or verify model fails the review with a message starting `Blocked by privacy policy:` that names the rule and the layer, and a refused fallback is skipped with a warning. Thread answers on a refused model post a short notice instead, without naming hosts. Saving, testing or listing models for an LLM connection the policy refuses is rejected before any request is made, and such a connection shows as **Blocked by policy**. The repository file cannot change these settings.
+
+The local-only check resolves the host when the review starts. It protects against misconfiguration, not against an attacker who controls DNS (rebinding between the check and the request); for a hard guarantee, also block outbound traffic from the `worker` and `server` containers at the network level.
+
+### Audit log
+
+Every request sent to a model is recorded: time, workspace, repository and change, purpose (review, walkthrough, verify, capability probe, thread reply, connection test), provider, host, model, input/cached/output/reasoning tokens, latency and outcome. A failed request records only a short error kind (such as `http_429` or `unusable_reply`), never the error text, and prompts, code and replies are never recorded. Entries keep the workspace and repository names after those are deleted, until audit retention removes them.
+
+Workspace admins see their workspace's log in the **Audit log** tab of the **Privacy** page; instance admins see every workspace's in the **Audit log** tab of **User Management > Instance settings**. Both can filter it and export it as CSV or JSON (up to 100,000 rows per export; an `X-Truncated: true` header marks a cut-off export). The endpoints, which API tokens can also read:
+
+| Method | Path | Who |
+| --- | --- | --- |
+| `GET`/`PUT` | `/api/privacy` | Read: any member. Write: workspace admin |
+| `GET` | `/api/privacy/audit-log`, `/api/privacy/audit-log/export?format=csv\|json` | Workspace admin |
+| `GET`/`PUT` | `/api/admin/settings` | Instance admin |
+| `GET` | `/api/admin/audit-log`, `/api/admin/audit-log/export?format=csv\|json` | Instance admin |
+
+The audit log endpoints accept `provider`, `purpose`, `outcome`, `q` (searches model, host, repository and workspace), `from` and `to`, plus `page` and `limit` for the list and `workspaceId` for the instance-wide log.
 
 ## API
 

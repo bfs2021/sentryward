@@ -7,7 +7,8 @@ import { boundAnswer, MAX_ANSWER_CHARS } from "../src/review/llm/threadAnswer.ts
 import type { Forge } from "../src/services/forge.ts";
 import { executeReply } from "../src/worker/executeReply.ts";
 import { claimNextReply, recoverStaleReplies } from "../src/worker/replyQueue.ts";
-import { runReply, type RunReplyDeps } from "../src/worker/runReply.ts";
+import { POLICY_BLOCKED_ANSWER, runReply, type RunReplyDeps } from "../src/worker/runReply.ts";
+import { mergePolicy, OPEN_LAYER } from "../src/services/privacyPolicy.ts";
 import { syncFindings } from "../src/worker/syncFindings.ts";
 import { fakeModel } from "./helpers/model.ts";
 import { sampleResult } from "./helpers/result.ts";
@@ -175,6 +176,35 @@ describe("runReply", () => {
     expect(reads).toContain("base:.sentryward.yaml");
     expect(posted[0]!.body).toMatch(/^Because `b` comes from the request\./);
     expect((await prisma.finding.findFirst({ where: { fingerprint } }))!.state).toBe("open");
+  });
+
+  it("records the answer's model request in the audit log", async () => {
+    const { runDeps } = deps({ thread_answer: { answer: "Because." } });
+    const row = await reply();
+    await runReply(row, runDeps);
+
+    const [entry] = await prisma.llmRequestLog.findMany({ where: { replyId: row.id } });
+    expect(entry).toMatchObject({ purpose: "reply", provider: "anthropic", host: "api.anthropic.com", changeNumber: 42, outcome: "ok" });
+  });
+
+  it("answers without a model call when the privacy policy refuses the model", async () => {
+    const { runDeps, posted, model } = deps({ thread_answer: { answer: "Because." } });
+    const row = await reply();
+    await runReply(row, {
+      ...runDeps,
+      policyFor: async () =>
+        mergePolicy(
+          { ...OPEN_LAYER, allowedProviders: ["ollama"], auditRetentionDays: null, retentionSource: null },
+          OPEN_LAYER,
+        ),
+    });
+
+    expect(model.requests).toHaveLength(0);
+    expect(posted[0]!.body).toMatch(new RegExp(`^${POLICY_BLOCKED_ANSWER}`));
+    expect(posted[0]!.body).not.toContain("api.anthropic.com");
+    const stored = await prisma.threadReply.findUniqueOrThrow({ where: { id: row.id } });
+    expect(stored).toMatchObject({ status: "done" });
+    expect(stored.error).toMatch(/^Blocked by privacy policy: provider "anthropic"/);
   });
 
   it("does nothing when the repository turns replies off", async () => {
