@@ -9,6 +9,7 @@ import {
   SEVERITY_ICON,
   fixRationaleLines,
   htmlBlockText,
+  affectedLines,
   impactLines,
   sanitize,
   ruleSuffix,
@@ -50,6 +51,7 @@ export function inlineBody(finding: Finding, provider: ForgeProvider, options: I
     "",
     sanitize(finding.body),
     ...impactLines(finding),
+    ...affectedLines(finding),
   ];
   if (finding.suggestion) lines.push("", fence(finding.suggestion, FORGE_INFO[provider].suggestionInfo(finding.startLine, finding.endLine)));
   lines.push(...fixRationaleLines(finding));

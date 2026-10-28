@@ -6,7 +6,17 @@ import { contextTokenBudget } from "../src/review/context/budget.ts";
 import { planChunks } from "../src/review/context/chunk.ts";
 import { changedSpan, enclosingScope, fileContextBlocks, fileLines, importBlock } from "../src/review/context/fileContext.ts";
 import { fillContext, gatherContext, type ContextSource } from "../src/review/context/gather.ts";
-import { callSites, moduleCandidates, partSymbols, relativeImports } from "../src/review/context/symbols.ts";
+import { estimateTokens } from "../src/review/context/budget.ts";
+import {
+  callLines,
+  callSiteWindow,
+  enclosingDeclaration,
+  moduleCandidates,
+  partSymbols,
+  relativeImports,
+} from "../src/review/context/symbols.ts";
+import { inlineBody } from "../src/review/publish/inline.ts";
+import { affectedLines } from "../src/review/render/markdown.ts";
 import { GitHubAdapter } from "../src/review/forge/github.ts";
 import { GitLabAdapter } from "../src/review/forge/gitlab.ts";
 import { runReview } from "../src/review/pipeline.ts";
@@ -51,6 +61,42 @@ const FORMAT = ["export function format(value: string): string {", "  return val
 const CLI = ['import { main } from "../src/app.ts";', "", 'const out = main(process.argv[2] ?? "");', "console.log(out);", ""].join("\n");
 
 const changeSet = () => makeChangeSet([{ path: "src/app.ts", changeType: "modified", patch: PATCH }]);
+
+// Two hops out: bin/cli.ts calls main inside runCli(), and a route calls runCli.
+const CLI_RUN = [
+  'import { main } from "../src/app.ts";',
+  "",
+  "export function runCli(args: string[]) {",
+  '  return main(args[0] ?? "");',
+  "}",
+  "",
+].join("\n");
+const SERVE = [
+  'import { runCli } from "../../bin/cli.ts";',
+  "",
+  'router.post("/run", (req, res) => {',
+  "  res.json(runCli(req.body.args));",
+  "});",
+  "",
+].join("\n");
+
+function deepSource() {
+  const reads: string[] = [];
+  const searches: string[] = [];
+  const files: Record<string, string> = { "src/app.ts": APP, "lib/format.ts": FORMAT, "bin/cli.ts": CLI_RUN, "src/routes/serve.ts": SERVE };
+  const callers: Record<string, string[]> = { main: ["src/app.ts", "bin/cli.ts"], runCli: ["src/routes/serve.ts"] };
+  const context: ContextSource = {
+    readFile: async (path) => {
+      reads.push(path);
+      return files[path] ?? null;
+    },
+    searchCode: async (term) => {
+      searches.push(term);
+      return callers[term] ?? [];
+    },
+  };
+  return { context, reads, searches };
+}
 
 function source(files: Record<string, string> = { "src/app.ts": APP, "lib/format.ts": FORMAT, "bin/cli.ts": CLI }) {
   const reads: string[] = [];
@@ -151,7 +197,81 @@ describe("file context", () => {
 
 describe("symbols", () => {
   it("finds names the hunk defines and calls", () => {
-    expect(partSymbols(changeSet().files[0]!.hunks)).toEqual({ defined: ["main"], called: ["fmt"] });
+    expect(partSymbols(changeSet().files[0]!.hunks)).toEqual({ defined: ["main"], called: ["fmt"], contracts: new Map() });
+  });
+
+  it("marks declarations the diff changes or removes, not ones it only moves", () => {
+    const patch = [
+      "@@ -1,9 +1,9 @@",
+      "-export function main(input: string) {",
+      "+export function main(input: string, limit = LIMIT) {",
+      "-function gone() {",
+      "-export function moved() {",
+      "+export function moved() {",
+      "+export function added() {",
+    ].join("\n");
+    const symbols = partSymbols(makeChangeSet([{ path: "src/app.ts", changeType: "modified", patch }]).files[0]!.hunks);
+    expect(symbols.contracts).toEqual(new Map([["main", "signature changed"], ["gone", "removed"]]));
+    // Changed declarations are searched for first.
+    expect(symbols.defined).toEqual(["main", "gone", "moved", "added"]);
+  });
+
+  it("marks a signature changed on the continuation lines of its parameter list, not in its body", () => {
+    const hunks = (patch: string) => makeChangeSet([{ path: "src/repo.ts", changeType: "modified", patch }]).files[0]!.hunks;
+    const signature = [
+      "@@ -1,6 +1,6 @@",
+      " export async function loadRepo(",
+      "   id: string,",
+      "-  opts?: Opts,",
+      "+  opts: Opts,",
+      " ): Promise<Repo> {",
+      "   return find(id, opts);",
+    ].join("\n");
+    expect(partSymbols(hunks(signature)).contracts).toEqual(new Map([["loadRepo", "signature changed"]]));
+
+    const body = ["@@ -1,3 +1,3 @@", " export async function loadRepo(id: string): Promise<Repo> {", "-  return find(id);", "+  return find(id, {});", " }"].join("\n");
+    expect(partSymbols(hunks(body)).contracts).toEqual(new Map());
+
+    // One-line declarations open no signature, whatever ends their line.
+    const oneLine = ['@@ -1,2 +1,3 @@', ' type Status = "a" | "b"', " function id(x) { return x }", "+const next = id(1)"].join("\n");
+    expect(partSymbols(hunks(oneLine)).contracts).toEqual(new Map());
+  });
+
+  it("compares a one-line declaration's signature, not its body", () => {
+    const hunks = (from: string, to: string) =>
+      makeChangeSet([{ path: "src/x.ts", changeType: "modified", patch: `@@ -1,1 +1,1 @@\n-${from}\n+${to}` }]).files[0]!.hunks;
+    expect(partSymbols(hunks("const total = (xs) => xs.length", "const total = (xs) => xs.filter(Boolean).length")).contracts).toEqual(new Map());
+    expect(partSymbols(hunks("const total = (xs) => xs.length", "const total = (xs, f) => xs.filter(f).length")).contracts).toEqual(
+      new Map([["total", "signature changed"]]),
+    );
+  });
+
+  it("takes a declaration moved to another file for moved, not removed, and keeps its definition", () => {
+    const patch = [
+      "@@ -1,4 +1,3 @@",
+      "+import { slugify } from \"./text.ts\";",
+      "-function slugify(s) {",
+      "-  return s.toLowerCase();",
+      "-}",
+      " export const page = (title) => slugify(title);",
+      "+export const link = (title) => `/${slugify(title)}`;",
+    ].join("\n");
+    const hunks = makeChangeSet([{ path: "src/page.ts", changeType: "modified", patch }]).files[0]!.hunks;
+    const imported = partSymbols(hunks);
+    expect(imported.contracts).toEqual(new Map());
+    expect(imported.called).toContain("slugify");
+
+    const removedOnly = ["@@ -1,3 +1,0 @@", "-function slugify(s) {", "-  return s.toLowerCase();", "-}"].join("\n");
+    const gone = makeChangeSet([{ path: "src/page.ts", changeType: "modified", patch: removedOnly }]).files[0]!.hunks;
+    expect(partSymbols(gone).contracts).toEqual(new Map([["slugify", "removed"]]));
+    expect(partSymbols(gone, new Set(["slugify"])).contracts).toEqual(new Map());
+  });
+
+  it("finds the named declaration a call sits in, not anonymous callbacks or top-level code", () => {
+    const lines = fileLines(CLI_RUN);
+    expect(enclosingDeclaration(lines, 4)).toEqual({ name: "runCli", line: 3 });
+    expect(enclosingDeclaration(fileLines(SERVE), 4)).toBeUndefined();
+    expect(enclosingDeclaration(fileLines(CLI), 3)).toBeUndefined();
   });
 
   it("binds relative imports and resolves them to candidate paths", () => {
@@ -167,12 +287,14 @@ describe("symbols", () => {
   });
 });
 
-describe("callSites", () => {
+describe("callLines", () => {
   it("matches names literally, metacharacters included", () => {
     const lines = ["const a = $fetch(url);", "", "", "", "", "axb(1);", "", "", "", "", "a.b\\(2);"];
-    expect(callSites(lines, "$fetch", 3)).toEqual([{ start: 1, end: 4 }]);
+    expect(callLines(lines, "$fetch", 3)).toEqual([1]);
+    expect(callSiteWindow(lines, 1)).toEqual({ start: 1, end: 4 });
     // Unescaped, "." would also match the "x" in axb on line 6.
-    expect(callSites(lines, "a.b\\", 3)).toEqual([{ start: 6, end: 11 }]);
+    expect(callLines(lines, "a.b\\", 3)).toEqual([11]);
+    expect(callSiteWindow(lines, 11)).toEqual({ start: 6, end: 11 });
   });
 });
 
@@ -195,6 +317,176 @@ describe("gatherContext", () => {
     // The changed file itself is never fetched as a caller.
     expect(reads.sort()).toEqual(["bin/cli.ts", "lib/format.js", "lib/format.ts", "src/app.ts"]);
     expect(searches).toEqual(["main"]);
+  });
+
+  it("follows callers of callers up to the depth, the further hops last", async () => {
+    const chunks = planChunks(changeSet().files, 10_000, 3).chunks;
+    const gather = (depth: number, budget = 10_000) => {
+      const { context, searches } = deepSource();
+      return gatherContext({ chunks, changeSet: changeSet(), source: context, budgetFor: () => budget, concurrency: 2, depth }).then(
+        (gathered) => ({ ...gathered, searches }),
+      );
+    };
+
+    const deep = await gather(2);
+    const headers = deep.contexts[0]!.split("\n").filter((line) => line.startsWith("==="));
+    expect(headers.slice(-2)).toEqual([
+      "=== CONTEXT: bin/cli.ts (call sites of main) ===",
+      "=== CONTEXT: src/routes/serve.ts (call sites of runCli (calls main; 2 hops from the change)) ===",
+    ]);
+    expect(deep.contexts[0]).toContain("     4 :   res.json(runCli(req.body.args));");
+    expect(deep.searches).toEqual(["main", "runCli"]);
+    expect(deep.reach).toEqual([
+      { path: "bin/cli.ts", chain: ["main"], hops: 1 },
+      { path: "src/routes/serve.ts", chain: ["main", "runCli"], hops: 2 },
+    ]);
+
+    const shallow = await gather(1);
+    expect(shallow.searches).toEqual(["main"]);
+    expect(shallow.reach).toEqual([{ path: "bin/cli.ts", chain: ["main"], hops: 1 }]);
+
+    // Room for everything one hop out, not for the second hop: it goes first.
+    const tight = await gather(2, estimateTokens(shallow.contexts[0]!) + 10);
+    expect(tight.contexts[0]).toBe(shallow.contexts[0]);
+  });
+
+  it("shares one search cap across hops, direct callers first", async () => {
+    const names = ["alpha", "bravo", "charlie", "delta", "echo"];
+    const patch = ["@@ -0,0 +1,5 @@", ...names.map((name) => `+export function ${name}() {}`)].join("\n");
+    const many = makeChangeSet([{ path: "src/names.ts", changeType: "modified", patch }]);
+    const searches: string[] = [];
+    const context: ContextSource = {
+      readFile: async (path) => {
+        const name = /callers\/(\w+)\.ts/.exec(path)?.[1];
+        return name ? `export function ${name}Caller() {\n  return ${name}();\n}\n` : "";
+      },
+      searchCode: async (term) => {
+        searches.push(term);
+        return names.includes(term) ? [`callers/${term}.ts`] : [];
+      },
+    };
+    const chunks = planChunks(many.files, 10_000, 3).chunks;
+
+    await gatherContext({ chunks, changeSet: many, source: context, budgetFor: () => 10_000, concurrency: 2, depth: 3 });
+
+    expect(searches.slice(0, 5)).toEqual(names);
+    expect(searches).toHaveLength(8);
+  });
+
+  it("shares the direct searches across files, changed declarations first", async () => {
+    const removed = ["one", "two", "three", "four", "five", "six"].map((n) => `legacy${n[0]!.toUpperCase()}${n.slice(1)}`);
+    const many = makeChangeSet([
+      {
+        path: "src/legacy.ts",
+        changeType: "modified",
+        patch: [`@@ -1,${removed.length} +1,1 @@`, ...removed.map((name) => `-export function ${name}() {}`), "+export const KEEP = 1;"].join("\n"),
+      },
+      {
+        path: "src/user.ts",
+        changeType: "modified",
+        patch: ["@@ -1,1 +1,1 @@", "-export function formatUser(user) {", "+export function formatUser(user, locale) {"].join("\n"),
+      },
+    ]);
+    const searches: string[] = [];
+    const context: ContextSource = {
+      readFile: async () => null,
+      searchCode: async (term) => {
+        searches.push(term);
+        return [];
+      },
+    };
+    const chunks = planChunks(many.files, 10_000, 3).chunks;
+
+    await gatherContext({ chunks, changeSet: many, source: context, budgetFor: () => 10_000, concurrency: 1 });
+
+    expect(searches).toHaveLength(5);
+    expect(searches).toContain("formatUser");
+  });
+
+  it("stops searching after a failure and says what the passes still saw", async () => {
+    const run = async (failOn: string) => {
+      const calls: string[] = [];
+      const patch = ["@@ -0,0 +1,3 @@", "+export function alpha() {}", "+export function bravo() {}", "+export function charlie() {}"].join("\n");
+      const many = makeChangeSet([{ path: "src/names.ts", changeType: "modified", patch }]);
+      const context: ContextSource = {
+        readFile: async () => null,
+        searchCode: async (term) => {
+          calls.push(term);
+          if (term === failOn) throw new Error("rate limited");
+          return [];
+        },
+      };
+      const chunks = planChunks(many.files, 10_000, 3).chunks;
+      const gathered = await gatherContext({ chunks, changeSet: many, source: context, budgetFor: () => 10_000, concurrency: 1 });
+      return { calls, warnings: gathered.warnings };
+    };
+
+    const first = await run("alpha");
+    expect(first.calls).toEqual(["alpha"]);
+    expect(first.warnings).toEqual(["Caller search failed, so passes saw no call sites: rate limited"]);
+
+    const later = await run("bravo");
+    expect(later.calls).toEqual(["alpha", "bravo"]);
+    expect(later.warnings).toEqual(["Some caller searches failed, so passes may be missing call sites: rate limited"]);
+  });
+
+  it("does not trace through generic method names", async () => {
+    const patch = "@@ -0,0 +1,1 @@\n+export function buildPayload() {}";
+    const changed = makeChangeSet([{ path: "src/payload.ts", changeType: "modified", patch }]);
+    const job = ["export class Job {", "  async run() {", "    return buildPayload();", "  }", "}", ""].join("\n");
+    const searches: string[] = [];
+    const context: ContextSource = {
+      readFile: async (path) => (path === "src/job.ts" ? job : null),
+      searchCode: async (term) => {
+        searches.push(term);
+        return term === "buildPayload" ? ["src/job.ts"] : ["src/routes/x.ts"];
+      },
+    };
+    const chunks = planChunks(changed.files, 10_000, 3).chunks;
+
+    const gathered = await gatherContext({ chunks, changeSet: changed, source: context, budgetFor: () => 10_000, concurrency: 2, depth: 3 });
+
+    expect(searches).toEqual(["buildPayload"]);
+    expect(gathered.reach).toEqual([{ path: "src/job.ts", chain: ["buildPayload"], hops: 1 }]);
+  });
+
+  it("traces the same callers in the same order however reads interleave", async () => {
+    const names = ["alpha", "bravo", "charlie"];
+    const many = makeChangeSet(
+      names.map((name) => ({ path: `src/${name}.ts`, changeType: "modified" as const, patch: `@@ -0,0 +1,1 @@\n+export function ${name}() {}` })),
+    );
+    // Each name has three callers, so the second hop wants nine searches
+    // and only five are left.
+    const callerFile = (name: string) =>
+      ["One", "Two", "Three"].map((suffix) => `export function ${name}${suffix}() {\n  return ${name}();\n}\n`).join("");
+    const trace = async (delays: Record<string, number>) => {
+      const context: ContextSource = {
+        readFile: async (path) => {
+          const name = /^callers\/(\w+)\.ts$/.exec(path)?.[1];
+          if (name) {
+            await new Promise((resolve) => setTimeout(resolve, delays[name]));
+            return callerFile(name);
+          }
+          const deep = /^deep\/(\w+)\.ts$/.exec(path)?.[1];
+          return deep ? `export function ${deep}Use() {\n  return ${deep}();\n}\n` : null;
+        },
+        searchCode: async (term) => (names.includes(term) ? [`callers/${term}.ts`] : [`deep/${term}.ts`]),
+      };
+      const chunks = planChunks(many.files, 10_000, 3).chunks;
+      return (await gatherContext({ chunks, changeSet: many, source: context, budgetFor: () => 10_000, concurrency: 3, depth: 2 })).reach;
+    };
+
+    const forward = await trace({ alpha: 1, bravo: 5, charlie: 10 });
+    const reversed = await trace({ alpha: 10, bravo: 5, charlie: 1 });
+
+    expect(reversed).toEqual(forward);
+    expect(forward.filter((caller) => caller.hops === 2).map((caller) => caller.chain.at(-1))).toEqual([
+      "alphaOne",
+      "alphaTwo",
+      "alphaThree",
+      "bravoOne",
+      "bravoTwo",
+    ]);
   });
 
   it("fetches nothing for a full pass and keeps forge calls within the concurrency", async () => {
@@ -320,6 +612,50 @@ describe("runReview with context", () => {
   });
 });
 
+describe("broken contracts", () => {
+  const now = () => new Date("2026-10-04T12:00:00Z");
+
+  it("shows a changed signature's callers and keeps the files a contract finding names", async () => {
+    const patch = [
+      "@@ -6,3 +6,3 @@",
+      "-export function main(input: string) {",
+      "+export function main(input: string, limit: number) {",
+      "   const a = helper(input);",
+      "   const b = fmt(a);",
+    ].join("\n");
+    const changed = makeChangeSet([{ path: "src/app.ts", changeType: "modified", patch }]);
+    const finding = modelFinding({
+      startLine: 6,
+      endLine: 6,
+      title: "main now requires a limit its callers do not pass",
+      evidence: "contract",
+      evidenceNote: "bin/cli.ts calls main with one argument.",
+      impact: "runCli() in bin/cli.ts and the /run route pass no limit.",
+      evidenceFiles: ["bin/cli.ts", "src/routes/serve.ts"],
+    });
+    const { generate, requests } = fakeModel({ code_review: { findings: [finding] } });
+
+    const result = await runReview(
+      { changeSet: changed, config: config({ review: { impactDepth: 2 } }) },
+      { generate, now, context: deepSource().context },
+    );
+
+    const prompt = requests.find((request) => request.schemaName === "code_review")!.prompt;
+    expect(prompt).toContain("=== CONTEXT: bin/cli.ts (call sites of main (signature changed)) ===");
+    expect(prompt).toContain("=== CONTEXT: src/routes/serve.ts (call sites of runCli (calls main; 2 hops from the change)) ===");
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({ evidence: "contract", evidenceFiles: ["bin/cli.ts", "src/routes/serve.ts"] });
+    expect(inlineBody(result.findings[0]!, "github")).toContain("**📎 Affected:** `bin/cli.ts`, `src/routes/serve.ts`");
+    // Its own file is not affected, and a path is shown as written.
+    expect(affectedLines({ ...result.findings[0]!, evidenceFiles: ["src/app.ts", "src/a|b.ts"] })).toEqual([
+      "",
+      "**📎 Affected:** `src/a|b.ts`",
+    ]);
+    // Other findings' evidence files were only read, not broken.
+    expect(inlineBody({ ...result.findings[0]!, evidence: "execution_path" }, "github")).not.toContain("Affected");
+  });
+});
+
 describe("code search", () => {
   it("searches GitHub's index for the repository", async () => {
     const stub = fetchStub([
@@ -349,5 +685,12 @@ describe("file_context in .sentryward.yaml", () => {
       warnings: [],
     });
     expect(config().review.fileContext).toBe(true);
+  });
+
+  it("reads impact_depth, defaulting to two hops and one in the fast profile", () => {
+    expect(parseRepoFile(".sentryward.yaml", "review:\n  impact_depth: 3\n").override).toEqual({ review: { impactDepth: 3 } });
+    expect(parseRepoFile(".sentryward.yaml", "review:\n  impact_depth: 4\n").warnings).not.toEqual([]);
+    expect(config().review.impactDepth).toBe(2);
+    expect(resolveConfig({ trigger: { profile: "fast" } }).config.review.impactDepth).toBe(1);
   });
 });

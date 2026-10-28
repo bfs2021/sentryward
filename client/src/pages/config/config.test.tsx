@@ -35,6 +35,7 @@ const effective = {
     committableSuggestions: true,
     disableCache: false,
     fileContext: true,
+    impactDepth: 2,
     verify: "blocking",
     toolFindings: true,
     toolFindingsBlock: false,

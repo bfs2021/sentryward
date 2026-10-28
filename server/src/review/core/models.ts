@@ -233,6 +233,22 @@ export type RejectedFinding = { title: string; category: string; file: string; n
 export const issueAssessmentSchema = z.enum(["addressed", "partial", "not_addressed", "unclear"]);
 export type IssueAssessment = z.infer<typeof issueAssessmentSchema>;
 
+export const RISK_KINDS = ["auth", "database", "api"] as const;
+
+// A sensitive area the change touches or reaches, found by pattern in the
+// diff and in the callers traced for context.
+export const riskyAreaSchema = z.object({
+  kind: z.enum(RISK_KINDS),
+  path: z.string(),
+  reason: z.string(),
+  // The chain of names from the changed code to this file, when it is only
+  // reached through callers.
+  via: z.string().optional(),
+  // An authorization check the diff removes.
+  removesCheck: z.boolean().optional(),
+});
+export type RiskyArea = z.infer<typeof riskyAreaSchema>;
+
 export const walkthroughSchema = z.object({
   overview: z.string(),
   fileSummaries: z.array(z.object({ path: z.string(), summary: z.string() })),
@@ -247,6 +263,8 @@ export const walkthroughSchema = z.object({
     .array(issueRefSchema.extend({ assessment: issueAssessmentSchema, note: z.string() }))
     .optional(),
   relatedIssues: z.array(issueRefSchema.extend({ reason: z.string() })).optional(),
+  // Optional: results stored before it existed have none.
+  riskyAreas: z.array(riskyAreaSchema).optional(),
 });
 export type Walkthrough = z.infer<typeof walkthroughSchema>;
 

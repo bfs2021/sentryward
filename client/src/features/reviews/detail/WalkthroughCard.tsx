@@ -1,12 +1,12 @@
 import { useMemo, useState, type ReactNode } from "react"
-import { BookOpen, ChevronRight, FileCode } from "lucide-react"
+import { BookOpen, ChevronRight, FileCode, ShieldAlert } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { MermaidDiagram } from "@/components/MermaidDiagram"
 import { ForgeMarkdown } from "@/features/config/ForgeMarkdown"
 import { cn } from "@/lib/utils"
-import type { IssueAssessment, IssueRef, ReviewResult } from "../types"
+import type { IssueAssessment, IssueRef, ReviewResult, RiskyArea } from "../types"
 
 // Short file lists are cheap to show; longer ones would push the findings off screen.
 const FILES_OPEN_MAX = 5
@@ -17,6 +17,12 @@ const ASSESSMENT_LABEL: Record<IssueAssessment, string> = {
   partial: "Partly addressed",
   not_addressed: "Not addressed",
   unclear: "Unclear",
+}
+
+const RISK_LABEL: Record<RiskyArea["kind"], string> = {
+  auth: "Authorization",
+  database: "Database",
+  api: "API route",
 }
 
 function IssueLink({ issue }: { issue: IssueRef }) {
@@ -99,7 +105,7 @@ export function WalkthroughCard({
   files: ReviewResult["files"]
 }) {
   const fileStats = useMemo(() => new Map(files.map((file) => [file.path, file])), [files])
-  const { fileSummaries, labels, linkedIssues, relatedIssues } = walkthrough
+  const { fileSummaries, labels, linkedIssues, relatedIssues, riskyAreas } = walkthrough
 
   return (
     <Card>
@@ -123,6 +129,28 @@ export function WalkthroughCard({
       </CardHeader>
       <CardContent className="flex flex-col gap-2 text-sm">
         <p className="pb-2 leading-relaxed whitespace-pre-wrap">{walkthrough.overview}</p>
+        {riskyAreas && riskyAreas.length > 0 && (
+          <WalkthroughSection title="Risky areas" count={riskyAreas.length} defaultOpen>
+            <ul className="flex flex-col gap-2">
+              {riskyAreas.map((area) => (
+                <li key={`${area.kind}:${area.path}`} className="flex flex-col gap-0.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <ShieldAlert
+                      className={cn("size-4 shrink-0", area.removesCheck ? "text-destructive" : "text-muted-foreground")}
+                      aria-hidden
+                    />
+                    <Badge variant="outline">{RISK_LABEL[area.kind]}</Badge>
+                    <span className="font-mono text-xs break-all">{area.path}</span>
+                  </div>
+                  <p className="pl-6 text-muted-foreground">
+                    {area.reason}
+                    {area.via && <span className="font-mono text-xs"> ({area.via})</span>}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </WalkthroughSection>
+        )}
         {fileSummaries.length > 0 && (
           <WalkthroughSection
             title="Changed files"

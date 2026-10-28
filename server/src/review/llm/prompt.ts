@@ -82,6 +82,7 @@ Rules:
 - ${lineRule}
 - Use the file path exactly as written in its FILE header. Only files with a FILE header can carry findings.
 - CONTEXT blocks, when present, are read-only code from the new version: enclosing scopes, imports, definitions the diff calls and call sites of what it changes. Use them to check assumptions (a guaranteed non-null, a caller the change breaks) and list the ones your evidence relies on in evidenceFiles.
+- Call sites marked "signature changed" or "removed" call a declaration the diff changed; those marked "N hops from the change" call it through other functions. When a changed signature, return type or shape, thrown error or response shape breaks such a caller, report it on the changed line with evidence "contract", name the affected callers or endpoints in impact, and list their files in evidenceFiles. Give extra care to changes that reach API handlers, database writes or authorization checks.
 - severity: critical = exploitable or data-losing in normal use; major = likely bug or serious risk; minor = real but limited; info = worth knowing.
 - A critical or major finding must name its evidence: the trigger and failure path, the contract it violates, or a reproduction. Set evidence accordingly and write evidenceNote. If you cannot, use evidence "unverified"; it will be treated as needing verification.
 - body says what is wrong and what to do. Put the consequence in impact (what breaks, for whom, when) and, when you recommend a fix, why it works in fixRationale; do not repeat them in body.
@@ -299,6 +300,8 @@ export interface WalkthroughExtras {
   highLevelSummary?: string;
   linkedIssues?: IssueContext[];
   candidateIssues?: IssueContext[];
+  // Sensitive areas found in the diff by pattern (context/risk.ts).
+  riskFacts?: string;
 }
 
 function issueList(issues: IssueContext[]): string {
@@ -334,6 +337,9 @@ export function walkthroughUserPrompt(changeSet: ChangeSet, diffText: string, ex
       : "",
     extras?.candidateIssues
       ? `Candidate issues:\n${extras.candidateIssues.length ? issueList(extras.candidateIssues) : "(none)"}`
+      : "",
+    extras?.riskFacts
+      ? `Sensitive areas the diff touches, found by pattern (weigh them in blastRadius; a removed authorization check or a changed database write is rarely small):\n${extras.riskFacts}`
       : "",
     `Diff:\n${diffText}`,
   ]

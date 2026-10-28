@@ -14,6 +14,7 @@ import { SEVERITIES, type Severity } from "../core/severity.ts";
 import { DESCRIPTION_SUMMARY_END, DESCRIPTION_SUMMARY_START, SUMMARY_MARKER } from "../core/markers.ts";
 import { agentPromptBlock, allFindingsPrompt } from "./agentPrompt.ts";
 import { summarize } from "./json.ts";
+import { RISK_KIND_TEXT } from "../context/risk.ts";
 
 export { SUMMARY_MARKER };
 
@@ -112,6 +113,26 @@ export function verificationSuffix(finding: Finding): string {
 // Impact goes under the explanation; the rationale under the fix it explains.
 export function impactLines(finding: Finding): string[] {
   return finding.impact ? ["", `**💥 Impact:** ${sanitize(finding.impact)}`] : [];
+}
+
+const MAX_AFFECTED_FILES = 5;
+
+// For text in a code span outside a table: markdown shows any escape
+// literally there, so only backticks (which would end the span) are dropped.
+function codeSpan(text: string): string {
+  return `\`${sanitize(text).replace(/`/g, "").replace(/\n+/g, " ")}\``;
+}
+
+// The callers a broken contract breaks. Other findings list files their
+// evidence only read (definitions, imports), which are not affected, so they
+// show none. Paths come from the model, so they are only ever code.
+export function affectedLines(finding: Finding): string[] {
+  if (finding.evidence !== "contract") return [];
+  const files = finding.evidenceFiles.filter((path) => path !== finding.file);
+  if (!files.length) return [];
+  const shown = files.slice(0, MAX_AFFECTED_FILES).map(codeSpan);
+  const more = files.length - shown.length;
+  return ["", `**📎 Affected:** ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""}`];
 }
 
 export function fixRationaleLines(finding: Finding): string[] {
@@ -265,6 +286,16 @@ function walkthroughSection(
     options.blastRadius !== false && walkthrough.blastRadius ? `💥 Blast radius: ${walkthrough.blastRadius}` : "",
   ].filter(Boolean);
   if (meta.length) lines.push("", meta.join(" · "));
+  // Part of the blast radius, so its setting hides both.
+  if (options.blastRadius !== false && walkthrough.riskyAreas?.length) {
+    lines.push("", "<details open>", `<summary>⚠️ Risky areas (${walkthrough.riskyAreas.length})</summary>`, "");
+    lines.push("| Area | File | Why |", "| --- | --- | --- |");
+    for (const area of walkthrough.riskyAreas) {
+      const why = area.via ? `${area.reason} (${area.via})` : area.reason;
+      lines.push(`| ${RISK_KIND_TEXT[area.kind]} | \`${codeCell(area.path)}\` | ${inline(why)} |`);
+    }
+    lines.push("", "</details>");
+  }
   if (walkthrough.fileSummaries.length) {
     lines.push("", "<details>", `<summary>📂 Changes (${plural(walkthrough.fileSummaries.length, "file")})</summary>`, "");
     lines.push("| File | Summary |", "| --- | --- |");
@@ -285,6 +316,7 @@ function findingDetail(finding: Finding): string[] {
     "",
     sanitize(finding.body),
     ...impactLines(finding),
+    ...affectedLines(finding),
   ];
   if (finding.evidenceNote) lines.push("", `**🔎 Evidence:** ${sanitize(finding.evidenceNote)}`);
   if (finding.suggestion) lines.push("", fence(finding.suggestion));

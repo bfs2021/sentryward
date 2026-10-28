@@ -236,8 +236,9 @@ describe("runJob", () => {
     expect(result.verdict.blockOn).toBe("major");
     expect(stored.resolvedConfig).toMatchObject({ repoFile: ".sentryward.yaml", sources: { "review.blockOn": "repoSettings" } });
     // The repository file is read at the base revision, never the head; review
-    // context is read at the head, and callers of the changed main() searched.
-    expect(reads).toEqual(["change", "base:.sentryward.yaml", "newhead:src/app.ts", "code:main"]);
+    // context is read at the head, and callers of the changed main() searched
+    // (the search starts before any pass reads).
+    expect(reads).toEqual(["change", "base:.sentryward.yaml", "code:main", "newhead:src/app.ts"]);
     // The findings table follows the run, with the change's author.
     const findings = await prisma.finding.findMany({ where: { repositoryId, number: 42 } });
     expect(findings).toHaveLength(1);
@@ -1379,6 +1380,42 @@ describe("runJob on a push after a completed review", () => {
 
     expect(second.reads).toContain("compare:h1..h2");
     expect(((await stored()).result as { incremental?: unknown }).incremental).toBeDefined();
+  });
+
+  it("still reviews incrementally after a review stored before impact depth existed", async () => {
+    await reviewFirst();
+    const last = await prisma.reviewJob.findFirstOrThrow({ where: { repositoryId, headSha: "h1" } });
+    const resolved = structuredClone(last.resolvedConfig) as { config: { review: { impactDepth?: number } } };
+    delete resolved.config.review.impactDepth;
+    await prisma.reviewJob.update({ where: { id: last.id }, data: { resolvedConfig: resolved as object } });
+    const second = deps({}, fixed, { anthropic: "k" }, { head: "h2", files: FILES, compare: ["src/util.ts"] });
+    const { job, stored } = await push("h2");
+
+    await runJob(job, second.runDeps);
+
+    expect(second.reads).toContain("compare:h1..h2");
+    expect(((await stored()).result as { incremental?: unknown }).incremental).toBeDefined();
+  });
+
+  it("keeps the areas the last review reached through callers", async () => {
+    await reviewFirst();
+    const last = await prisma.reviewJob.findFirstOrThrow({ where: { repositoryId, headSha: "h1" } });
+    const reached = { kind: "api", path: "src/routes/r.ts", reason: "calls run2, 2 hops from the change", via: "main -> run2" };
+    const previous = last.result as { walkthrough?: Record<string, unknown> };
+    expect(previous.walkthrough).toBeDefined();
+    await prisma.reviewJob.update({
+      where: { id: last.id },
+      data: { result: { ...previous, walkthrough: { ...previous.walkthrough, riskyAreas: [reached] } } as object },
+    });
+    const second = deps({}, fixed, { anthropic: "k" }, { head: "h2", files: FILES, compare: ["src/util.ts"] });
+    const { job, stored } = await push("h2");
+
+    await runJob(job, second.runDeps);
+
+    const result = (await stored()).result as { incremental?: unknown; walkthrough: { riskyAreas?: unknown[]; blastRadius?: string } };
+    expect(result.incremental).toBeDefined();
+    expect(result.walkthrough.riskyAreas).toContainEqual(reached);
+    expect(result.walkthrough.blastRadius).not.toBe("small");
   });
 
   it.each([

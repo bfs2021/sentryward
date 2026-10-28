@@ -10,13 +10,15 @@ import {
   type RejectedFinding,
   type ReviewResult,
   type ReviewStatus,
+  type RiskyArea,
   type ToolAnnotation,
   type Walkthrough,
 } from "./core/models.ts";
 import { mapLimit } from "./core/mapLimit.ts";
 import { contextTokenBudget, estimateTokens, diffTokenBudget } from "./context/budget.ts";
 import { planChunks, type Chunk } from "./context/chunk.ts";
-import { gatherContext, type ContextSource } from "./context/gather.ts";
+import { gatherContext, type ContextSource, type ReachedCaller } from "./context/gather.ts";
+import { floorBlastRadius, riskyAreas, withReach } from "./context/risk.ts";
 import { classifyFiles } from "./context/ignore.ts";
 import { MAX_MANIFEST_CHARS, MAX_REJECTED_CHARS, reviewSystemPrompt, type ManifestEntry } from "./llm/prompt.ts";
 import { searchBudget } from "./agent/tools.ts";
@@ -71,6 +73,12 @@ export interface Increment {
   // Findings from the review of `fromSha` on files outside `paths`. Those
   // files are the same at both heads, so their lines still hold.
   carried: Finding[];
+  // Areas that review reached through callers. This run traces callers
+  // from `paths` only, so without them the walkthrough's reach would
+  // shrink to whatever the push touched. One can outlive the call that
+  // reached it until the next full review, which only keeps the blast
+  // radius at medium.
+  carriedAreas?: RiskyArea[];
 }
 
 // Omissions that mean the change was not fully reviewed. Ignored, binary and
@@ -163,9 +171,12 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
   }
   const omissions: Omission[] = [...classified, ...plan.omissions];
 
+  // What the diff alone shows is ready now, so the walkthrough can weigh it
+  // without waiting for context; callers traced below are added after.
+  const diffRisks = riskyAreas(reviewable);
   const walkthroughTask: Promise<Walkthrough | undefined> =
     config.output.walkthrough && reviewable.length > 0
-      ? generateWalkthrough(deps.generate, changeSet, reviewable, config, input.issues).then(
+      ? generateWalkthrough(deps.generate, changeSet, reviewable, config, input.issues, diffRisks).then(
           ({ walkthrough, usage: callUsage, failedUsage: failed }) => {
             usage.push(...failed, callUsage);
             return walkthrough;
@@ -182,6 +193,7 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
   // Gathered after planning, into whatever budget each pass has left, so it
   // can never cost the diff a hunk.
   let chunks: Chunk[] = plan.chunks;
+  let reach: ReachedCaller[] = [];
   if (config.review.fileContext && deps.context && chunks.length > 0) {
     try {
       const gathered = await gatherContext({
@@ -190,8 +202,10 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
         source: deps.context,
         budgetFor: (chunk) => contextTokenBudget(config, overhead, chunk.tokens),
         concurrency: deps.concurrency ?? 3,
+        depth: config.review.impactDepth,
       });
       chunks = chunks.map((chunk, index) => ({ ...chunk, context: gathered.contexts[index] ?? "" }));
+      reach = gathered.reach;
       warnings.push(...gathered.warnings);
     } catch (err) {
       warnings.push(`Review context failed, the diff was reviewed without it: ${errorMessage(err)}`);
@@ -272,7 +286,21 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
       omissions.push({ path: part.file.path, reason: "chunk_failed", detail: `pass ${outcome.chunk.index}` });
     }
   }
-  const walkthrough = await walkthroughTask;
+  const generated = await walkthroughTask;
+  // The floor is applied here rather than left to the model, so a removed
+  // auth check or a route the change reaches is never reported as small.
+  // The areas themselves are part of the blast radius, so its setting keeps
+  // them out of the stored result, where the dashboard would show them.
+  const risks = generated ? withReach([...diffRisks, ...(increment?.carriedAreas ?? [])], reach) : [];
+  const walkthrough: Walkthrough | undefined = generated && {
+    ...generated,
+    ...(risks.length
+      ? {
+          ...(config.output.walkthroughBlastRadius !== false ? { riskyAreas: risks } : {}),
+          blastRadius: floorBlastRadius(generated.blastRadius, risks),
+        }
+      : {}),
+  };
 
   // Files only count as reviewed if a pass that included them succeeded and
   // none of their hunks were left out.

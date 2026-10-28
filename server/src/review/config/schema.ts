@@ -107,6 +107,10 @@ const reviewShape = {
   // Show each pass the enclosing scope, imports, definitions and callers of
   // the changed code, read from the head revision, next to the diff.
   fileContext: z.boolean(),
+  // How many hops of callers that context follows from a changed name: 1 is
+  // its direct callers, 2 also the callers of those. Each hop costs code
+  // searches, which share one cap per review.
+  impactDepth: z.number().int().min(1).max(3),
   // Re-check findings with a second model call before they count: refuted
   // ones are dropped, uncertain ones demoted like an unproven blocker.
   // "blocking" checks only those at or above blockOn, "all" every finding.
@@ -396,6 +400,7 @@ export const DEFAULT_CONFIG: Config = {
     committableSuggestions: true,
     disableCache: false,
     fileContext: true,
+    impactDepth: 2,
     verify: "blocking",
     toolFindings: true,
     toolFindingsBlock: false,

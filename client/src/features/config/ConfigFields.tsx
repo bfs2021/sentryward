@@ -353,6 +353,10 @@ const NUMBER_INFO: Record<NumberName, { label: string; description: string }> = 
   },
   maxFindings: { label: "Max findings", description: "The most findings a review reports." },
   maxChunks: { label: "Max chunks", description: "Large changes are split into at most this many passes." },
+  impactDepth: {
+    label: "Caller depth",
+    description: "How many hops of callers surrounding code follows from a changed function: 1 is its direct callers, 2 also theirs.",
+  },
   minConfidence: {
     label: "Min confidence",
     description: "Findings below this self-reported confidence (0 to 1) are dropped. It is the model's own estimate, not a measured probability.",
@@ -1375,6 +1379,7 @@ export function ConfigFields(props: {
         <FieldSeparator />
         <Section title="Review context" description="How much code each pass may read beyond its diff.">
           {choiceField("context")}
+          {numberField("impactDepth")}
           <div className="grid gap-4 @md/field-group:grid-cols-3">
             {numberField("maxSteps")}
             {numberField("maxToolTokens")}
