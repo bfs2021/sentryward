@@ -7,8 +7,16 @@ import { planChunks } from "../src/review/context/chunk.ts";
 import { changedSpan, enclosingScope, fileContextBlocks, fileLines, importBlock } from "../src/review/context/fileContext.ts";
 import { fillContext, gatherContext, type ContextSource } from "../src/review/context/gather.ts";
 import { estimateTokens } from "../src/review/context/budget.ts";
-import { callSites, enclosingDeclaration, moduleCandidates, partSymbols, relativeImports } from "../src/review/context/symbols.ts";
+import {
+  callLines,
+  callSiteWindow,
+  enclosingDeclaration,
+  moduleCandidates,
+  partSymbols,
+  relativeImports,
+} from "../src/review/context/symbols.ts";
 import { inlineBody } from "../src/review/publish/inline.ts";
+import { affectedLines } from "../src/review/render/markdown.ts";
 import { GitHubAdapter } from "../src/review/forge/github.ts";
 import { GitLabAdapter } from "../src/review/forge/gitlab.ts";
 import { runReview } from "../src/review/pipeline.ts";
@@ -54,20 +62,20 @@ const CLI = ['import { main } from "../src/app.ts";', "", 'const out = main(proc
 
 const changeSet = () => makeChangeSet([{ path: "src/app.ts", changeType: "modified", patch: PATCH }]);
 
-// Two hops out: bin/cli.ts calls main inside run(), and a route calls run.
+// Two hops out: bin/cli.ts calls main inside runCli(), and a route calls runCli.
 const CLI_RUN = [
   'import { main } from "../src/app.ts";',
   "",
-  "export function run(args: string[]) {",
+  "export function runCli(args: string[]) {",
   '  return main(args[0] ?? "");',
   "}",
   "",
 ].join("\n");
 const SERVE = [
-  'import { run } from "../../bin/cli.ts";',
+  'import { runCli } from "../../bin/cli.ts";',
   "",
   'router.post("/run", (req, res) => {',
-  "  res.json(run(req.body.args));",
+  "  res.json(runCli(req.body.args));",
   "});",
   "",
 ].join("\n");
@@ -76,7 +84,7 @@ function deepSource() {
   const reads: string[] = [];
   const searches: string[] = [];
   const files: Record<string, string> = { "src/app.ts": APP, "lib/format.ts": FORMAT, "bin/cli.ts": CLI_RUN, "src/routes/serve.ts": SERVE };
-  const callers: Record<string, string[]> = { main: ["src/app.ts", "bin/cli.ts"], run: ["src/routes/serve.ts"] };
+  const callers: Record<string, string[]> = { main: ["src/app.ts", "bin/cli.ts"], runCli: ["src/routes/serve.ts"] };
   const context: ContextSource = {
     readFile: async (path) => {
       reads.push(path);
@@ -208,9 +216,26 @@ describe("symbols", () => {
     expect(symbols.defined).toEqual(["main", "gone", "moved", "added"]);
   });
 
+  it("marks a signature changed on the continuation lines of its parameter list, not in its body", () => {
+    const hunks = (patch: string) => makeChangeSet([{ path: "src/repo.ts", changeType: "modified", patch }]).files[0]!.hunks;
+    const signature = [
+      "@@ -1,6 +1,6 @@",
+      " export async function loadRepo(",
+      "   id: string,",
+      "-  opts?: Opts,",
+      "+  opts: Opts,",
+      " ): Promise<Repo> {",
+      "   return find(id, opts);",
+    ].join("\n");
+    expect(partSymbols(hunks(signature)).contracts).toEqual(new Map([["loadRepo", "signature changed"]]));
+
+    const body = ["@@ -1,3 +1,3 @@", " export async function loadRepo(id: string): Promise<Repo> {", "-  return find(id);", "+  return find(id, {});", " }"].join("\n");
+    expect(partSymbols(hunks(body)).contracts).toEqual(new Map());
+  });
+
   it("finds the named declaration a call sits in, not anonymous callbacks or top-level code", () => {
     const lines = fileLines(CLI_RUN);
-    expect(enclosingDeclaration(lines, 4)).toEqual({ name: "run", line: 3 });
+    expect(enclosingDeclaration(lines, 4)).toEqual({ name: "runCli", line: 3 });
     expect(enclosingDeclaration(fileLines(SERVE), 4)).toBeUndefined();
     expect(enclosingDeclaration(fileLines(CLI), 3)).toBeUndefined();
   });
@@ -228,12 +253,14 @@ describe("symbols", () => {
   });
 });
 
-describe("callSites", () => {
+describe("callLines", () => {
   it("matches names literally, metacharacters included", () => {
     const lines = ["const a = $fetch(url);", "", "", "", "", "axb(1);", "", "", "", "", "a.b\\(2);"];
-    expect(callSites(lines, "$fetch", 3)).toEqual([{ start: 1, end: 4 }]);
+    expect(callLines(lines, "$fetch", 3)).toEqual([1]);
+    expect(callSiteWindow(lines, 1)).toEqual({ start: 1, end: 4 });
     // Unescaped, "." would also match the "x" in axb on line 6.
-    expect(callSites(lines, "a.b\\", 3)).toEqual([{ start: 6, end: 11 }]);
+    expect(callLines(lines, "a.b\\", 3)).toEqual([11]);
+    expect(callSiteWindow(lines, 11)).toEqual({ start: 6, end: 11 });
   });
 });
 
@@ -271,13 +298,13 @@ describe("gatherContext", () => {
     const headers = deep.contexts[0]!.split("\n").filter((line) => line.startsWith("==="));
     expect(headers.slice(-2)).toEqual([
       "=== CONTEXT: bin/cli.ts (call sites of main) ===",
-      "=== CONTEXT: src/routes/serve.ts (call sites of run (calls main; 2 hops from the change)) ===",
+      "=== CONTEXT: src/routes/serve.ts (call sites of runCli (calls main; 2 hops from the change)) ===",
     ]);
-    expect(deep.contexts[0]).toContain("     4 :   res.json(run(req.body.args));");
-    expect(deep.searches).toEqual(["main", "run"]);
+    expect(deep.contexts[0]).toContain("     4 :   res.json(runCli(req.body.args));");
+    expect(deep.searches).toEqual(["main", "runCli"]);
     expect(deep.reach).toEqual([
       { path: "bin/cli.ts", chain: ["main"], hops: 1 },
-      { path: "src/routes/serve.ts", chain: ["main", "run"], hops: 2 },
+      { path: "src/routes/serve.ts", chain: ["main", "runCli"], hops: 2 },
     ]);
 
     const shallow = await gather(1);
@@ -310,6 +337,65 @@ describe("gatherContext", () => {
 
     expect(searches.slice(0, 5)).toEqual(names);
     expect(searches).toHaveLength(8);
+  });
+
+  it("does not trace through generic method names", async () => {
+    const patch = "@@ -0,0 +1,1 @@\n+export function buildPayload() {}";
+    const changed = makeChangeSet([{ path: "src/payload.ts", changeType: "modified", patch }]);
+    const job = ["export class Job {", "  async run() {", "    return buildPayload();", "  }", "}", ""].join("\n");
+    const searches: string[] = [];
+    const context: ContextSource = {
+      readFile: async (path) => (path === "src/job.ts" ? job : null),
+      searchCode: async (term) => {
+        searches.push(term);
+        return term === "buildPayload" ? ["src/job.ts"] : ["src/routes/x.ts"];
+      },
+    };
+    const chunks = planChunks(changed.files, 10_000, 3).chunks;
+
+    const gathered = await gatherContext({ chunks, changeSet: changed, source: context, budgetFor: () => 10_000, concurrency: 2, depth: 3 });
+
+    expect(searches).toEqual(["buildPayload"]);
+    expect(gathered.reach).toEqual([{ path: "src/job.ts", chain: ["buildPayload"], hops: 1 }]);
+  });
+
+  it("traces the same callers in the same order however reads interleave", async () => {
+    const names = ["alpha", "bravo", "charlie"];
+    const many = makeChangeSet(
+      names.map((name) => ({ path: `src/${name}.ts`, changeType: "modified" as const, patch: `@@ -0,0 +1,1 @@\n+export function ${name}() {}` })),
+    );
+    // Each name has three callers, so the second hop wants nine searches
+    // and only five are left.
+    const callerFile = (name: string) =>
+      ["One", "Two", "Three"].map((suffix) => `export function ${name}${suffix}() {\n  return ${name}();\n}\n`).join("");
+    const trace = async (delays: Record<string, number>) => {
+      const context: ContextSource = {
+        readFile: async (path) => {
+          const name = /^callers\/(\w+)\.ts$/.exec(path)?.[1];
+          if (name) {
+            await new Promise((resolve) => setTimeout(resolve, delays[name]));
+            return callerFile(name);
+          }
+          const deep = /^deep\/(\w+)\.ts$/.exec(path)?.[1];
+          return deep ? `export function ${deep}Use() {\n  return ${deep}();\n}\n` : null;
+        },
+        searchCode: async (term) => (names.includes(term) ? [`callers/${term}.ts`] : [`deep/${term}.ts`]),
+      };
+      const chunks = planChunks(many.files, 10_000, 3).chunks;
+      return (await gatherContext({ chunks, changeSet: many, source: context, budgetFor: () => 10_000, concurrency: 3, depth: 2 })).reach;
+    };
+
+    const forward = await trace({ alpha: 1, bravo: 5, charlie: 10 });
+    const reversed = await trace({ alpha: 10, bravo: 5, charlie: 1 });
+
+    expect(reversed).toEqual(forward);
+    expect(forward.filter((caller) => caller.hops === 2).map((caller) => caller.chain.at(-1))).toEqual([
+      "alphaOne",
+      "alphaTwo",
+      "alphaThree",
+      "bravoOne",
+      "bravoTwo",
+    ]);
   });
 
   it("fetches nothing for a full pass and keeps forge calls within the concurrency", async () => {
@@ -453,7 +539,7 @@ describe("broken contracts", () => {
       title: "main now requires a limit its callers do not pass",
       evidence: "contract",
       evidenceNote: "bin/cli.ts calls main with one argument.",
-      impact: "run() in bin/cli.ts and the /run route pass no limit.",
+      impact: "runCli() in bin/cli.ts and the /run route pass no limit.",
       evidenceFiles: ["bin/cli.ts", "src/routes/serve.ts"],
     });
     const { generate, requests } = fakeModel({ code_review: { findings: [finding] } });
@@ -465,10 +551,17 @@ describe("broken contracts", () => {
 
     const prompt = requests.find((request) => request.schemaName === "code_review")!.prompt;
     expect(prompt).toContain("=== CONTEXT: bin/cli.ts (call sites of main (signature changed)) ===");
-    expect(prompt).toContain("=== CONTEXT: src/routes/serve.ts (call sites of run (calls main; 2 hops from the change)) ===");
+    expect(prompt).toContain("=== CONTEXT: src/routes/serve.ts (call sites of runCli (calls main; 2 hops from the change)) ===");
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0]).toMatchObject({ evidence: "contract", evidenceFiles: ["bin/cli.ts", "src/routes/serve.ts"] });
     expect(inlineBody(result.findings[0]!, "github")).toContain("**📎 Affected:** `bin/cli.ts`, `src/routes/serve.ts`");
+    // Its own file is not affected, and a path is shown as written.
+    expect(affectedLines({ ...result.findings[0]!, evidenceFiles: ["src/app.ts", "src/a|b.ts"] })).toEqual([
+      "",
+      "**📎 Affected:** `src/a|b.ts`",
+    ]);
+    // Other findings' evidence files were only read, not broken.
+    expect(inlineBody({ ...result.findings[0]!, evidence: "execution_path" }, "github")).not.toContain("Affected");
   });
 });
 

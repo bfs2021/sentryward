@@ -117,12 +117,21 @@ export function impactLines(finding: Finding): string[] {
 
 const MAX_AFFECTED_FILES = 5;
 
-// The other files a finding's evidence names: for a broken contract, the
-// callers it breaks. Paths come from the model, so they are only ever code.
+// For text in a code span outside a table: markdown shows any escape
+// literally there, so only backticks (which would end the span) are dropped.
+function codeSpan(text: string): string {
+  return `\`${sanitize(text).replace(/`/g, "").replace(/\n+/g, " ")}\``;
+}
+
+// The callers a broken contract breaks. Other findings list files their
+// evidence only read (definitions, imports), which are not affected, so they
+// show none. Paths come from the model, so they are only ever code.
 export function affectedLines(finding: Finding): string[] {
-  if (!finding.evidenceFiles.length) return [];
-  const shown = finding.evidenceFiles.slice(0, MAX_AFFECTED_FILES).map((path) => `\`${codeCell(path).replace(/`/g, "")}\``);
-  const more = finding.evidenceFiles.length - shown.length;
+  if (finding.evidence !== "contract") return [];
+  const files = finding.evidenceFiles.filter((path) => path !== finding.file);
+  if (!files.length) return [];
+  const shown = files.slice(0, MAX_AFFECTED_FILES).map(codeSpan);
+  const more = files.length - shown.length;
   return ["", `**📎 Affected:** ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""}`];
 }
 

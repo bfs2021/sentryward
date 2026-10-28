@@ -30,6 +30,22 @@ function wanted(name: string | undefined): name is string {
   return !!name && name.length >= MIN_NAME_LENGTH && !KEYWORDS.has(name);
 }
 
+// Method and callback names every codebase has many of. A changed name is
+// still searched whatever it is called, but tracing through one of these
+// would follow calls on any receiver (app.run, worker.run) into code that
+// never reaches the change.
+const GENERIC_NAMES = new Set([
+  "run", "get", "set", "handle", "handler", "execute", "exec", "call", "apply", "init", "main", "start", "stop",
+  "process", "render", "update", "create", "delete", "remove", "next", "callback", "cb", "fn", "default", "load",
+  "save", "send", "build", "parse", "format", "test", "setup", "invoke", "dispatch", "fetch", "list", "find",
+]);
+const MIN_TRACED_LENGTH = 4;
+
+// Whether a caller's enclosing declaration is worth following to the next hop.
+export function traceable(name: string): boolean {
+  return wanted(name) && name.length >= MIN_TRACED_LENGTH && !GENERIC_NAMES.has(name);
+}
+
 export function declaredNames(line: string): string[] {
   return DECLARATIONS.map((pattern) => pattern.exec(line)?.[1]).filter(wanted);
 }
@@ -42,12 +58,17 @@ export interface PartSymbols {
   defined: string[];
   // Called on an added line and not declared in the hunks themselves.
   called: string[];
-  // Names whose declaration line itself changed or went away: their callers
-  // are the likeliest to break.
+  // Names whose declaration (its own line, or the rest of a signature split
+  // over several lines) changed or went away: their callers are the
+  // likeliest to break.
   contracts: Map<string, ContractChange>;
 }
 
 const squash = (text: string) => text.replace(/\s+/g, " ").trim();
+// Where a signature split over lines ends: its body opens, or it is an arrow,
+// a declaration without a body, or a Python def.
+const SIGNATURE_END = /\{\s*$|=>|;\s*$|:\s*$/;
+const MAX_SIGNATURE_LINES = 15;
 
 export function partSymbols(hunks: Hunk[]): PartSymbols {
   const defined = new Set<string>();
@@ -59,10 +80,17 @@ export function partSymbols(hunks: Hunk[]): PartSymbols {
     if (!texts) into.set(name, (texts = new Set()));
     texts.add(squash(text));
   };
+  const reshaped = new Set<string>();
   for (const hunk of hunks) {
     for (const name of declaredNames(hunk.header)) defined.add(name);
+    // The declaration whose signature continues onto the following lines.
+    let signature: { name: string; lines: number } | undefined;
     for (const line of hunk.content.split("\n").slice(1)) {
       const text = line.slice(1);
+      const names = declaredNames(text);
+      if (names.length) signature = { name: names[0]!, lines: 0 };
+      else if (signature && (line[0] === "+" || line[0] === "-")) reshaped.add(signature.name);
+      if (signature && (SIGNATURE_END.test(text) || ++signature.lines >= MAX_SIGNATURE_LINES)) signature = undefined;
       if (line[0] === "-") {
         for (const name of declaredNames(text)) declare(removed, name, text);
         continue;
@@ -82,6 +110,7 @@ export function partSymbols(hunks: Hunk[]): PartSymbols {
     if (!now) contracts.set(name, "removed");
     else if ([...texts].some((text) => !now.has(text))) contracts.set(name, "signature changed");
   }
+  for (const name of reshaped) if (!contracts.has(name)) contracts.set(name, "signature changed");
   for (const name of contracts.keys()) defined.add(name);
   for (const name of defined) called.delete(name);
   return {
@@ -188,11 +217,6 @@ export function callLines(lines: string[], name: string, limit: number): number[
 
 export function callSiteWindow(lines: string[], line: number): LineRange {
   return { start: Math.max(1, line - CALL_SITE_BEFORE), end: Math.min(lines.length, line + CALL_SITE_AFTER) };
-}
-
-// Windows around the lines that call `name`.
-export function callSites(lines: string[], name: string, limit: number): LineRange[] {
-  return callLines(lines, name, limit).map((line) => callSiteWindow(lines, line));
 }
 
 const MAX_ENCLOSING_SCAN = 150;

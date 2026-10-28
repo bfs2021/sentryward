@@ -24,7 +24,7 @@ export interface ChunkPlan {
   omissions: Omission[];
 }
 
-const TEST_PATH = /(^|\/)(__tests__|tests?|spec)\/|\.(test|spec)\.[a-z]+$/i;
+export const TEST_PATH = /(^|\/)(__tests__|tests?|spec)\/|\.(test|spec)\.[a-z]+$/i;
 const SUPPORT_PATH = /\.(md|mdx|txt|rst|ya?ml|json|toml|ini|lock)$|(^|\/)docs?\//i;
 
 // Code that defines behaviour is read first, then the tests that pin it, then

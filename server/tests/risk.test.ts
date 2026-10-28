@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { resolveConfig } from "../src/review/config/resolve.ts";
 import type { ConfigOverride } from "../src/review/config/schema.ts";
 import type { ContextSource } from "../src/review/context/gather.ts";
-import { floorBlastRadius, riskyAreas } from "../src/review/context/risk.ts";
+import { floorBlastRadius, riskyAreas, withReach } from "../src/review/context/risk.ts";
 import { runReview } from "../src/review/pipeline.ts";
 import { walkthroughMarkdown } from "../src/review/render/markdown.ts";
 import { makeChangeSet } from "./helpers/changeSet.ts";
@@ -53,6 +53,40 @@ describe("riskyAreas", () => {
     ]);
   });
 
+  it("leaves out tests, whether changed or reached", () => {
+    const changed = makeChangeSet([
+      { path: "server/tests/repos.routes.test.ts", changeType: "modified", patch: "@@ -1,1 +1,2 @@\n a\n+await prisma.user.create({ data });" },
+    ]).files;
+    const reach = [{ path: "server/tests/repos.routes.test.ts", chain: ["format"], hops: 1 }];
+    expect(riskyAreas(changed, reach)).toEqual([]);
+  });
+
+  it("takes only database clients' create, update and delete for database writes", () => {
+    const lines = (...added: string[]) =>
+      makeChangeSet([{ path: "src/x.ts", changeType: "modified", patch: ["@@ -1,1 +1,2 @@", " a", ...added.map((line) => `+${line}`)].join("\n") }]).files;
+    expect(riskyAreas(lines('el.classList.remove("open");', "this.cache.delete(key);", "req.session.save();"))).toEqual([]);
+    expect(riskyAreas(lines("await prisma.user.create({ data });"))).toEqual([
+      { kind: "database", path: "src/x.ts", reason: "changes a database write" },
+    ]);
+    expect(riskyAreas(lines("await this.db.order.update({ where });"))).toHaveLength(1);
+  });
+
+  it("only counts an auth check as removed when its name leaves the file's changes", () => {
+    const patch = (...lines: string[]) => makeChangeSet([{ path: "src/routes/x.ts", changeType: "modified", patch: ["@@ -1,2 +1,1 @@", ...lines].join("\n") }]).files;
+    const merged = patch('-router.get("/a", requireAuth, a);', '-router.get("/b", requireAuth, b);', "+router.use(requireAuth);");
+    expect(riskyAreas(merged)[0]).toEqual({ kind: "auth", path: "src/routes/x.ts", reason: "changes authorization code" });
+    const swapped = patch('-router.get("/a", requireAuth, a);', '+router.get("/a", a);', "+const admin = isAdmin(user);");
+    expect(riskyAreas(swapped)[0]).toMatchObject({ kind: "auth", removesCheck: true });
+  });
+
+  it("adds reached areas after the diff's own", () => {
+    const diff = [{ kind: "database" as const, path: "src/a.ts", reason: "changes a database write" }];
+    expect(withReach(diff, [{ path: "src/routes/r.ts", chain: ["a", "b"], hops: 2 }]).map((area) => area.path)).toEqual([
+      "src/a.ts",
+      "src/routes/r.ts",
+    ]);
+  });
+
   it("only ever raises the blast radius", () => {
     expect(floorBlastRadius("small", [])).toBe("small");
     expect(floorBlastRadius("small", [{ kind: "api", path: "a", reason: "r" }])).toBe("small");
@@ -86,13 +120,26 @@ describe("risky areas in the walkthrough", () => {
     expect(walkthroughMarkdown({ ...result, walkthrough: stored })).not.toContain("Risky areas");
   });
 
+  it("keeps the areas out of the result when the blast radius is hidden, still raising it", async () => {
+    const { generate } = fakeModel({ code_review: { findings: [] }, walkthrough: WALKTHROUGH });
+    const changeSet = makeChangeSet([{ path: "src/routes/users.ts", changeType: "modified", patch: ROUTE_PATCH }]);
+
+    const result = await runReview(
+      { changeSet, config: config({ review: { fileContext: false }, output: { walkthroughBlastRadius: false } }) },
+      { generate, now },
+    );
+
+    expect(result.walkthrough!.riskyAreas).toBeUndefined();
+    expect(result.walkthrough!.blastRadius).toBe("large");
+  });
+
   it("includes routes the change reaches through traced callers", async () => {
     const { generate } = fakeModel({ code_review: { findings: [] }, walkthrough: WALKTHROUGH });
     const app = ["export function main(input: string) {", "  return input;", "}", ""].join("\n");
-    const cli = ["export function run(args: string[]) {", "  return main(args[0]);", "}", ""].join("\n");
-    const serve = ['router.post("/run", (req, res) => {', "  res.json(run(req.body));", "});", ""].join("\n");
+    const cli = ["export function runCli(args: string[]) {", "  return main(args[0]);", "}", ""].join("\n");
+    const serve = ['router.post("/run", (req, res) => {', "  res.json(runCli(req.body));", "});", ""].join("\n");
     const sources: Record<string, string> = { "src/app.ts": app, "bin/cli.ts": cli, "src/routes/serve.ts": serve };
-    const callers: Record<string, string[]> = { main: ["bin/cli.ts"], run: ["src/routes/serve.ts"] };
+    const callers: Record<string, string[]> = { main: ["bin/cli.ts"], runCli: ["src/routes/serve.ts"] };
     const context: ContextSource = {
       readFile: async (path) => sources[path] ?? null,
       searchCode: async (term) => callers[term] ?? [],
@@ -104,7 +151,7 @@ describe("risky areas in the walkthrough", () => {
     const result = await runReview({ changeSet, config: config() }, { generate, now, context });
 
     expect(result.walkthrough!.riskyAreas).toEqual([
-      { kind: "api", path: "src/routes/serve.ts", reason: "calls run, 2 hops from the change", via: "main -> run" },
+      { kind: "api", path: "src/routes/serve.ts", reason: "calls runCli, 2 hops from the change", via: "main -> runCli" },
     ]);
     expect(result.walkthrough!.blastRadius).toBe("large");
   });

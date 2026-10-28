@@ -236,8 +236,9 @@ describe("runJob", () => {
     expect(result.verdict.blockOn).toBe("major");
     expect(stored.resolvedConfig).toMatchObject({ repoFile: ".sentryward.yaml", sources: { "review.blockOn": "repoSettings" } });
     // The repository file is read at the base revision, never the head; review
-    // context is read at the head, and callers of the changed main() searched.
-    expect(reads).toEqual(["change", "base:.sentryward.yaml", "newhead:src/app.ts", "code:main"]);
+    // context is read at the head, and callers of the changed main() searched
+    // (the search starts before any pass reads).
+    expect(reads).toEqual(["change", "base:.sentryward.yaml", "code:main", "newhead:src/app.ts"]);
     // The findings table follows the run, with the change's author.
     const findings = await prisma.finding.findMany({ where: { repositoryId, number: 42 } });
     expect(findings).toHaveLength(1);

@@ -17,7 +17,7 @@ import { mapLimit } from "./core/mapLimit.ts";
 import { contextTokenBudget, estimateTokens, diffTokenBudget } from "./context/budget.ts";
 import { planChunks, type Chunk } from "./context/chunk.ts";
 import { gatherContext, type ContextSource, type ReachedCaller } from "./context/gather.ts";
-import { floorBlastRadius, riskyAreas } from "./context/risk.ts";
+import { floorBlastRadius, riskyAreas, withReach } from "./context/risk.ts";
 import { classifyFiles } from "./context/ignore.ts";
 import { MAX_MANIFEST_CHARS, MAX_REJECTED_CHARS, reviewSystemPrompt, type ManifestEntry } from "./llm/prompt.ts";
 import { searchBudget } from "./agent/tools.ts";
@@ -282,10 +282,17 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
   const generated = await walkthroughTask;
   // The floor is applied here rather than left to the model, so a removed
   // auth check or a route the change reaches is never reported as small.
-  const risks = generated ? riskyAreas(reviewable, reach) : [];
+  // The areas themselves are part of the blast radius, so its setting keeps
+  // them out of the stored result, where the dashboard would show them.
+  const risks = generated ? withReach(diffRisks, reach) : [];
   const walkthrough: Walkthrough | undefined = generated && {
     ...generated,
-    ...(risks.length ? { riskyAreas: risks, blastRadius: floorBlastRadius(generated.blastRadius, risks) } : {}),
+    ...(risks.length
+      ? {
+          ...(config.output.walkthroughBlastRadius !== false ? { riskyAreas: risks } : {}),
+          blastRadius: floorBlastRadius(generated.blastRadius, risks),
+        }
+      : {}),
   };
 
   // Files only count as reviewed if a pass that included them succeeded and

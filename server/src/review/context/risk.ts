@@ -1,19 +1,23 @@
 import type { ChangedFile, RiskyArea, Walkthrough } from "../core/models.ts";
+import { TEST_PATH } from "./chunk.ts";
 import type { ReachedCaller } from "./gather.ts";
 
 // Changes to authorization, database writes and API routes break the most
 // for the fewest lines, so they are flagged in the walkthrough and raise its
 // blast radius. Found by pattern, not parsing: a miss only leaves the blast
-// radius to the model, and a false hit only names an area to look at.
+// radius to the model, and a false hit only names an area to look at. Tests
+// are never risky areas: they seed databases, call routes and stub auth
+// without shipping any of it.
 
-const AUTH_LINE =
-  /\b(?:require(?:Auth|Admin|Role|Login|Owner|Permission)\w*|authenticat\w*|[Aa]uthori[sz]\w*|is(?:Admin|Authenticated|Authorized|Owner)\b|(?:has|check)(?:Permission|Role|Access)\w*|verify(?:Token|Jwt|Session)\w*|jwt\.verify|login_required|permission_required|PreAuthorize|Secured\b)/;
+const AUTH_TOKEN =
+  /\b(?:require(?:Auth|Admin|Role|Login|Owner|Permission)\w*|authenticat\w*|[Aa]uthori[sz]\w*|is(?:Admin|Authenticated|Authorized|Owner)\b|(?:has|check)(?:Permission|Role|Access)\w*|verify(?:Token|Jwt|Session)\w*|jwt\.verify|login_required|permission_required|PreAuthorize|Secured\b)/g;
 const AUTH_PATH = /(?:^|\/)(?:auth|authz|permissions?|policies|guards?)(?:[/.]|$)|(?:^|\/)middleware\/[^/]*auth/i;
 // Bulk and destructive calls count on any receiver; the common ones (create,
-// update, delete, save) only on a model reached through a client, so a
-// Map.delete or a form's save is not taken for a database write.
+// update, delete, save) only on a model reached through a known database
+// client or a repository, so classList.remove, cache.delete or session.save
+// is not taken for a database write.
 const DB_LINE =
-  /\.(?:upsert|createMany|updateMany|deleteMany|bulkCreate|destroy|insertMany|\$executeRaw\w*|\$queryRaw\w*)\s*\(|\b\w+\.\w+\.(?:create|update|delete|insert|save|remove)\s*\(|\b(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE|TRUNCATE\s+TABLE)\b/;
+  /\.(?:upsert|createMany|updateMany|deleteMany|bulkCreate|destroy|insertMany|\$executeRaw\w*|\$queryRaw\w*)\s*\(|\b(?:prisma|db|tx|trx|knex|models?)\.\w+\.(?:create|update|delete|insert|save|remove)\s*\(|\b\w+Repository\.(?:save|remove|delete|insert|update)\s*\(|\b(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE|TRUNCATE\s+TABLE)\b/;
 const DB_PATH = /(?:^|\/)(?:schema\.prisma|migrations?\/.*|[^/]+\.sql)$/;
 // A known router, or any receiver given a path: users.get("/users/:id", ...).
 const API_LINE =
@@ -43,15 +47,21 @@ function changedLines(file: ChangedFile): { added: string[]; removed: string[] }
   return { added, removed };
 }
 
+const authTokens = (lines: string[]) => new Set(lines.flatMap((line) => [...line.matchAll(AUTH_TOKEN)].map((match) => match[0])));
+
 function fileAreas(file: ChangedFile): RiskyArea[] {
-  if (file.isBinary) return [];
+  if (file.isBinary || TEST_PATH.test(file.path)) return [];
   const { added, removed } = changedLines(file);
   const areas: RiskyArea[] = [];
-  const addedAuth = added.filter((line) => AUTH_LINE.test(line)).length;
-  const removedAuth = removed.filter((line) => AUTH_LINE.test(line)).length;
-  if (removedAuth > addedAuth) {
+  // A check is removed when its name leaves the file's changed lines
+  // entirely, so folding several guards into one router.use is only a
+  // change. Removing a guard in one place while adding the same name in
+  // another is missed: a miss only leaves the blast radius to the model.
+  const addedAuth = authTokens(added);
+  const removedAuth = authTokens(removed);
+  if ([...removedAuth].some((token) => !addedAuth.has(token))) {
     areas.push({ kind: "auth", path: file.path, reason: "removes an authorization check", removesCheck: true });
-  } else if (addedAuth || removedAuth || (AUTH_PATH.test(file.path) && (added.length || removed.length))) {
+  } else if (addedAuth.size || removedAuth.size || (AUTH_PATH.test(file.path) && (added.length || removed.length))) {
     areas.push({ kind: "auth", path: file.path, reason: "changes authorization code" });
   }
   if (DB_PATH.test(file.path)) {
@@ -71,6 +81,7 @@ function fileAreas(file: ChangedFile): RiskyArea[] {
 // changed code, however many hops away.
 function reachedAreas(reach: ReachedCaller[]): RiskyArea[] {
   return reach.flatMap((caller): RiskyArea[] => {
+    if (TEST_PATH.test(caller.path)) return [];
     const via = caller.chain.join(" -> ");
     const reason = `calls ${caller.chain.at(-1)}, ${caller.hops === 1 ? "directly" : `${caller.hops} hops`} from the change`;
     if (API_PATH.test(caller.path)) return [{ kind: "api", path: caller.path, reason, via }];
@@ -79,11 +90,16 @@ function reachedAreas(reach: ReachedCaller[]): RiskyArea[] {
   });
 }
 
-// One entry per kind and file, the diff's own first, as reach only adds
-// files the change does not touch.
 export function riskyAreas(files: ChangedFile[], reach: ReachedCaller[] = []): RiskyArea[] {
+  return withReach(files.flatMap(fileAreas), reach);
+}
+
+// One entry per kind and file, the diff's own first, as reach only adds
+// files the change does not touch. Takes the diff's areas as found, so the
+// pipeline adds callers without scanning the diff again.
+export function withReach(diffAreas: RiskyArea[], reach: ReachedCaller[]): RiskyArea[] {
   const seen = new Set<string>();
-  return [...files.flatMap(fileAreas), ...reachedAreas(reach)]
+  return [...diffAreas, ...reachedAreas(reach)]
     .filter((area) => {
       const key = `${area.kind}\0${area.path}`;
       if (seen.has(key)) return false;

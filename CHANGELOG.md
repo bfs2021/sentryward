@@ -14,18 +14,21 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   changed code more than one hop (`review.impact_depth`, 1-3, default 2, 1 in
   the `fast` profile; also in the dashboard under Findings > Review context):
   each caller's enclosing function becomes the next name searched, within a
-  shared cap of 8 code searches per review, and further hops are the first
-  context dropped when a pass is out of room. Callers of declarations the diff
-  changes or removes are searched first and labelled `signature changed` /
+  shared cap of 8 code searches per review (generic method names such as
+  `run` or `handle` are not traced), and further hops are the first context
+  dropped when a pass is out of room. Callers of declarations the diff
+  changes or removes, including parameters on later lines of a multi-line
+  signature, are searched first and labelled `signature changed` /
   `removed`, and the review prompt asks for broken contracts to be reported
   with `evidence: contract`, the affected callers in `impact` and their files
-  in `evidenceFiles`, which the summary and inline comments now show as
-  **Affected**. The walkthrough lists risky areas (authorization checks,
-  database writes and schema changes, API routes, and route handlers or auth
-  modules reached through callers) in the summary comment and the dashboard's
-  walkthrough card, and they raise its blast radius: at least `medium` for
-  auth or database changes, `large` for a removed auth check or a route
-  reached through callers.
+  in `evidenceFiles`, which the summary and inline comments show as
+  **Affected** for contract findings. The walkthrough lists risky areas
+  (authorization checks, database writes and schema changes, API routes, and
+  route handlers or auth modules reached through callers; test files never
+  count) in the summary comment and the dashboard's walkthrough card, both
+  hidden by `output.walkthrough_blast_radius`, and they raise its blast
+  radius: at least `medium` for auth or database changes, `large` for a
+  removed auth check or a route reached through callers.
 - Model and review-cost benchmarking (#107). Workspace admins can set their
   own model prices under LLM Connections > Model prices (`GET`/`PUT
   /api/settings/model-prices`, `DELETE /api/settings/model-prices/:id`,

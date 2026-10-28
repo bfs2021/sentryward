@@ -18,6 +18,7 @@ import {
   moduleCandidates,
   partSymbols,
   relativeImports,
+  traceable,
 } from "./symbols.ts";
 
 // Where context comes from. The worker reads through the forge (and its
@@ -48,6 +49,14 @@ export interface ReachedCaller {
   // name this file calls.
   chain: string[];
   hops: number;
+}
+
+interface TracedCaller {
+  chain: string[];
+  path: string;
+  lines: string[];
+  sites: number[];
+  hop: number;
 }
 
 export interface GatheredContext {
@@ -138,7 +147,7 @@ export async function gatherContext(input: GatherInput): Promise<GatheredContext
   const contracts = new Set([...symbols.values()].flatMap((part) => [...part.contracts.keys()]));
   // Direct callers are claimed before any pass starts, so tracing further
   // never costs a changed name its search; deeper hops share what is left,
-  // first come first served.
+  // in the order traceCallers reaches them.
   const claimed = new Set(
     [...new Set([...defined.filter((name) => contracts.has(name)), ...defined])].slice(0, MAX_DIRECT_SEARCHES),
   );
@@ -177,75 +186,90 @@ export async function gatherContext(input: GatherInput): Promise<GatheredContext
     return found.filter((block): block is ContextBlock => !!block);
   }
 
-  // Breadth first from the names the part changes: each caller's enclosing
+  const budgets = new Map(chunks.map((chunk) => [chunk, input.budgetFor(chunk)]));
+  const gathered = (part: ChunkPart) => part.file.changeType !== "deleted" && !part.file.isBinary;
+
+  // Breadth first from the names each part changes: each caller's enclosing
   // declaration is the next hop's name, until review.impactDepth. A name is
-  // traced once per part, and never into a file the change touches, whose
-  // own diff already shows it.
-  async function callerBlocks(part: ChunkPart): Promise<ContextBlock[]> {
-    const { defined: names, contracts: changes } = symbols.get(part)!;
-    const traced = new Set(names);
-    let frontier = names.filter((name) => direct.has(name)).map((name) => ({ chain: [name] }));
-    const blocks: ContextBlock[] = [];
+  // traced once per part, never through a generic name, and never into a
+  // file the change touches, whose own diff already shows it. All parts
+  // move a hop at a time in chunk order, and each hop's names claim
+  // searches before any runs, so the shared budget and the reach list come
+  // out the same however the forge's reads interleave.
+  async function traceCallers(): Promise<Map<ChunkPart, TracedCaller[]>> {
+    const parts = chunks.flatMap((chunk) => (budgets.get(chunk)! < MIN_CONTEXT_TOKENS ? [] : chunk.parts.filter(gathered)));
+    const traces = new Map(parts.map((part) => [part, [] as TracedCaller[]]));
+    const traced = new Map(parts.map((part) => [part, new Set(symbols.get(part)!.defined)]));
+    let frontier = parts.flatMap((part) =>
+      symbols.get(part)!.defined.filter((name) => direct.has(name)).map((name) => ({ part, chain: [name] })),
+    );
     for (let hop = 1; hop <= depth && frontier.length; hop++) {
+      const searched = hop === 1 ? frontier : frontier.filter(({ chain }) => claim(chain.at(-1)!));
       const found = await Promise.all(
-        frontier.map(async ({ chain }) => {
+        searched.map(async ({ part, chain }) => {
           const name = chain.at(-1)!;
-          if (hop > 1 && !claim(name)) return [];
           const paths = (await search(name)).filter((path) => !changed.has(path)).slice(0, MAX_CALLER_FILES);
           return Promise.all(
             paths.map(async (path) => {
               const lines = await read(path);
               const sites = lines ? callLines(lines, name, MAX_CALL_SITES_PER_FILE) : [];
-              return lines && sites.length ? { chain, path, lines, sites } : undefined;
+              return lines && sites.length ? { part, chain, path, lines, sites, hop } : undefined;
             }),
           );
         }),
       );
-      // In search order, so the next frontier and the reach list do not
-      // depend on which read finished first.
-      const next: { chain: string[] }[] = [];
+      const next: { part: ChunkPart; chain: string[] }[] = [];
       for (const caller of found.flat()) {
         if (!caller) continue;
-        const { chain, path, lines, sites } = caller;
-        const name = chain.at(-1)!;
+        const { part, chain, path, lines, sites } = caller;
+        traces.get(part)!.push(caller);
         const key = `${path}\0${chain.join("\0")}`;
         if (!reached.has(key)) reached.set(key, { path, chain, hops: hop });
-        const label =
-          hop === 1
-            ? `call sites of ${name}${changes.has(name) ? ` (${changes.get(name)})` : ""}`
-            : `call sites of ${name} (calls ${chain.slice(0, -1).reverse().join(" -> ")}; ${hop} hops from the change)`;
-        const block = rangesBlock(
-          path,
-          label,
-          hop === 1 ? CONTEXT_PRIORITY.callers : CONTEXT_PRIORITY.indirectCallers,
-          lines,
-          sites.map((line) => callSiteWindow(lines, line)),
-        );
-        if (block) blocks.push(block);
         if (hop === depth) continue;
+        const seen = traced.get(part)!;
         for (const line of sites) {
           const enclosing = enclosingDeclaration(lines, line);
-          if (!enclosing || traced.has(enclosing.name)) continue;
-          traced.add(enclosing.name);
-          next.push({ chain: [...chain, enclosing.name] });
+          if (!enclosing || !traceable(enclosing.name) || seen.has(enclosing.name)) continue;
+          seen.add(enclosing.name);
+          next.push({ part, chain: [...chain, enclosing.name] });
         }
       }
       frontier = next;
     }
-    return blocks;
+    return traces;
+  }
+  const tracing = traceCallers();
+
+  function callerBlocks(part: ChunkPart, callers: TracedCaller[]): ContextBlock[] {
+    const changes = symbols.get(part)!.contracts;
+    return callers.flatMap(({ chain, path, lines, sites, hop }) => {
+      const name = chain.at(-1)!;
+      const label =
+        hop === 1
+          ? `call sites of ${name}${changes.has(name) ? ` (${changes.get(name)})` : ""}`
+          : `call sites of ${name} (calls ${chain.slice(0, -1).reverse().join(" -> ")}; ${hop} hops from the change)`;
+      const block = rangesBlock(
+        path,
+        label,
+        hop === 1 ? CONTEXT_PRIORITY.callers : CONTEXT_PRIORITY.indirectCallers,
+        lines,
+        sites.map((line) => callSiteWindow(lines, line)),
+      );
+      return block ? [block] : [];
+    });
   }
 
   async function partBlocks(part: ChunkPart, inChunk: Set<string>): Promise<ContextBlock[]> {
-    if (part.file.changeType === "deleted" || part.file.isBinary) return [];
+    if (!gathered(part)) return [];
     const lines = await read(part.file.path);
     const blocks = lines ? fileContextBlocks(part.file, part.hunks, lines) : [];
     if (lines) blocks.push(...(await definitionBlocks(part, lines.join("\n"), inChunk)));
-    blocks.push(...(await callerBlocks(part)));
+    blocks.push(...callerBlocks(part, (await tracing).get(part) ?? []));
     return blocks;
   }
 
   const contexts = await mapLimit(chunks, input.concurrency, async (chunk) => {
-    const budget = input.budgetFor(chunk);
+    const budget = budgets.get(chunk)!;
     if (budget < MIN_CONTEXT_TOKENS) return "";
     const inChunk = new Set(chunk.parts.map((part) => part.file.path));
     const blocks = (await Promise.all(chunk.parts.map((part) => partBlocks(part, inChunk)))).flat();
