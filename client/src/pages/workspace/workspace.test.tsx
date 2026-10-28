@@ -112,22 +112,22 @@ describe("team page", () => {
     renderWithProviders(<App />, { route: "/workspace" })
 
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument()
-    expect(screen.queryByRole("link", { name: "Teams" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "User Management" })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole("button", { name: "Switch workspace" }))
+    expect(await screen.findByRole("menuitem", { name: "Create team" })).toBeInTheDocument()
+    expect(screen.queryByRole("menuitem", { name: "Team settings" })).not.toBeInTheDocument()
   })
 
-  it("is under User Management for any team member, without the admin-only Users page", async () => {
-    teamApi()
-    renderWithProviders(<App />, { route: "/workspace" })
+  it("opens from the workspace switcher for any team member, without the admin-only Users page", async () => {
+    teamApi({ "GET /api/reviews": { reviews: [], total: 0 } })
+    renderWithProviders(<App />, { route: "/home" })
 
-    const group = await screen.findByRole("button", { name: "User Management" })
-    // An entry of the main navigation, not a group of its own.
-    expect(group.closest("[data-sidebar=group]")).toBe(screen.getByRole("link", { name: "Home" }).closest("[data-sidebar=group]"))
-    expect(screen.getByRole("link", { name: "Teams" })).toHaveAttribute("href", "/workspace")
+    await userEvent.click(await screen.findByRole("button", { name: "Switch workspace" }))
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Team settings" }))
+
+    expect(await screen.findByRole("heading", { name: teamWorkspace.name })).toBeInTheDocument()
     expect(screen.queryByRole("link", { name: "Users" })).not.toBeInTheDocument()
     const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" })
-    expect(within(breadcrumb).getByText("User Management")).toBeInTheDocument()
-    expect(within(breadcrumb).getByText("Teams")).toHaveAttribute("aria-current", "page")
+    expect(within(breadcrumb).getByText("Team")).toHaveAttribute("aria-current", "page")
   })
 
   it("lets an admin manage members and admins, but not the owner", async () => {

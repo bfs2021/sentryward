@@ -79,7 +79,7 @@ export function ConfigurationPage() {
 
   return (
     <PageShell className="@container">
-      <PageHeader title="Configuration" description="Choose what reviews look for, how they are published and when they block." />
+      <PageHeader title="Review settings"description="Choose what reviews look for, how they are published and when they block." />
       <div className="flex max-w-5xl flex-col gap-3 rounded-xl border bg-muted/30 p-4 compact:p-3 spacious:p-6">
         <div className="flex flex-wrap items-center gap-3">
           <Label htmlFor="config-scope">Scope</Label>

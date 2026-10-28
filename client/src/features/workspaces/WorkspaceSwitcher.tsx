@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState } from "react"
 import { useNavigate } from "react-router"
-import { Check, ChevronsUpDown, Plus, User, Users } from "lucide-react"
+import { Check, ChevronsUpDown, Plus, Settings, User, Users } from "lucide-react"
 import { toast } from "sonner"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
 import {
@@ -67,6 +67,13 @@ export function WorkspaceSwitcher() {
               </DropdownMenuItem>
             ))}
             <DropdownMenuSeparator />
+            {/* A personal workspace has no members or name to manage. */}
+            {!workspace.personal && (
+              <DropdownMenuItem onSelect={() => navigate("/workspace")}>
+                <Settings />
+                Team settings
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               onSelect={() => {
                 setDialogLoaded(true)

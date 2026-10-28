@@ -211,8 +211,9 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     mockApi(globalRoutes())
     renderWithProviders(<App />, { route: "/home" })
 
-    await userEvent.click(await screen.findByRole("link", { name: "Configuration" }))
+    await userEvent.click(await screen.findByRole("link", { name: "Review settings" }))
 
+    expect(await screen.findByRole("heading", { name: "Review settings" })).toBeInTheDocument()
     expect(await screen.findByText(GLOBAL_SCOPE)).toBeInTheDocument()
     expect(await screen.findByRole("tab", { name: /^LLM Config/, selected: true })).toBeInTheDocument()
   })

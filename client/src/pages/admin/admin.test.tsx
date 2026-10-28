@@ -22,22 +22,21 @@ describe("Admin users page", () => {
     adminApi({ "GET /api/reviews": { reviews: [], total: 0 } })
     renderWithProviders(<App />, { route: "/settings" })
 
-    // Closed away from its pages, so Users shows once the group opens.
-    await userEvent.click(await screen.findByRole("button", { name: "User Management" }))
-
-    expect(await screen.findByRole("link", { name: "Users" })).toHaveAttribute("href", "/admin/users")
-    // Teams belongs to team workspaces, and the group has no "Admin" label.
-    expect(screen.queryByRole("link", { name: "Teams" })).not.toBeInTheDocument()
-    expect(screen.queryByText("Admin", { exact: true })).not.toBeInTheDocument()
+    const link = await screen.findByRole("link", { name: "Users" })
+    expect(link).toHaveAttribute("href", "/admin/users")
+    // In its own group, apart from the workspace pages.
+    const group = link.closest("[data-sidebar=group]") as HTMLElement
+    expect(within(group).getByText("Administration")).toBeInTheDocument()
+    expect(group).not.toContainElement(screen.getByRole("link", { name: "Privacy" }))
   })
 
-  it("opens User Management on its pages and shows it in the breadcrumb", async () => {
+  it("shows the group in the breadcrumb", async () => {
     adminApi()
     renderWithProviders(<App />, { route: "/admin/users" })
 
     expect(await screen.findByRole("link", { name: "Users" })).toHaveAttribute("href", "/admin/users")
     const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" })
-    expect(within(breadcrumb).getByText("User Management")).toBeInTheDocument()
+    expect(within(breadcrumb).getByText("Administration")).toBeInTheDocument()
     expect(within(breadcrumb).getByText("Users")).toHaveAttribute("aria-current", "page")
   })
 
@@ -46,7 +45,7 @@ describe("Admin users page", () => {
     renderWithProviders(<App />, { route: "/admin/users" })
 
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "User Management" })).not.toBeInTheDocument()
+    expect(screen.queryByText("Administration")).not.toBeInTheDocument()
     expect(screen.queryByRole("link", { name: "Users" })).not.toBeInTheDocument()
   })
 

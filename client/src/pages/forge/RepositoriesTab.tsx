@@ -392,7 +392,7 @@ function RepoActions({ repo, onRemove }: { repo: ForgeRepo; onRemove: () => void
         <DropdownMenuItem asChild>
           <Link to={`/configuration?repo=${repo.id}`}>
             <SlidersHorizontal />
-            Configuration
+            Review settings
           </Link>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
