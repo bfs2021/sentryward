@@ -641,7 +641,7 @@ The local-only check resolves the host when the review starts. It protects again
 
 Every request sent to a model is recorded: time, workspace, repository and change, purpose (review, walkthrough, verify, capability probe, thread reply, connection test), provider, host, model, input/cached/output/reasoning tokens, latency and outcome. A failed request records only a short error kind (such as `http_429` or `unusable_reply`), never the error text, and prompts, code and replies are never recorded. Entries keep the workspace and repository names after those are deleted, until audit retention removes them.
 
-Workspace admins see their workspace's log in the **Audit log** tab of the **Privacy** page; instance admins see every workspace's under **User Management > Audit log**. Both can filter it and export it as CSV or JSON (up to 100,000 rows per export; an `X-Truncated: true` header marks a cut-off export). The endpoints, which API tokens can also read:
+Workspace admins see their workspace's log in the **Audit log** tab of the **Privacy** page; instance admins see every workspace's in the **Audit log** tab of **User Management > Instance settings**. Both can filter it and export it as CSV or JSON (up to 100,000 rows per export; an `X-Truncated: true` header marks a cut-off export). The endpoints, which API tokens can also read:
 
 | Method | Path | Who |
 | --- | --- | --- |

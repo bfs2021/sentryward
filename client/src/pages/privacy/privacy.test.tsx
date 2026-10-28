@@ -37,6 +37,13 @@ const ENTRY = {
 
 const AUDIT = { entries: [ENTRY], total: 1, page: 1, limit: 10 }
 
+// Picks a provider from the dropdown, then closes it (the list is modal).
+async function pickProvider(name: string) {
+  await userEvent.click(await screen.findByRole("combobox", { name: "Allowed providers" }))
+  await userEvent.click(screen.getByRole("option", { name }))
+  await userEvent.keyboard("{Escape}")
+}
+
 function bodyOf(spy: ReturnType<typeof mockApi>, url: string, method: string) {
   const call = spy.mock.calls.find(([u, init]) => String(u) === url && init?.method === method)
   return JSON.parse(String(call?.[1]?.body))
@@ -53,10 +60,9 @@ describe("Privacy page", () => {
     renderWithProviders(<App />, { route: "/privacy" })
 
     expect(await screen.findByRole("heading", { name: "Privacy" })).toBeInTheDocument()
-    expect(await screen.findByText(/The instance allows: anthropic, ollama/)).toBeInTheDocument()
-    expect(screen.getByText(/Empty follows the instance \(90 days\)/)).toBeInTheDocument()
+    expect(await screen.findByText(/Empty follows the instance \(90 days\)/)).toBeInTheDocument()
 
-    await userEvent.click(screen.getByLabelText("Ollama"))
+    await pickProvider("Ollama")
     await userEvent.click(screen.getByRole("switch", { name: "Local only" }))
     await userEvent.type(screen.getByLabelText("Review data retention (days)"), "30")
     await userEvent.click(screen.getByRole("button", { name: "Save privacy settings" }))
@@ -75,14 +81,70 @@ describe("Privacy page", () => {
       "GET /api/privacy": PRIVACY,
       "GET /api/privacy/audit-log": AUDIT,
       "PUT /api/privacy": () =>
-        jsonResponse(400, { message: "Validation failed", errors: { retentionDays: ["Must be at most 90 days (the instance limit)"] } }),
+        jsonResponse(400, { message: "Validation failed", errors: { retentionDays: ["Instance settings changed"] } }),
     })
+    renderWithProviders(<App />, { route: "/privacy" })
+
+    await userEvent.type(await screen.findByLabelText("Review data retention (days)"), "60")
+    await userEvent.click(screen.getByRole("button", { name: "Save privacy settings" }))
+
+    expect(await screen.findByText("Instance settings changed")).toBeInTheDocument()
+  })
+
+  it("refuses retention above the instance limit without a request", async () => {
+    const spy = mockApi({ "GET /api/privacy": PRIVACY })
     renderWithProviders(<App />, { route: "/privacy" })
 
     await userEvent.type(await screen.findByLabelText("Review data retention (days)"), "120")
     await userEvent.click(screen.getByRole("button", { name: "Save privacy settings" }))
 
     expect(await screen.findByText("Must be at most 90 days (the instance limit)")).toBeInTheDocument()
+    expect(spy.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false)
+  })
+
+  it("summarises the policy in effect", async () => {
+    mockApi({ "GET /api/privacy": PRIVACY })
+    renderWithProviders(<App />, { route: "/privacy" })
+
+    const summary = await screen.findByLabelText("Policy in effect")
+    expect(within(summary).getByText("Anthropic")).toBeInTheDocument()
+    expect(within(summary).getByText("Ollama")).toBeInTheDocument()
+    expect(within(summary).getByText("Any host")).toBeInTheDocument()
+    expect(within(summary).getByText("90 days")).toBeInTheDocument()
+    // Providers and retention both come from the instance here.
+    expect(within(summary).getAllByText("Set by instance")).toHaveLength(2)
+  })
+
+  it("disables providers the instance blocks", async () => {
+    mockApi({ "GET /api/privacy": PRIVACY })
+    renderWithProviders(<App />, { route: "/privacy" })
+
+    await userEvent.click(await screen.findByRole("combobox", { name: "Allowed providers" }))
+    const list = screen.getByRole("listbox")
+    expect(within(list).getByRole("option", { name: /OpenAI/ })).toHaveAttribute("aria-disabled", "true")
+    expect(within(list).getByRole("option", { name: "Anthropic" })).toHaveAttribute("aria-disabled", "false")
+    expect(within(list).getAllByText("Blocked by instance")).toHaveLength(2)
+  })
+
+  it("fills retention from presets and resets unsaved changes", async () => {
+    mockApi({ "GET /api/privacy": PRIVACY })
+    renderWithProviders(<App />, { route: "/privacy" })
+
+    const retention = await screen.findByLabelText("Review data retention (days)")
+    // Over the instance limit of 90 days.
+    expect(screen.getByRole("button", { name: "365 days" })).toBeDisabled()
+    await userEvent.click(screen.getByRole("button", { name: "30 days" }))
+    expect(retention).toHaveValue("30")
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole("button", { name: "Instance limit" }))
+    expect(retention).toHaveValue("")
+
+    await pickProvider("Ollama")
+    expect(screen.getByRole("combobox", { name: "Allowed providers" })).toHaveTextContent("Ollama")
+    await userEvent.click(screen.getByRole("button", { name: "Reset" }))
+    expect(screen.getByRole("combobox", { name: "Allowed providers" })).not.toHaveTextContent("Ollama")
+    expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument()
   })
 
   it("lists the workspace's model requests in the audit log tab and exports them", async () => {
@@ -131,8 +193,10 @@ describe("Privacy page", () => {
     renderWithProviders(<App />, { route: "/privacy?tab=audit" })
 
     expect(await screen.findByRole("heading", { name: "Privacy" })).toBeInTheDocument()
-    expect(await screen.findByLabelText("Ollama")).toBeDisabled()
+    expect(await screen.findByRole("combobox", { name: "Allowed providers" })).toBeDisabled()
     expect(screen.queryByRole("button", { name: "Save privacy settings" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "30 days" })).not.toBeInTheDocument()
+    expect(screen.getByText("Only workspace owners and admins can change these settings.")).toBeInTheDocument()
     expect(screen.queryByRole("tab", { name: "Audit log" })).not.toBeInTheDocument()
   })
 })
@@ -147,12 +211,13 @@ describe("Instance admin pages", () => {
     })
   }
 
-  it("lists the admin pages in the sidebar", async () => {
+  it("lists one Instance settings page in the sidebar", async () => {
     adminApi()
     renderWithProviders(<App />, { route: "/admin/settings" })
 
     expect(await screen.findByRole("link", { name: "Instance settings" })).toHaveAttribute("href", "/admin/settings")
-    expect(screen.getByRole("link", { name: "Audit log" })).toHaveAttribute("href", "/admin/audit-log")
+    // The audit log is a tab of that page, not its own menu item.
+    expect(screen.queryByRole("link", { name: "Audit log" })).not.toBeInTheDocument()
   })
 
   it("saves the instance policy, showing the environment fallback", async () => {
@@ -179,18 +244,30 @@ describe("Instance admin pages", () => {
     })
   })
 
-  it("shows the audit log of every workspace", async () => {
+  it("shows the audit log of every workspace in its tab", async () => {
     adminApi()
-    renderWithProviders(<App />, { route: "/admin/audit-log" })
+    renderWithProviders(<App />, { route: "/admin/settings" })
+
+    expect(await screen.findByText("Privacy policy")).toBeInTheDocument()
+    expect(screen.queryByText("anthropic/claude-sonnet-4-5")).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole("tab", { name: "Audit log" }))
 
     const row = (await screen.findByText("anthropic/claude-sonnet-4-5")).closest("tr")!
     expect(screen.getByRole("columnheader", { name: "Workspace" })).toBeInTheDocument()
     expect(within(row).getByText("Ada Lovelace")).toBeInTheDocument()
   })
 
+  it("sends the old audit log address to its tab", async () => {
+    adminApi()
+    renderWithProviders(<App />, { route: "/admin/audit-log" })
+
+    expect(await screen.findByText("anthropic/claude-sonnet-4-5")).toBeInTheDocument()
+    expect(screen.getByRole("tab", { name: "Audit log" })).toHaveAttribute("aria-selected", "true")
+  })
+
   it("sends members back to Home", async () => {
     mockApi({ "GET /api/connections": { connections: [], availableApps: [] } })
-    renderWithProviders(<App />, { route: "/admin/audit-log" })
+    renderWithProviders(<App />, { route: "/admin/settings?tab=audit" })
 
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument()
   })

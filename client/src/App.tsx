@@ -9,7 +9,6 @@ import { DashboardLayout } from "@/layouts/DashboardLayout"
 
 // Pages load on demand to keep the entry chunk small. The guards and the layout
 // stay static so they render (and redirect) without waiting on a chunk.
-const AdminAuditLogPage = lazy(() => import("@/pages/admin/AdminAuditLogPage").then((m) => ({ default: m.AdminAuditLogPage })))
 const AdminSettingsPage = lazy(() => import("@/pages/admin/AdminSettingsPage").then((m) => ({ default: m.AdminSettingsPage })))
 const AdminUsersPage = lazy(() => import("@/pages/admin/AdminUsersPage").then((m) => ({ default: m.AdminUsersPage })))
 const ConfigurationPage = lazy(() => import("@/pages/config/ConfigurationPage").then((m) => ({ default: m.ConfigurationPage })))
@@ -73,7 +72,7 @@ export function App() {
               <Route path="/workspace" element={<WorkspacePage />} />
               <Route path="/admin/users" element={<AdminUsersPage />} />
               <Route path="/admin/settings" element={<AdminSettingsPage />} />
-              <Route path="/admin/audit-log" element={<AdminAuditLogPage />} />
+              <Route path="/admin/audit-log" element={<Navigate to="/admin/settings?tab=audit" replace />} />
               <Route path="/privacy" element={<PrivacyPage />} />
             </Route>
           </Route>

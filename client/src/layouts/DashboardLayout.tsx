@@ -12,7 +12,6 @@ import {
   House,
   KeyRound,
   LogOut,
-  ScrollText,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
@@ -80,7 +79,6 @@ const USER_MANAGEMENT_NAV: NavGroupDef = {
   items: [
     { to: "/admin/users", label: "Users", icon: Users },
     { to: "/admin/settings", label: "Instance settings", icon: Settings },
-    { to: "/admin/audit-log", label: "Audit log", icon: ScrollText },
     { to: "/workspace", label: "Teams", icon: UsersRound },
   ],
 }
