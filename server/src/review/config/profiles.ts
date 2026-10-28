@@ -9,7 +9,7 @@ export const PROFILES: Record<ProfileName, ConfigOverride> = {
   // or thinking.
   fast: {
     llm: { thinking: "off" },
-    review: { maxChunks: 4, verify: "off" },
+    review: { maxChunks: 4, verify: "off", impactDepth: 1 },
     output: { walkthrough: false },
   },
   // Majors block, more findings are kept, low-confidence ones still dropped,

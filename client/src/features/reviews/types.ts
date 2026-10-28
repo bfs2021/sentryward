@@ -9,6 +9,15 @@ export type Provider = "github" | "gitlab"
 export type Trigger = "manual" | "webhook" | "comment"
 export type IssueAssessment = "addressed" | "partial" | "not_addressed" | "unclear"
 
+// A sensitive area the change touches, or reaches through its callers (via).
+export interface RiskyArea {
+  kind: "auth" | "database" | "api"
+  path: string
+  reason: string
+  via?: string
+  removesCheck?: boolean
+}
+
 export interface IssueRef {
   ref: string
   title: string
@@ -139,6 +148,7 @@ export interface ReviewResult {
     highLevelSummary?: string
     linkedIssues?: (IssueRef & { assessment: IssueAssessment; note: string })[]
     relatedIssues?: (IssueRef & { reason: string })[]
+    riskyAreas?: RiskyArea[]
   }
   coverage: { reviewedFiles: string[]; omissions: Omission[]; passes: number }
   validation: { dropped: Record<string, number>; demoted: number }

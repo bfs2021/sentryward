@@ -375,6 +375,10 @@ The worker keeps a small in-memory cache of what a commit fixes: the repository 
 
 With `review.file_context` (the default), each review pass also sees read-only code around the diff, read from the head revision: the enclosing function or class of each hunk, the file's imports, the definitions of functions the diff calls through relative imports, and call sites of functions it changes in files the change does not touch. Head files go through the same cache; caller lookups use the forge's code search (GitHub only indexes the default branch, GitLab searches the head) and are never cached. Context only fills what a pass has left once its diff is planned, so it never displaces a hunk or makes a review partial, and a file or search that cannot be read only costs a warning. Findings on context lines are dropped unless `review.full_file` is on.
 
+`review.impact_depth` (1 to 3, default 2; the `fast` profile uses 1) is how many hops of callers that context follows: at 2, a pass also sees who calls the functions that call the changed code, so a changed signature, return shape or thrown error that breaks code further away is visible. Callers of declarations the diff changed or removed are searched first and marked as such, and further hops are the first context to go when a pass is short of room. A review makes at most 8 caller searches in all, the first 5 for names the change itself defines. Findings that rely on other files list them as **Affected** in the comment.
+
+The walkthrough also flags risky areas next to the blast radius: authorization checks, database writes and schema changes, and API routes the diff touches, plus route handlers and auth modules it reaches through the traced callers. They are found by pattern, given to the walkthrough model, and raise the blast radius it reports (never lower it): auth or database changes are at least `medium`, a removed authorization check or a route reached through callers is `large`. `output.walkthrough_blast_radius` hides them with the blast radius.
+
 ## Notifications
 
 Under **Notifications**, workspace admins add targets that hear about finished reviews. Members can see them; only admins add, edit, test or remove them. Each target picks its events:
@@ -486,6 +490,7 @@ review:
   committable_suggestions: true
   disable_cache: false      # fetch the diff and config file fresh on every run
   file_context: true        # show passes the surrounding code, definitions and callers
+  impact_depth: 2           # hops of callers to follow from changed code, 1-3 (fast profile: 1)
   verify: blocking          # off | blocking | all: re-check findings with a second model call;
                             # refuted ones are dropped, uncertain ones demoted (fast profile: off)
   tool_findings: true       # report static analysis results already on the forge as findings

@@ -80,6 +80,7 @@ export type NumberName =
   | "contextBudget"
   | "maxFindings"
   | "maxChunks"
+  | "impactDepth"
   | "minConfidence"
   | "maxSteps"
   | "maxToolTokens"
@@ -104,6 +105,7 @@ export const NUMBERS: NumberSpec[] = [
   { name: "contextBudget", section: "llm", min: 4000, step: 1000, integer: true, nullable: true },
   { name: "maxFindings", section: "review", min: 1, max: 100, step: 1, integer: true },
   { name: "maxChunks", section: "review", min: 1, max: 50, step: 1, integer: true },
+  { name: "impactDepth", section: "review", min: 1, max: 3, step: 1, integer: true },
   { name: "minConfidence", section: "review", min: 0, max: 1, step: 0.05, integer: false },
   { name: "maxSteps", section: "review.agent", min: 2, max: 20, step: 1, integer: true },
   { name: "maxToolTokens", section: "review.agent", min: 1000, max: 100000, step: 1000, integer: true },

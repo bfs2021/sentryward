@@ -19,7 +19,9 @@ export interface ContextBlock {
   tokens: number;
 }
 
-export const CONTEXT_PRIORITY = { scope: 0, imports: 1, definition: 2, callers: 3 } as const;
+// Callers more than one hop from the change go last: they explain impact but
+// are the furthest from the lines under review.
+export const CONTEXT_PRIORITY = { scope: 0, imports: 1, definition: 2, callers: 3, indirectCallers: 4 } as const;
 
 // Generated or vendored files this large say little per token.
 export const MAX_CONTEXT_FILE_CHARS = 400_000;

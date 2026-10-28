@@ -46,7 +46,7 @@ export function isConfigTab(value: string | null): value is ConfigTab {
 // cannot see while the save button stays disabled.
 export const TAB_ERRORS: Record<ConfigTab, (keyof FormErrors)[]> = {
   llm: ["model", "fallbackModels", "walkthroughModel", "verifyModel", "connection", "temperature", "maxTokens", "contextBudget"],
-  findings: ["categories", "maxFindings", "minConfidence", "maxSteps", "maxToolTokens", "maxSearches"],
+  findings: ["categories", "maxFindings", "minConfidence", "impactDepth", "maxSteps", "maxToolTokens", "maxSearches"],
   files: ["ignorePaths", "maxChunks"],
   display: ["summaryInstructions"],
   triggers: ["ignoreTitles", "skipAuthors", "skipLabels", "skipSourceBranches", "skipTargetBranches"],

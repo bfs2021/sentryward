@@ -416,6 +416,22 @@ describe("Review detail page", () => {
     expect(screen.getByText("Changes f0")).toBeInTheDocument()
   })
 
+  it("lists the risky areas a change touches or reaches", async () => {
+    const riskyAreas = [
+      { kind: "auth" as const, path: "src/middleware/auth.ts", reason: "removes an authorization check", removesCheck: true },
+      { kind: "api" as const, path: "src/routes/users.ts", reason: "calls run, 2 hops from the change", via: "main -> run" },
+    ]
+    const walkthrough = { ...detail.result!.walkthrough!, riskyAreas }
+    mockApi({ [`GET /api/reviews/${detail.id}`]: { review: { ...detail, result: { ...detail.result!, walkthrough } } } })
+    renderWithProviders(<App />, { route: `/reviews/${detail.id}` })
+
+    const section = await screen.findByRole("region", { name: "Risky areas" })
+    expect(within(section).getByText("Authorization")).toBeInTheDocument()
+    expect(within(section).getByText("removes an authorization check")).toBeInTheDocument()
+    expect(within(section).getByText("src/routes/users.ts")).toBeInTheDocument()
+    expect(within(section).getByText("(main -> run)")).toBeInTheDocument()
+  })
+
   it("says what was posted to the forge", async () => {
     const publication = {
       inlinePosted: [{ fingerprint: "a", forgeCommentId: "1" }, { fingerprint: "b", forgeCommentId: "2" }],

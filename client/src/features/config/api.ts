@@ -63,6 +63,7 @@ export interface ConfigOverride {
     committableSuggestions?: boolean
     disableCache?: boolean
     fileContext?: boolean
+    impactDepth?: number
     verify?: VerifyMode
     toolFindings?: boolean
     toolFindingsBlock?: boolean
@@ -152,6 +153,7 @@ export interface EffectiveConfig {
     committableSuggestions: boolean
     disableCache: boolean
     fileContext: boolean
+    impactDepth: number
     verify: VerifyMode
     toolFindings: boolean
     toolFindingsBlock: boolean

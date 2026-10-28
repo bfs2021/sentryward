@@ -1,7 +1,8 @@
 import type { Config } from "../config/schema.ts";
-import type { ChangedFile, ChangeSet, IssueContext, LlmUsage, Walkthrough } from "../core/models.ts";
+import type { ChangedFile, ChangeSet, IssueContext, LlmUsage, RiskyArea, Walkthrough } from "../core/models.ts";
 import { estimateTokens } from "../context/budget.ts";
 import { renderFileDiff } from "../context/diffText.ts";
+import { riskFacts } from "../context/risk.ts";
 import {
   DEFAULT_HIGH_LEVEL_SUMMARY_INSTRUCTIONS,
   WALKTHROUGH_SYSTEM_PROMPT,
@@ -57,6 +58,7 @@ export async function generateWalkthrough(
   files: ChangedFile[],
   config: Config,
   issues: WalkthroughIssues = {},
+  risky: RiskyArea[] = [],
 ): Promise<{ walkthrough: Walkthrough; usage: LlmUsage; failedUsage: LlmUsage[] }> {
   const { output: settings } = config;
   // Nothing to assess or pick from means nothing to ask for.
@@ -69,6 +71,7 @@ export async function generateWalkthrough(
       : undefined,
     linkedIssues: linked,
     candidateIssues: candidates,
+    ...(risky.length ? { riskFacts: riskFacts(risky) } : {}),
   };
   const schema = walkthroughSchemaFor({
     sequenceDiagram: extras.sequenceDiagram,

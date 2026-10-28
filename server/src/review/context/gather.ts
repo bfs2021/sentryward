@@ -10,7 +10,15 @@ import {
   rangesBlock,
   type ContextBlock,
 } from "./fileContext.ts";
-import { callSites, declarationLine, moduleCandidates, partSymbols, relativeImports } from "./symbols.ts";
+import {
+  callLines,
+  callSiteWindow,
+  declarationLine,
+  enclosingDeclaration,
+  moduleCandidates,
+  partSymbols,
+  relativeImports,
+} from "./symbols.ts";
 
 // Where context comes from. The worker reads through the forge (and its
 // cache); without a source a review sees the diff alone.
@@ -29,18 +37,34 @@ export interface GatherInput {
   // Context tokens a pass may still take once its diff is paid for.
   budgetFor: (chunk: Chunk) => number;
   concurrency: number;
+  // Hops of callers to follow from a changed name (review.impactDepth).
+  depth?: number;
+}
+
+// A file outside the change that calls into it, directly or through others.
+export interface ReachedCaller {
+  path: string;
+  // The changed name first, then each caller in between, ending with the
+  // name this file calls.
+  chain: string[];
+  hops: number;
 }
 
 export interface GatheredContext {
   // Rendered context per chunk, in chunk order.
   contexts: string[];
+  // Every caller found, whether or not its block fit a pass.
+  reach: ReachedCaller[];
   warnings: string[];
 }
 
 const MAX_DEFINITIONS_PER_PART = 6;
 // Code search is the costliest lookup and GitHub rate-limits it hard, so a
-// review searches for at most this many names, the first the change defines.
-const MAX_CALLER_SEARCHES = 5;
+// review searches for at most this many names the change defines, those
+// whose declaration changed first, and at most MAX_CALLER_SEARCHES in all
+// once callers of callers are traced.
+const MAX_DIRECT_SEARCHES = 5;
+const MAX_CALLER_SEARCHES = 8;
 const MAX_CALLER_FILES = 3;
 const MAX_CALL_SITES_PER_FILE = 3;
 const MAX_LISTED_PATHS = 5;
@@ -109,16 +133,28 @@ export async function gatherContext(input: GatherInput): Promise<GatheredContext
   };
 
   const changed = new Set(changeSet.files.flatMap((file) => [file.path, ...(file.previousPath ? [file.previousPath] : [])]));
-  const searchable = new Set(
-    [...new Set(chunks.flatMap((chunk) => chunk.parts.flatMap((part) => partSymbols(part.hunks).defined)))].slice(
-      0,
-      MAX_CALLER_SEARCHES,
-    ),
+  const symbols = new Map(chunks.flatMap((chunk) => chunk.parts.map((part) => [part, partSymbols(part.hunks)] as const)));
+  const defined = [...symbols.values()].flatMap((part) => part.defined);
+  const contracts = new Set([...symbols.values()].flatMap((part) => [...part.contracts.keys()]));
+  // Direct callers are claimed before any pass starts, so tracing further
+  // never costs a changed name its search; deeper hops share what is left,
+  // first come first served.
+  const claimed = new Set(
+    [...new Set([...defined.filter((name) => contracts.has(name)), ...defined])].slice(0, MAX_DIRECT_SEARCHES),
   );
+  const direct = new Set(claimed);
+  const claim = (name: string): boolean => {
+    if (claimed.has(name)) return true;
+    if (claimed.size >= MAX_CALLER_SEARCHES) return false;
+    claimed.add(name);
+    return true;
+  };
+  const depth = Math.max(1, input.depth ?? 1);
+  const reached = new Map<string, ReachedCaller>();
 
   async function definitionBlocks(part: ChunkPart, content: string, inChunk: Set<string>): Promise<ContextBlock[]> {
     const bindings = relativeImports(content);
-    const wanted = partSymbols(part.hunks)
+    const wanted = symbols.get(part)!
       .called.filter((name) => bindings.has(name))
       .slice(0, MAX_DEFINITIONS_PER_PART);
     const found = await Promise.all(
@@ -141,24 +177,62 @@ export async function gatherContext(input: GatherInput): Promise<GatheredContext
     return found.filter((block): block is ContextBlock => !!block);
   }
 
+  // Breadth first from the names the part changes: each caller's enclosing
+  // declaration is the next hop's name, until review.impactDepth. A name is
+  // traced once per part, and never into a file the change touches, whose
+  // own diff already shows it.
   async function callerBlocks(part: ChunkPart): Promise<ContextBlock[]> {
-    const names = partSymbols(part.hunks).defined.filter((name) => searchable.has(name));
-    const found = await Promise.all(
-      names.map(async (name) => {
-        const paths = (await search(name)).filter((path) => !changed.has(path)).slice(0, MAX_CALLER_FILES);
-        return Promise.all(
-          paths.map(async (path) => {
-            const lines = await read(path);
-            if (!lines) return undefined;
-            const sites = callSites(lines, name, MAX_CALL_SITES_PER_FILE);
-            return sites.length
-              ? rangesBlock(path, `call sites of ${name}`, CONTEXT_PRIORITY.callers, lines, sites)
-              : undefined;
-          }),
+    const { defined: names, contracts: changes } = symbols.get(part)!;
+    const traced = new Set(names);
+    let frontier = names.filter((name) => direct.has(name)).map((name) => ({ chain: [name] }));
+    const blocks: ContextBlock[] = [];
+    for (let hop = 1; hop <= depth && frontier.length; hop++) {
+      const found = await Promise.all(
+        frontier.map(async ({ chain }) => {
+          const name = chain.at(-1)!;
+          if (hop > 1 && !claim(name)) return [];
+          const paths = (await search(name)).filter((path) => !changed.has(path)).slice(0, MAX_CALLER_FILES);
+          return Promise.all(
+            paths.map(async (path) => {
+              const lines = await read(path);
+              const sites = lines ? callLines(lines, name, MAX_CALL_SITES_PER_FILE) : [];
+              return lines && sites.length ? { chain, path, lines, sites } : undefined;
+            }),
+          );
+        }),
+      );
+      // In search order, so the next frontier and the reach list do not
+      // depend on which read finished first.
+      const next: { chain: string[] }[] = [];
+      for (const caller of found.flat()) {
+        if (!caller) continue;
+        const { chain, path, lines, sites } = caller;
+        const name = chain.at(-1)!;
+        const key = `${path}\0${chain.join("\0")}`;
+        if (!reached.has(key)) reached.set(key, { path, chain, hops: hop });
+        const label =
+          hop === 1
+            ? `call sites of ${name}${changes.has(name) ? ` (${changes.get(name)})` : ""}`
+            : `call sites of ${name} (calls ${chain.slice(0, -1).reverse().join(" -> ")}; ${hop} hops from the change)`;
+        const block = rangesBlock(
+          path,
+          label,
+          hop === 1 ? CONTEXT_PRIORITY.callers : CONTEXT_PRIORITY.indirectCallers,
+          lines,
+          sites.map((line) => callSiteWindow(lines, line)),
         );
-      }),
-    );
-    return found.flat().filter((block): block is ContextBlock => !!block);
+        if (block) blocks.push(block);
+        if (hop === depth) continue;
+        for (const line of sites) {
+          const enclosing = enclosingDeclaration(lines, line);
+          if (!enclosing || traced.has(enclosing.name)) continue;
+          traced.add(enclosing.name);
+          next.push({ chain: [...chain, enclosing.name] });
+        }
+      }
+      frontier = next;
+    }
+    return blocks;
   }
 
   async function partBlocks(part: ChunkPart, inChunk: Set<string>): Promise<ContextBlock[]> {
@@ -186,5 +260,5 @@ export async function gatherContext(input: GatherInput): Promise<GatheredContext
     warnings.push(`Review context could not be read for ${listed}${more}; the diff was reviewed without it`);
   }
   if (searchError) warnings.push(`Caller search failed, so passes saw no call sites: ${searchError}`);
-  return { contexts, warnings };
+  return { contexts, reach: [...reached.values()], warnings };
 }

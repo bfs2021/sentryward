@@ -34,27 +34,61 @@ export function declaredNames(line: string): string[] {
   return DECLARATIONS.map((pattern) => pattern.exec(line)?.[1]).filter(wanted);
 }
 
+export type ContractChange = "signature changed" | "removed";
+
 export interface PartSymbols {
-  // Declared on an added line or enclosing a hunk: changing them can break callers.
+  // Declared on a changed line or enclosing a hunk: changing them can break
+  // callers. Names whose declaration changed come first.
   defined: string[];
   // Called on an added line and not declared in the hunks themselves.
   called: string[];
+  // Names whose declaration line itself changed or went away: their callers
+  // are the likeliest to break.
+  contracts: Map<string, ContractChange>;
 }
+
+const squash = (text: string) => text.replace(/\s+/g, " ").trim();
 
 export function partSymbols(hunks: Hunk[]): PartSymbols {
   const defined = new Set<string>();
   const called = new Set<string>();
+  const added = new Map<string, Set<string>>();
+  const removed = new Map<string, Set<string>>();
+  const declare = (into: Map<string, Set<string>>, name: string, text: string) => {
+    let texts = into.get(name);
+    if (!texts) into.set(name, (texts = new Set()));
+    texts.add(squash(text));
+  };
   for (const hunk of hunks) {
     for (const name of declaredNames(hunk.header)) defined.add(name);
     for (const line of hunk.content.split("\n").slice(1)) {
-      if (line[0] !== "+") continue;
       const text = line.slice(1);
-      for (const name of declaredNames(text)) defined.add(name);
+      if (line[0] === "-") {
+        for (const name of declaredNames(text)) declare(removed, name, text);
+        continue;
+      }
+      if (line[0] !== "+") continue;
+      for (const name of declaredNames(text)) {
+        defined.add(name);
+        declare(added, name, text);
+      }
       for (const match of text.matchAll(CALL)) if (wanted(match[1])) called.add(match[1]);
     }
   }
+  // A declaration removed and added back unchanged was only moved.
+  const contracts = new Map<string, ContractChange>();
+  for (const [name, texts] of removed) {
+    const now = added.get(name);
+    if (!now) contracts.set(name, "removed");
+    else if ([...texts].some((text) => !now.has(text))) contracts.set(name, "signature changed");
+  }
+  for (const name of contracts.keys()) defined.add(name);
   for (const name of defined) called.delete(name);
-  return { defined: [...defined], called: [...called] };
+  return {
+    defined: [...contracts.keys(), ...[...defined].filter((name) => !contracts.has(name))],
+    called: [...called],
+    contracts,
+  };
 }
 
 export interface ImportBinding {
@@ -141,15 +175,41 @@ export function declarationLine(lines: string[], exported: string): number | und
 const CALL_SITE_BEFORE = 5;
 const CALL_SITE_AFTER = 3;
 
-// Windows around lines that call `name`, as a function or a method, skipping
-// its declaration.
-export function callSites(lines: string[], name: string, limit: number): LineRange[] {
+// Lines that call `name`, as a function or a method, skipping its declaration.
+export function callLines(lines: string[], name: string, limit: number): number[] {
   const pattern = new RegExp(`(?<![\\w$])${escapeRegExp(name)}\\s*\\(`);
-  const ranges: LineRange[] = [];
-  for (let n = 1; n <= lines.length && ranges.length < limit; n++) {
+  const found: number[] = [];
+  for (let n = 1; n <= lines.length && found.length < limit; n++) {
     const line = lines[n - 1]!;
-    if (!pattern.test(line) || declaredNames(line).includes(name)) continue;
-    ranges.push({ start: Math.max(1, n - CALL_SITE_BEFORE), end: Math.min(lines.length, n + CALL_SITE_AFTER) });
+    if (pattern.test(line) && !declaredNames(line).includes(name)) found.push(n);
   }
-  return ranges;
+  return found;
+}
+
+export function callSiteWindow(lines: string[], line: number): LineRange {
+  return { start: Math.max(1, line - CALL_SITE_BEFORE), end: Math.min(lines.length, line + CALL_SITE_AFTER) };
+}
+
+// Windows around the lines that call `name`.
+export function callSites(lines: string[], name: string, limit: number): LineRange[] {
+  return callLines(lines, name, limit).map((line) => callSiteWindow(lines, line));
+}
+
+const MAX_ENCLOSING_SCAN = 150;
+
+// The named declaration a line sits in: the next hop when tracing callers.
+// Found by indentation, like enclosingScope; top-level code and anonymous
+// callbacks with no named declaration above them have none.
+export function enclosingDeclaration(lines: string[], line: number): { name: string; line: number } | undefined {
+  const indent = (text: string) => text.length - text.trimStart().length;
+  const own = lines[line - 1];
+  let level = own?.trim() ? indent(own) : Infinity;
+  for (let n = line - 1; n >= Math.max(1, line - MAX_ENCLOSING_SCAN) && level > 0; n--) {
+    const text = lines[n - 1]!;
+    if (!text.trim() || indent(text) >= level) continue;
+    level = indent(text);
+    const name = declaredNames(text)[0];
+    if (name) return { name, line: n };
+  }
+  return undefined;
 }
