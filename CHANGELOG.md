@@ -27,8 +27,9 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   route handlers or auth modules reached through callers; test files never
   count) in the summary comment and the dashboard's walkthrough card, both
   hidden by `output.walkthrough_blast_radius`, and they raise its blast
-  radius: at least `medium` for auth or database changes, `large` for a
-  removed auth check or a route reached through callers.
+  radius: at least `medium` for any risky area, `large` only for a removed
+  auth check. Reviews stored before `review.impact_depth` existed still allow
+  an incremental review on the next push.
 - Model and review-cost benchmarking (#107). Workspace admins can set their
   own model prices under LLM Connections > Model prices (`GET`/`PUT
   /api/settings/model-prices`, `DELETE /api/settings/model-prices/:id`,

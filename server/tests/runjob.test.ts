@@ -1382,6 +1382,42 @@ describe("runJob on a push after a completed review", () => {
     expect(((await stored()).result as { incremental?: unknown }).incremental).toBeDefined();
   });
 
+  it("still reviews incrementally after a review stored before impact depth existed", async () => {
+    await reviewFirst();
+    const last = await prisma.reviewJob.findFirstOrThrow({ where: { repositoryId, headSha: "h1" } });
+    const resolved = structuredClone(last.resolvedConfig) as { config: { review: { impactDepth?: number } } };
+    delete resolved.config.review.impactDepth;
+    await prisma.reviewJob.update({ where: { id: last.id }, data: { resolvedConfig: resolved as object } });
+    const second = deps({}, fixed, { anthropic: "k" }, { head: "h2", files: FILES, compare: ["src/util.ts"] });
+    const { job, stored } = await push("h2");
+
+    await runJob(job, second.runDeps);
+
+    expect(second.reads).toContain("compare:h1..h2");
+    expect(((await stored()).result as { incremental?: unknown }).incremental).toBeDefined();
+  });
+
+  it("keeps the areas the last review reached through callers", async () => {
+    await reviewFirst();
+    const last = await prisma.reviewJob.findFirstOrThrow({ where: { repositoryId, headSha: "h1" } });
+    const reached = { kind: "api", path: "src/routes/r.ts", reason: "calls run2, 2 hops from the change", via: "main -> run2" };
+    const previous = last.result as { walkthrough?: Record<string, unknown> };
+    expect(previous.walkthrough).toBeDefined();
+    await prisma.reviewJob.update({
+      where: { id: last.id },
+      data: { result: { ...previous, walkthrough: { ...previous.walkthrough, riskyAreas: [reached] } } as object },
+    });
+    const second = deps({}, fixed, { anthropic: "k" }, { head: "h2", files: FILES, compare: ["src/util.ts"] });
+    const { job, stored } = await push("h2");
+
+    await runJob(job, second.runDeps);
+
+    const result = (await stored()).result as { incremental?: unknown; walkthrough: { riskyAreas?: unknown[]; blastRadius?: string } };
+    expect(result.incremental).toBeDefined();
+    expect(result.walkthrough.riskyAreas).toContainEqual(reached);
+    expect(result.walkthrough.blastRadius).not.toBe("small");
+  });
+
   it.each([
     ["the model settings", { llm: { temperature: 0.7 } }],
     ["the ignored paths", { ignorePaths: ["src/app.ts"] }],

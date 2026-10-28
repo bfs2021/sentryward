@@ -11,6 +11,7 @@ import {
   type ContextBlock,
 } from "./fileContext.ts";
 import {
+  addedDeclarations,
   callLines,
   callSiteWindow,
   declarationLine,
@@ -84,6 +85,15 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// One from each list in turn: the first of every list, then the second.
+function roundRobin(lists: string[][]): string[] {
+  const out: string[] = [];
+  for (let i = 0; lists.some((list) => i < list.length); i++) {
+    for (const list of lists) if (i < list.length) out.push(list[i]!);
+  }
+  return out;
+}
+
 // Highest priority first; a block that does not fit is skipped and smaller
 // ones after it are still tried. What is left out is never an omission: the
 // diff itself was reviewed in full.
@@ -108,6 +118,7 @@ export async function gatherContext(input: GatherInput): Promise<GatheredContext
   const { chunks, changeSet, source } = input;
   const failedReads = new Set<string>();
   let searchError: string | undefined;
+  let searchSucceeded = false;
 
   // Passes gather side by side, and each fans out over its files, so the
   // forge calls themselves share one limit.
@@ -132,9 +143,20 @@ export async function gatherContext(input: GatherInput): Promise<GatheredContext
   const search = (term: string): Promise<string[]> => {
     let pending = searches.get(term);
     if (!pending) {
-      pending = forgeCall(() => source.searchCode(term)).catch((err: unknown) => {
-        searchError ??= message(err);
-        return [];
+      // The first failure is most often a rate limit, which more searches
+      // would only prolong, so the rest of the review goes without. Checked
+      // and recorded inside the limited call, so a search already queued
+      // behind the failing one sees it.
+      pending = forgeCall(async () => {
+        if (searchError) return [];
+        try {
+          const paths = await source.searchCode(term);
+          searchSucceeded = true;
+          return paths;
+        } catch (err) {
+          searchError ??= message(err);
+          return [];
+        }
       });
       searches.set(term, pending);
     }
@@ -142,14 +164,36 @@ export async function gatherContext(input: GatherInput): Promise<GatheredContext
   };
 
   const changed = new Set(changeSet.files.flatMap((file) => [file.path, ...(file.previousPath ? [file.previousPath] : [])]));
-  const symbols = new Map(chunks.flatMap((chunk) => chunk.parts.map((part) => [part, partSymbols(part.hunks)] as const)));
-  const defined = [...symbols.values()].flatMap((part) => part.defined);
-  const contracts = new Set([...symbols.values()].flatMap((part) => [...part.contracts.keys()]));
+  // Which files declare each name on an added line, so a name one file
+  // removes and another declares counts as moved.
+  const declaredBy = new Map<string, Set<string>>();
+  for (const file of changeSet.files) {
+    for (const name of addedDeclarations(file.hunks)) {
+      let paths = declaredBy.get(name);
+      if (!paths) declaredBy.set(name, (paths = new Set()));
+      paths.add(file.path);
+    }
+  }
+  const movedInto = (path: string) =>
+    new Set([...declaredBy].filter(([, paths]) => [...paths].some((other) => other !== path)).map(([name]) => name));
+  const symbols = new Map(
+    chunks.flatMap((chunk) => chunk.parts.map((part) => [part, partSymbols(part.hunks, movedInto(part.file.path))] as const)),
+  );
+  const budgets = new Map(chunks.map((chunk) => [chunk, input.budgetFor(chunk)]));
+  const gathered = (part: ChunkPart) => part.file.changeType !== "deleted" && !part.file.isBinary;
+  const tracedParts = chunks.flatMap((chunk) => (budgets.get(chunk)! < MIN_CONTEXT_TOKENS ? [] : chunk.parts.filter(gathered)));
   // Direct callers are claimed before any pass starts, so tracing further
   // never costs a changed name its search; deeper hops share what is left,
-  // in the order traceCallers reaches them.
+  // in the order traceCallers reaches them. Parts take turns, changed
+  // declarations first, so one file removing many names cannot take every
+  // search from a broken contract in another.
   const claimed = new Set(
-    [...new Set([...defined.filter((name) => contracts.has(name)), ...defined])].slice(0, MAX_DIRECT_SEARCHES),
+    [
+      ...new Set([
+        ...roundRobin(tracedParts.map((part) => symbols.get(part)!.defined.filter((name) => symbols.get(part)!.contracts.has(name)))),
+        ...roundRobin(tracedParts.map((part) => symbols.get(part)!.defined)),
+      ]),
+    ].slice(0, MAX_DIRECT_SEARCHES),
   );
   const direct = new Set(claimed);
   const claim = (name: string): boolean => {
@@ -186,9 +230,6 @@ export async function gatherContext(input: GatherInput): Promise<GatheredContext
     return found.filter((block): block is ContextBlock => !!block);
   }
 
-  const budgets = new Map(chunks.map((chunk) => [chunk, input.budgetFor(chunk)]));
-  const gathered = (part: ChunkPart) => part.file.changeType !== "deleted" && !part.file.isBinary;
-
   // Breadth first from the names each part changes: each caller's enclosing
   // declaration is the next hop's name, until review.impactDepth. A name is
   // traced once per part, never through a generic name, and never into a
@@ -197,7 +238,7 @@ export async function gatherContext(input: GatherInput): Promise<GatheredContext
   // searches before any runs, so the shared budget and the reach list come
   // out the same however the forge's reads interleave.
   async function traceCallers(): Promise<Map<ChunkPart, TracedCaller[]>> {
-    const parts = chunks.flatMap((chunk) => (budgets.get(chunk)! < MIN_CONTEXT_TOKENS ? [] : chunk.parts.filter(gathered)));
+    const parts = tracedParts;
     const traces = new Map(parts.map((part) => [part, [] as TracedCaller[]]));
     const traced = new Map(parts.map((part) => [part, new Set(symbols.get(part)!.defined)]));
     let frontier = parts.flatMap((part) =>
@@ -283,6 +324,12 @@ export async function gatherContext(input: GatherInput): Promise<GatheredContext
     const more = paths.length > MAX_LISTED_PATHS ? ` and ${paths.length - MAX_LISTED_PATHS} more` : "";
     warnings.push(`Review context could not be read for ${listed}${more}; the diff was reviewed without it`);
   }
-  if (searchError) warnings.push(`Caller search failed, so passes saw no call sites: ${searchError}`);
+  if (searchError) {
+    warnings.push(
+      searchSucceeded
+        ? `Some caller searches failed, so passes may be missing call sites: ${searchError}`
+        : `Caller search failed, so passes saw no call sites: ${searchError}`,
+    );
+  }
   return { contexts, reach: [...reached.values()], warnings };
 }

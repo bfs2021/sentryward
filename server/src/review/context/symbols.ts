@@ -65,12 +65,44 @@ export interface PartSymbols {
 }
 
 const squash = (text: string) => text.replace(/\s+/g, " ").trim();
-// Where a signature split over lines ends: its body opens, or it is an arrow,
-// a declaration without a body, or a Python def.
-const SIGNATURE_END = /\{\s*$|=>|;\s*$|:\s*$/;
 const MAX_SIGNATURE_LINES = 15;
 
-export function partSymbols(hunks: Hunk[]): PartSymbols {
+const parenDepth = (text: string) => (text.match(/\(/g)?.length ?? 0) - (text.match(/\)/g)?.length ?? 0);
+
+// A declaration line's signature without its body: up to the parameter
+// list's closing paren and any return type, so a one-line arrow or function
+// whose body alone changed keeps its contract. A line without a parameter
+// list (a type, a class) is all signature.
+export function signatureText(text: string): string {
+  const open = text.indexOf("(");
+  if (open === -1) return text;
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")" && --depth === 0) {
+      const rest = text.slice(i + 1);
+      const end = rest.search(/\{|=>|\s=\s/);
+      return text.slice(0, i + 1) + (end === -1 ? rest : rest.slice(0, end));
+    }
+  }
+  return text;
+}
+
+// Names declared on added lines: a name removed from one file and declared
+// in another was moved, not removed.
+export function addedDeclarations(hunks: Hunk[]): Set<string> {
+  const names = new Set<string>();
+  for (const hunk of hunks) {
+    for (const line of hunk.content.split("\n").slice(1)) {
+      if (line[0] === "+") for (const name of declaredNames(line.slice(1))) names.add(name);
+    }
+  }
+  return names;
+}
+
+const IMPORT_LINE = /^\s*(?:import\b.*\bfrom\b|from\s+\S+\s+import\b|(?:const|let|var)\s*\{[^}]*\}\s*=\s*require\()/;
+
+export function partSymbols(hunks: Hunk[], movedIn: ReadonlySet<string> = new Set()): PartSymbols {
   const defined = new Set<string>();
   const called = new Set<string>();
   const added = new Map<string, Set<string>>();
@@ -78,19 +110,30 @@ export function partSymbols(hunks: Hunk[]): PartSymbols {
   const declare = (into: Map<string, Set<string>>, name: string, text: string) => {
     let texts = into.get(name);
     if (!texts) into.set(name, (texts = new Set()));
-    texts.add(squash(text));
+    texts.add(squash(signatureText(text)));
   };
   const reshaped = new Set<string>();
+  const imported = new Set<string>();
   for (const hunk of hunks) {
     for (const name of declaredNames(hunk.header)) defined.add(name);
-    // The declaration whose signature continues onto the following lines.
-    let signature: { name: string; lines: number } | undefined;
+    // The declaration whose parameter list is still open on the lines
+    // after it; it closes with the paren, on the line that carries the
+    // return type.
+    let signature: { name: string; depth: number; lines: number } | undefined;
     for (const line of hunk.content.split("\n").slice(1)) {
       const text = line.slice(1);
       const names = declaredNames(text);
-      if (names.length) signature = { name: names[0]!, lines: 0 };
-      else if (signature && (line[0] === "+" || line[0] === "-")) reshaped.add(signature.name);
-      if (signature && (SIGNATURE_END.test(text) || ++signature.lines >= MAX_SIGNATURE_LINES)) signature = undefined;
+      if (names.length) {
+        const depth = parenDepth(text);
+        signature = depth > 0 ? { name: names[0]!, depth, lines: 0 } : undefined;
+      } else if (signature) {
+        if (line[0] === "+" || line[0] === "-") reshaped.add(signature.name);
+        signature.depth += parenDepth(text);
+        if (signature.depth <= 0 || ++signature.lines >= MAX_SIGNATURE_LINES) signature = undefined;
+      }
+      if (line[0] === "+" && IMPORT_LINE.test(text)) {
+        for (const match of text.matchAll(new RegExp(IDENT, "g"))) imported.add(match[0]);
+      }
       if (line[0] === "-") {
         for (const name of declaredNames(text)) declare(removed, name, text);
         continue;
@@ -103,12 +146,17 @@ export function partSymbols(hunks: Hunk[]): PartSymbols {
       for (const match of text.matchAll(CALL)) if (wanted(match[1])) called.add(match[1]);
     }
   }
-  // A declaration removed and added back unchanged was only moved.
+  // A declaration removed and added back unchanged was only moved, and so
+  // was one now imported or declared in another file of the change: its
+  // callers still resolve, and a call to it still wants its definition.
   const contracts = new Map<string, ContractChange>();
   for (const [name, texts] of removed) {
     const now = added.get(name);
-    if (!now) contracts.set(name, "removed");
-    else if ([...texts].some((text) => !now.has(text))) contracts.set(name, "signature changed");
+    if (now) {
+      if ([...texts].some((text) => !now.has(text))) contracts.set(name, "signature changed");
+    } else if (!imported.has(name) && !movedIn.has(name)) {
+      contracts.set(name, "removed");
+    }
   }
   for (const name of reshaped) if (!contracts.has(name)) contracts.set(name, "signature changed");
   for (const name of contracts.keys()) defined.add(name);

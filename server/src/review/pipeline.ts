@@ -10,6 +10,7 @@ import {
   type RejectedFinding,
   type ReviewResult,
   type ReviewStatus,
+  type RiskyArea,
   type ToolAnnotation,
   type Walkthrough,
 } from "./core/models.ts";
@@ -72,6 +73,12 @@ export interface Increment {
   // Findings from the review of `fromSha` on files outside `paths`. Those
   // files are the same at both heads, so their lines still hold.
   carried: Finding[];
+  // Areas that review reached through callers. This run traces callers
+  // from `paths` only, so without them the walkthrough's reach would
+  // shrink to whatever the push touched. One can outlive the call that
+  // reached it until the next full review, which only keeps the blast
+  // radius at medium.
+  carriedAreas?: RiskyArea[];
 }
 
 // Omissions that mean the change was not fully reviewed. Ignored, binary and
@@ -284,7 +291,7 @@ export async function runReview(input: RunReviewInput, deps: ReviewDeps): Promis
   // auth check or a route the change reaches is never reported as small.
   // The areas themselves are part of the blast radius, so its setting keeps
   // them out of the stored result, where the dashboard would show them.
-  const risks = generated ? withReach(diffRisks, reach) : [];
+  const risks = generated ? withReach([...diffRisks, ...(increment?.carriedAreas ?? [])], reach) : [];
   const walkthrough: Walkthrough | undefined = generated && {
     ...generated,
     ...(risks.length

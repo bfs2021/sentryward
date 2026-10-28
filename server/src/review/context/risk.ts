@@ -19,11 +19,14 @@ const AUTH_PATH = /(?:^|\/)(?:auth|authz|permissions?|policies|guards?)(?:[/.]|$
 const DB_LINE =
   /\.(?:upsert|createMany|updateMany|deleteMany|bulkCreate|destroy|insertMany|\$executeRaw\w*|\$queryRaw\w*)\s*\(|\b(?:prisma|db|tx|trx|knex|models?)\.\w+\.(?:create|update|delete|insert|save|remove)\s*\(|\b\w+Repository\.(?:save|remove|delete|insert|update)\s*\(|\b(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE|TRUNCATE\s+TABLE)\b/;
 const DB_PATH = /(?:^|\/)(?:schema\.prisma|migrations?\/.*|[^/]+\.sql)$/;
-// A known router, or any receiver given a path: users.get("/users/:id", ...).
+// Any receiver given a path, users.get("/users/:id", ...), except the usual
+// HTTP clients, whose calls look the same but only use a route; a path is
+// required, so app.get("trust proxy") reads a setting, not a route.
 const API_LINE =
-  /\b(?:router|app|server|api|routes?)\.(?:get|post|put|patch|delete|all|route)\s*\(|\.(?:get|post|put|patch|delete|all)\s*\(\s*["'`]\/|@(?:app|router|bp|blueprint|api)\.(?:route|get|post|put|patch|delete)\b|@(?:Get|Post|Put|Patch|Delete|RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping)\b/;
+  /\b(?!(?:axios|api|https?|client|request|ky|got|superagent|fetcher)\.)\w+\.(?:get|post|put|patch|delete|all)\s*\(\s*["'`]\/|\b(?:router|app|server|routes?)\.route\s*\(\s*["'`]\/|@(?:app|router|bp|blueprint|api)\.(?:route|get|post|put|patch|delete)\b|@(?:Get|Post|Put|Patch|Delete|RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping)\b/;
 const API_PATH = /(?:^|[/.])(?:routes?|controllers?|handlers?|endpoints?)(?:[/.])/;
 const COMMENT = /^\s*(?:\/\/|\/\*|\*|#|--)/;
+const STRING = /(["'`])(?:\\.|(?!\1).)*\1/g;
 
 export const MAX_RISKY_AREAS = 10;
 
@@ -47,19 +50,24 @@ function changedLines(file: ChangedFile): { added: string[]; removed: string[] }
   return { added, removed };
 }
 
-const authTokens = (lines: string[]) => new Set(lines.flatMap((line) => [...line.matchAll(AUTH_TOKEN)].map((match) => match[0])));
+// Outside strings, so deleting an "Authorization required" message is not a check.
+const authTokens = (lines: string[]) =>
+  new Set(lines.flatMap((line) => [...line.replace(STRING, '""').matchAll(AUTH_TOKEN)].map((match) => match[0])));
+// requireAuth and requireAuthenticated name the same guard.
+const sameGuard = (a: string, b: string) => a.startsWith(b) || b.startsWith(a);
 
 function fileAreas(file: ChangedFile): RiskyArea[] {
   if (file.isBinary || TEST_PATH.test(file.path)) return [];
   const { added, removed } = changedLines(file);
   const areas: RiskyArea[] = [];
-  // A check is removed when its name leaves the file's changed lines
-  // entirely, so folding several guards into one router.use is only a
-  // change. Removing a guard in one place while adding the same name in
-  // another is missed: a miss only leaves the blast radius to the model.
+  // A check is removed when its name, or a longer or shorter form of it,
+  // leaves the file's changed lines entirely, so folding several guards into
+  // one router.use or renaming one is only a change. Removing a guard in one
+  // place while adding the same name in another is missed: a miss only
+  // leaves the blast radius to the model.
   const addedAuth = authTokens(added);
   const removedAuth = authTokens(removed);
-  if ([...removedAuth].some((token) => !addedAuth.has(token))) {
+  if ([...removedAuth].some((token) => ![...addedAuth].some((other) => sameGuard(token, other)))) {
     areas.push({ kind: "auth", path: file.path, reason: "removes an authorization check", removesCheck: true });
   } else if (addedAuth.size || removedAuth.size || (AUTH_PATH.test(file.path) && (added.length || removed.length))) {
     areas.push({ kind: "auth", path: file.path, reason: "changes authorization code" });
@@ -112,16 +120,12 @@ export function withReach(diffAreas: RiskyArea[], reach: ReachedCaller[]): Risky
 const RADIUS_ORDER = ["small", "medium", "large"] as const;
 type BlastRadius = NonNullable<Walkthrough["blastRadius"]>;
 
-// Never lowers the model's estimate. Touching auth or the database is at
-// least medium; removing an auth check, or reaching auth or a route through
-// callers, is large.
+// Never lowers the model's estimate. Any risky area, changed or reached
+// through callers, is at least medium; only removing an auth check is large,
+// as a shared helper reaches some route in most codebases.
 export function floorBlastRadius(radius: BlastRadius | undefined, areas: RiskyArea[]): BlastRadius | undefined {
   if (!areas.length) return radius;
-  const floor: BlastRadius = areas.some((area) => area.removesCheck || area.via)
-    ? "large"
-    : areas.some((area) => area.kind !== "api")
-      ? "medium"
-      : "small";
+  const floor: BlastRadius = areas.some((area) => area.removesCheck) ? "large" : "medium";
   if (!radius) return floor;
   return RADIUS_ORDER.indexOf(floor) > RADIUS_ORDER.indexOf(radius) ? floor : radius;
 }

@@ -231,6 +231,40 @@ describe("symbols", () => {
 
     const body = ["@@ -1,3 +1,3 @@", " export async function loadRepo(id: string): Promise<Repo> {", "-  return find(id);", "+  return find(id, {});", " }"].join("\n");
     expect(partSymbols(hunks(body)).contracts).toEqual(new Map());
+
+    // One-line declarations open no signature, whatever ends their line.
+    const oneLine = ['@@ -1,2 +1,3 @@', ' type Status = "a" | "b"', " function id(x) { return x }", "+const next = id(1)"].join("\n");
+    expect(partSymbols(hunks(oneLine)).contracts).toEqual(new Map());
+  });
+
+  it("compares a one-line declaration's signature, not its body", () => {
+    const hunks = (from: string, to: string) =>
+      makeChangeSet([{ path: "src/x.ts", changeType: "modified", patch: `@@ -1,1 +1,1 @@\n-${from}\n+${to}` }]).files[0]!.hunks;
+    expect(partSymbols(hunks("const total = (xs) => xs.length", "const total = (xs) => xs.filter(Boolean).length")).contracts).toEqual(new Map());
+    expect(partSymbols(hunks("const total = (xs) => xs.length", "const total = (xs, f) => xs.filter(f).length")).contracts).toEqual(
+      new Map([["total", "signature changed"]]),
+    );
+  });
+
+  it("takes a declaration moved to another file for moved, not removed, and keeps its definition", () => {
+    const patch = [
+      "@@ -1,4 +1,3 @@",
+      "+import { slugify } from \"./text.ts\";",
+      "-function slugify(s) {",
+      "-  return s.toLowerCase();",
+      "-}",
+      " export const page = (title) => slugify(title);",
+      "+export const link = (title) => `/${slugify(title)}`;",
+    ].join("\n");
+    const hunks = makeChangeSet([{ path: "src/page.ts", changeType: "modified", patch }]).files[0]!.hunks;
+    const imported = partSymbols(hunks);
+    expect(imported.contracts).toEqual(new Map());
+    expect(imported.called).toContain("slugify");
+
+    const removedOnly = ["@@ -1,3 +1,0 @@", "-function slugify(s) {", "-  return s.toLowerCase();", "-}"].join("\n");
+    const gone = makeChangeSet([{ path: "src/page.ts", changeType: "modified", patch: removedOnly }]).files[0]!.hunks;
+    expect(partSymbols(gone).contracts).toEqual(new Map([["slugify", "removed"]]));
+    expect(partSymbols(gone, new Set(["slugify"])).contracts).toEqual(new Map());
   });
 
   it("finds the named declaration a call sits in, not anonymous callbacks or top-level code", () => {
@@ -337,6 +371,63 @@ describe("gatherContext", () => {
 
     expect(searches.slice(0, 5)).toEqual(names);
     expect(searches).toHaveLength(8);
+  });
+
+  it("shares the direct searches across files, changed declarations first", async () => {
+    const removed = ["one", "two", "three", "four", "five", "six"].map((n) => `legacy${n[0]!.toUpperCase()}${n.slice(1)}`);
+    const many = makeChangeSet([
+      {
+        path: "src/legacy.ts",
+        changeType: "modified",
+        patch: [`@@ -1,${removed.length} +1,1 @@`, ...removed.map((name) => `-export function ${name}() {}`), "+export const KEEP = 1;"].join("\n"),
+      },
+      {
+        path: "src/user.ts",
+        changeType: "modified",
+        patch: ["@@ -1,1 +1,1 @@", "-export function formatUser(user) {", "+export function formatUser(user, locale) {"].join("\n"),
+      },
+    ]);
+    const searches: string[] = [];
+    const context: ContextSource = {
+      readFile: async () => null,
+      searchCode: async (term) => {
+        searches.push(term);
+        return [];
+      },
+    };
+    const chunks = planChunks(many.files, 10_000, 3).chunks;
+
+    await gatherContext({ chunks, changeSet: many, source: context, budgetFor: () => 10_000, concurrency: 1 });
+
+    expect(searches).toHaveLength(5);
+    expect(searches).toContain("formatUser");
+  });
+
+  it("stops searching after a failure and says what the passes still saw", async () => {
+    const run = async (failOn: string) => {
+      const calls: string[] = [];
+      const patch = ["@@ -0,0 +1,3 @@", "+export function alpha() {}", "+export function bravo() {}", "+export function charlie() {}"].join("\n");
+      const many = makeChangeSet([{ path: "src/names.ts", changeType: "modified", patch }]);
+      const context: ContextSource = {
+        readFile: async () => null,
+        searchCode: async (term) => {
+          calls.push(term);
+          if (term === failOn) throw new Error("rate limited");
+          return [];
+        },
+      };
+      const chunks = planChunks(many.files, 10_000, 3).chunks;
+      const gathered = await gatherContext({ chunks, changeSet: many, source: context, budgetFor: () => 10_000, concurrency: 1 });
+      return { calls, warnings: gathered.warnings };
+    };
+
+    const first = await run("alpha");
+    expect(first.calls).toEqual(["alpha"]);
+    expect(first.warnings).toEqual(["Caller search failed, so passes saw no call sites: rate limited"]);
+
+    const later = await run("bravo");
+    expect(later.calls).toEqual(["alpha", "bravo"]);
+    expect(later.warnings).toEqual(["Some caller searches failed, so passes may be missing call sites: rate limited"]);
   });
 
   it("does not trace through generic method names", async () => {

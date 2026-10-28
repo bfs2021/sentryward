@@ -81,7 +81,14 @@ export async function incrementFor({
   const parsed = reviewResultSchema.safeParse(last.result);
   if (!parsed.success || parsed.data.status !== "completed") return undefined;
   const previous = parsed.data;
-  const lastConfig = storedConfig(last.resolvedConfig);
+  const stored = storedConfig(last.resolvedConfig);
+  // Configs stored before review.impactDepth existed have none; caller
+  // context only adds evidence to findings, so they do not force a full
+  // review.
+  const lastConfig = stored && {
+    ...stored,
+    review: { ...stored.review, impactDepth: stored.review.impactDepth ?? config.review.impactDepth },
+  };
   if (!lastConfig || !isDeepStrictEqual(reviewSettings(lastConfig), reviewSettings(config))) {
     warnings.push("Full review: the review settings changed since the last review");
     return undefined;
@@ -114,5 +121,6 @@ export async function incrementFor({
     toSha,
     paths,
     carried: previous.findings.filter((finding) => !paths.has(finding.file)),
+    carriedAreas: previous.walkthrough?.riskyAreas?.filter((area) => area.via) ?? [],
   };
 }

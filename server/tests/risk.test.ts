@@ -87,13 +87,31 @@ describe("riskyAreas", () => {
     ]);
   });
 
-  it("only ever raises the blast radius", () => {
+  it("only ever raises the blast radius: medium for any area, large for a removed check", () => {
     expect(floorBlastRadius("small", [])).toBe("small");
-    expect(floorBlastRadius("small", [{ kind: "api", path: "a", reason: "r" }])).toBe("small");
+    expect(floorBlastRadius(undefined, [])).toBeUndefined();
+    expect(floorBlastRadius("small", [{ kind: "api", path: "a", reason: "r" }])).toBe("medium");
     expect(floorBlastRadius("small", [{ kind: "database", path: "a", reason: "r" }])).toBe("medium");
+    expect(floorBlastRadius("small", [{ kind: "api", path: "a", reason: "r", via: "main" }])).toBe("medium");
     expect(floorBlastRadius("medium", [{ kind: "auth", path: "a", reason: "r", removesCheck: true }])).toBe("large");
-    expect(floorBlastRadius("small", [{ kind: "api", path: "a", reason: "r", via: "main" }])).toBe("large");
     expect(floorBlastRadius("large", [{ kind: "database", path: "a", reason: "r" }])).toBe("large");
+  });
+
+  it("does not take a renamed guard or an auth message for a removed check", () => {
+    const patch = (...lines: string[]) =>
+      makeChangeSet([{ path: "src/server.ts", changeType: "modified", patch: ["@@ -1,1 +1,1 @@", ...lines].join("\n") }]).files;
+    const renamed = riskyAreas(patch("-app.use(requireAuth);", "+app.use(requireAuthenticated);"));
+    expect(renamed).toEqual([{ kind: "auth", path: "src/server.ts", reason: "changes authorization code" }]);
+    expect(riskyAreas(patch('-  throw new HttpError(401, "Authorization required");', '+  throw new HttpError(401, "Sign in first");'))).toEqual([]);
+  });
+
+  it("takes route definitions for API routes, not HTTP client calls", () => {
+    const line = (text: string) => riskyAreas(makeChangeSet([{ path: "src/x.ts", changeType: "modified", patch: `@@ -1,1 +1,2 @@\n a\n+${text}` }]).files);
+    expect(line('const reviews = await api.get("/api/reviews");')).toEqual([]);
+    expect(line('await axios.post("/users", body);')).toEqual([]);
+    expect(line('const proxy = app.get("trust proxy");')).toEqual([]);
+    expect(line('router.post("/users", create);')).toEqual([{ kind: "api", path: "src/x.ts", reason: "changes an API route" }]);
+    expect(line('users.get("/users/:id", show);')).toHaveLength(1);
   });
 });
 
@@ -153,6 +171,7 @@ describe("risky areas in the walkthrough", () => {
     expect(result.walkthrough!.riskyAreas).toEqual([
       { kind: "api", path: "src/routes/serve.ts", reason: "calls runCli, 2 hops from the change", via: "main -> runCli" },
     ]);
-    expect(result.walkthrough!.blastRadius).toBe("large");
+    // Reached, not changed: worth a look, but most helpers reach some route.
+    expect(result.walkthrough!.blastRadius).toBe("medium");
   });
 });
