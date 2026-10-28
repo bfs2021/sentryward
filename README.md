@@ -64,7 +64,8 @@ dashboard tracks reviews and findings across runs.
   false-positive rate on the dashboard, broken down by category, severity and
   model with a pointer to the setting that would quiet the noisiest ones.
 - **Teams:** share connections, repositories, reviews and model keys in team
-  workspaces, with owner, admin and member roles and one-time invite links.
+  workspaces, with owner, admin and member roles and one-time invite links,
+  managed from **Team settings** in the workspace switcher.
 
 ## Quick start
 
@@ -208,7 +209,7 @@ instance) or invite anyone else with a team invite link.
 1. Open the client URL and register an account. The first account is the admin.
 2. In **LLM Connections**, add and verify a model provider key, or configure
    [Ollama](#ollama). External providers may charge for model usage.
-3. In **Configuration**, select that connection and a model available to it.
+3. In **Review settings**, select that connection and a model available to it.
 4. In **Repositories**, connect GitLab or install your configured GitHub App using
    the [forge setup](#forge-connections), then add a repository for review.
 5. In **Reviews**, submit the URL of an open PR/MR on that repository. The worker
@@ -216,7 +217,7 @@ instance) or invite anyone else with a team invite link.
 
 Default publishing can post comments and statuses and update the description.
 For an initial evaluation, use a test repository or disable publishing in
-Configuration before running the review. Manual reviews do not require an
+Review settings before running the review. Manual reviews do not require an
 internet-reachable webhook URL; automatic reviews do.
 
 See the [synthetic review output fixture](server/tests/__snapshots__/review.md)
@@ -415,7 +416,7 @@ Settings resolve in this order, highest first:
 1. Overrides from whatever triggered the review
 2. `.sentryward.yaml` (or `.sentryward.yml`; the first found wins, they are not merged) in the repository, read from the PR's **base** revision so a change cannot loosen its own review
 3. Repository settings saved in the dashboard (ignored while the repository follows the global config, which is the default for new repositories)
-4. The global config saved on the Configuration page, shared by all of a user's repositories
+4. The global config saved on the Review settings page, shared by all of a user's repositories
 5. The selected profile: `balanced` (default), `fast`, `strict`, `security`
 6. Built-in defaults
 
@@ -423,13 +424,13 @@ A field set explicitly in any layer beats the profile. An invalid repository fil
 
 ### LLM connections and custom endpoints
 
-Add and verify provider credentials in LLM Connections, then select one in Configuration > LLM. Global configuration requires a connection; a repository can inherit it or select another saved connection. The selection is a live reference, so replacing its key or changing its custom host updates every configuration that uses it.
+Add and verify provider credentials in LLM Connections, then select one in Review settings > LLM. Global configuration requires a connection; a repository can inherit it or select another saved connection. The selection is a live reference, so replacing its key or changing its custom host updates every configuration that uses it.
 
 A connection with a custom host sends every model call to that compatible proxy. The model's provider prefix still picks the request format (`openai/` uses chat completions), and the rest of the id is passed through as is, slashes and parentheses included. Without a custom host, every configured model must use the selected connection's provider.
 
 To check a model before relying on it, choose **Test model** in a connection's actions menu. It runs one short generation with the stored credential, the same way a review would, and reports the response time and token usage, or why it failed: the key was rejected, the host does not serve that model, the host could not be reached, or the model did not answer in the JSON format reviews need. The test uses a small amount of the connection's quota.
 
-For 9router, save its key and host under OpenAI in LLM Connections, select the OpenAI connection in Configuration > LLM, and use a model such as `openai/cx/gpt-5.6-sol(medium)`.
+For 9router, save its key and host under OpenAI in LLM Connections, select the OpenAI connection in Review settings > LLM, and use a model such as `openai/cx/gpt-5.6-sol(medium)`.
 
 The worker runs in a container, where `localhost` is the container itself; `host.docker.internal` reaches a proxy running on the host.
 
@@ -447,7 +448,7 @@ Thinking and agentic context depend on what a model supports on the endpoint tha
 - **Runtime fallback.** A call that the endpoint rejects with a 400 naming thinking or tool parameters is retried once without them; thinking that comes back with no reasoning is noted as ignored; an agentic pass that gets plain text instead of tool calls is read as a static one. Each records a review warning and updates the stored capability, so a review never fails because a model lacks thinking or tools.
 - **Defaults.** Official APIs start from a built-in table of model families; Ollama and custom hosts start unknown. Detection overrules the table.
 
-Choose **Capabilities** in a connection's actions menu to see what was found. When detection is wrong, set **Thinking support** and **Tool support** in Configuration > LLM. Like endpoints, these settings exist only in the dashboard: a repository file cannot change how credentials and endpoints are used.
+Choose **Capabilities** in a connection's actions menu to see what was found. When detection is wrong, set **Thinking support** and **Tool support** in Review settings > LLM. Like endpoints, these settings exist only in the dashboard: a repository file cannot change how credentials and endpoints are used.
 
 ### Thinking and agentic context
 
@@ -457,7 +458,7 @@ Choose **Capabilities** in a connection's actions menu to see what was found. Wh
 
 ### Ollama
 
-Add Ollama under LLM Connections and enter its OpenAI-compatible base URL. For Ollama running on the Docker host, use `http://host.docker.internal:11434/v1`. The API key is optional. Select the Ollama connection in Configuration > LLM and use the `ollama/<model>` form, for example `ollama/qwen3`.
+Add Ollama under LLM Connections and enter its OpenAI-compatible base URL. For Ollama running on the Docker host, use `http://host.docker.internal:11434/v1`. The API key is optional. Select the Ollama connection in Review settings > LLM and use the `ollama/<model>` form, for example `ollama/qwen3`.
 
 ### `.sentryward.yaml` reference
 
@@ -577,7 +578,7 @@ rules:                      # team rules, added to the dashboard ones, see "Revi
 
 Both kinds are reported with source `rule` and the rule's id, count towards `max_findings`, and can be dismissed like any finding. The Findings page's False positives tab lists found and false-positive counts per rule. Rules are read from the base revision like the rest of the file, so a pull request cannot loosen the rules it is reviewed against. An invalid rule (a pattern that does not compile, a duplicate id) makes the whole file invalid, as with any other setting.
 
-Rules can also be set in the dashboard, on the Configuration page's Guidance tab: in the global config, so they apply to every repository in the workspace, and in a repository's settings. Unlike other lists, rules from each layer are combined instead of replacing each other, in the order global config, repository settings, `.sentryward.yaml`:
+Rules can also be set in the dashboard, on the Review settings page's Guidance tab: in the global config, so they apply to every repository in the workspace, and in a repository's settings. Unlike other lists, rules from each layer are combined instead of replacing each other, in the order global config, repository settings, `.sentryward.yaml`:
 
 - A layer can add rules but never remove or override one from a layer before it. A rule whose id is already set is ignored, the earlier rule applies, and the review lists a warning (for example, a file rule reusing a workspace rule's id). A pull request can therefore not loosen workspace rules either.
 - The limits (50 rules, 16000 characters of model-checked rule text) apply to the combined list. If a layer's rules would go past them, that layer's rules are all left out, with a warning, and the earlier layers still apply.
@@ -619,7 +620,7 @@ Sentryward is self-hosted: review data stays in your PostgreSQL database, and so
 
 ### Retention
 
-Review data is kept forever unless a retention period is set. An instance admin sets one under **User Management > Instance settings**; when it is empty, `REVIEW_RETENTION_DAYS` from the environment applies, so existing deployments keep their behaviour. A workspace admin can set a shorter period for their workspace on the **Privacy** page; the shorter of the two applies. Once an hour the worker:
+Review data is kept forever unless a retention period is set. An instance admin sets one under **Administration > Instance settings**; when it is empty, `REVIEW_RETENTION_DAYS` from the environment applies, so existing deployments keep their behaviour. A workspace admin can set a shorter period for their workspace on the **Privacy** page; the shorter of the two applies. Once an hour the worker:
 
 - prunes reviews older than the period as [described above](#how-it-works) (deletes runs that reviewed nothing, clears the stored result of older ones);
 - purges changes that have had no activity of any kind (reviews, findings seen, ignored or resolved, replies) for longer than the period: their findings, posted-comment records and finished thread replies are deleted, and the result kept on their newest review is cleared. Review rows and summary digests stay, so usage, cost and the reviews list are unchanged. A change still under review is never purged, so findings do not lose their ignore state mid-review; if a purged change becomes active again it is reviewed afresh (the forge's own markers still stop inline comments from being posted twice), and benchmark and calibration figures no longer count its findings;
@@ -641,7 +642,7 @@ The local-only check resolves the host when the review starts. It protects again
 
 Every request sent to a model is recorded: time, workspace, repository and change, purpose (review, walkthrough, verify, capability probe, thread reply, connection test), provider, host, model, input/cached/output/reasoning tokens, latency and outcome. A failed request records only a short error kind (such as `http_429` or `unusable_reply`), never the error text, and prompts, code and replies are never recorded. Entries keep the workspace and repository names after those are deleted, until audit retention removes them.
 
-Workspace admins see their workspace's log in the **Audit log** tab of the **Privacy** page; instance admins see every workspace's in the **Audit log** tab of **User Management > Instance settings**. Both can filter it and export it as CSV or JSON (up to 100,000 rows per export; an `X-Truncated: true` header marks a cut-off export). The endpoints, which API tokens can also read:
+Workspace admins see their workspace's log in the **Audit log** tab of the **Privacy** page; instance admins see every workspace's in the **Audit log** tab of **Administration > Instance settings**. Both can filter it and export it as CSV or JSON (up to 100,000 rows per export; an `X-Truncated: true` header marks a cut-off export). The endpoints, which API tokens can also read:
 
 | Method | Path | Who |
 | --- | --- | --- |

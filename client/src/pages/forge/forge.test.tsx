@@ -614,7 +614,7 @@ describe("Repositories page", () => {
 
     const row = (await screen.findByRole("switch", { name: "Reviews for team/web" })).closest("tr")!
     expect(within(row).getByText("dev (gitlab.com)")).toBeInTheDocument()
-    // Review config is edited on the Configuration page, not here.
+    // Review config is edited on the Review settings page, not here.
     expect(within(row).queryByRole("button", { name: "Settings" })).not.toBeInTheDocument()
     await userEvent.click(within(row).getByRole("switch"))
 
@@ -825,7 +825,7 @@ describe("Repositories page", () => {
     renderWithProviders(<App />, { route: "/repositories" })
 
     await userEvent.click(await screen.findByRole("button", { name: "Actions for team/web" }))
-    expect(await screen.findByRole("menuitem", { name: "Configuration" })).toHaveAttribute(
+    expect(await screen.findByRole("menuitem", { name: "Review settings" })).toHaveAttribute(
       "href",
       "/configuration?repo=r1",
     )

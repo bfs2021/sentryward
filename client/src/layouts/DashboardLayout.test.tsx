@@ -1,6 +1,6 @@
 import { lazy } from "react"
 import { describe, expect, it, vi } from "vitest"
-import { screen } from "@testing-library/react"
+import { screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { Route, Routes } from "react-router"
 import { DashboardLayout } from "./DashboardLayout"
@@ -29,5 +29,25 @@ describe("DashboardLayout", () => {
     await userEvent.click(screen.getByRole("link", { name: "Reviews" }))
     expect(await screen.findByText("Reviews page")).toBeInTheDocument()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("groups the navigation and names the group in the breadcrumb", async () => {
+    mockApi({})
+    renderWithProviders(
+      <Routes>
+        <Route element={<DashboardLayout />}>
+          <Route path="/usage" element={<p>Usage page</p>} />
+        </Route>
+      </Routes>,
+      { route: "/usage" },
+    )
+
+    await screen.findByText("Usage page")
+    const labels = [...document.querySelectorAll("[data-sidebar=group-label]")].map((label) => label.textContent)
+    // Administration is for instance admins only.
+    expect(labels).toEqual(["Activity", "Insights", "Workspace"])
+    const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" })
+    expect(within(breadcrumb).getByText("Insights")).toBeInTheDocument()
+    expect(within(breadcrumb).getByText("Usage")).toHaveAttribute("aria-current", "page")
   })
 })

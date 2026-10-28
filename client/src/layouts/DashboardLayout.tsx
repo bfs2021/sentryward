@@ -15,9 +15,7 @@ import {
   Settings,
   ShieldCheck,
   SlidersHorizontal,
-  UserCog,
   Users,
-  UsersRound,
 } from "lucide-react"
 import { toast } from "sonner"
 import { ChunkLoadError } from "@/components/ChunkLoadError"
@@ -25,7 +23,6 @@ import { DensityToggle } from "@/components/density-toggle"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
 import { ModeToggle } from "@/components/mode-toggle"
 import { UserAvatar } from "@/components/UserAvatar"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,66 +37,77 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
   SidebarProvider,
   SidebarTrigger,
-  useSidebar,
 } from "@/components/ui/sidebar"
 import { FullPageSpinner } from "@/features/auth/FullPageSpinner"
 import { useAuth } from "@/features/auth/useAuth"
 import { WorkspaceSwitcher } from "@/features/workspaces/WorkspaceSwitcher"
 
-const NAV = [
-  { to: "/home", label: "Home", icon: House },
-  { to: "/reviews", label: "Reviews", icon: GitPullRequest },
-  { to: "/findings", label: "Findings", icon: Bug },
-  { to: "/usage", label: "Usage", icon: Coins },
-  { to: "/benchmarks", label: "Benchmarks", icon: Gauge },
-  { to: "/repositories", label: "Repositories", icon: FolderGit2 },
-  { to: "/configuration", label: "Configuration", icon: SlidersHorizontal },
-  { to: "/llm-connections", label: "LLM Connections", icon: KeyRound },
-  { to: "/notifications", label: "Notifications", icon: Bell },
-  { to: "/privacy", label: "Privacy", icon: ShieldCheck },
+type NavItem = { to: string; label: string; icon: typeof House }
+type NavGroup = { label?: string; adminOnly?: boolean; items: NavItem[] }
+
+// Grouped by what you come to do: follow reviews, read the numbers, set the
+// workspace up (in the order a new workspace needs it), run the instance.
+// Administration is for instance admins only; the API enforces the same rule.
+// The current team is managed from the workspace switcher, not from here.
+const NAV_GROUPS: NavGroup[] = [
+  { items: [{ to: "/home", label: "Home", icon: House }] },
+  {
+    label: "Activity",
+    items: [
+      { to: "/reviews", label: "Reviews", icon: GitPullRequest },
+      { to: "/findings", label: "Findings", icon: Bug },
+    ],
+  },
+  {
+    label: "Insights",
+    items: [
+      { to: "/usage", label: "Usage", icon: Coins },
+      { to: "/benchmarks", label: "Benchmarks", icon: Gauge },
+    ],
+  },
+  {
+    label: "Workspace",
+    items: [
+      { to: "/repositories", label: "Repositories", icon: FolderGit2 },
+      { to: "/llm-connections", label: "LLM Connections", icon: KeyRound },
+      { to: "/configuration", label: "Review settings", icon: SlidersHorizontal },
+      { to: "/notifications", label: "Notifications", icon: Bell },
+      { to: "/privacy", label: "Privacy", icon: ShieldCheck },
+    ],
+  },
+  {
+    label: "Administration",
+    adminOnly: true,
+    items: [
+      { to: "/admin/users", label: "Users", icon: Users },
+      { to: "/admin/settings", label: "Instance settings", icon: Settings },
+    ],
+  },
 ]
 
-type NavGroupDef = { label: string; icon: typeof House; items: typeof NAV }
-
-// Each item has its own audience (see userManagementItems); the API enforces
-// the same rules.
-const USER_MANAGEMENT_NAV: NavGroupDef = {
-  label: "User Management",
-  icon: UserCog,
-  items: [
-    { to: "/admin/users", label: "Users", icon: Users },
-    { to: "/admin/settings", label: "Instance settings", icon: Settings },
-    { to: "/workspace", label: "Teams", icon: UsersRound },
-  ],
-}
-
-// The /admin pages are for instance admins; Teams manages the current team, so
-// it only exists in a team workspace (a personal one has no members).
-function userManagementItems(isAdmin: boolean, inTeam: boolean) {
-  return USER_MANAGEMENT_NAV.items.filter((item) => (item.to.startsWith("/admin") ? isAdmin : inTeam))
-}
-
-// Where you are, for the top bar; each page renders its own h1.
+// Where you are, for the top bar; each page renders its own h1. Groups have no
+// page of their own, so they are plain text rather than links.
 function breadcrumb(pathname: string): { label: string; to?: string }[] {
-  if (pathname.startsWith("/reviews/")) return [{ label: "Reviews", to: "/reviews" }, { label: "Review" }]
+  if (pathname.startsWith("/reviews/"))
+    return [{ label: "Activity" }, { label: "Reviews", to: "/reviews" }, { label: "Review" }]
   if (pathname.startsWith("/settings")) return [{ label: "Settings" }]
-  const managed = USER_MANAGEMENT_NAV.items.find((item) => pathname.startsWith(item.to))
-  // The group has no page of its own, so it is plain text rather than a link.
-  if (managed) return [{ label: USER_MANAGEMENT_NAV.label }, { label: managed.label }]
-  return [{ label: NAV.find((item) => pathname.startsWith(item.to))?.label ?? "Home" }]
+  if (pathname.startsWith("/workspace")) return [{ label: "Team" }]
+  for (const group of NAV_GROUPS) {
+    const item = group.items.find((entry) => pathname.startsWith(entry.to))
+    if (item) return group.label ? [{ label: group.label }, { label: item.label }] : [{ label: item.label }]
+  }
+  return [{ label: "Home" }]
 }
 
-function NavItems({ items, pathname }: { items: typeof NAV; pathname: string }) {
+function NavItems({ items, pathname }: { items: NavItem[]; pathname: string }) {
   return (
     <SidebarMenu>
       {items.map((item) => (
@@ -112,42 +120,6 @@ function NavItems({ items, pathname }: { items: typeof NAV; pathname: string }) 
           </SidebarMenuButton>
         </SidebarMenuItem>
       ))}
-    </SidebarMenu>
-  )
-}
-
-// Starts open on one of its pages. Collapsed to icons the sidebar hides
-// sub-items, so the parent carries the active highlight instead.
-function NavGroup({ group, pathname }: { group: NavGroupDef; pathname: string }) {
-  const { state } = useSidebar()
-  const active = group.items.some((item) => pathname.startsWith(item.to))
-  return (
-    <SidebarMenu>
-      <Collapsible asChild defaultOpen={active} className="group/collapsible">
-        <SidebarMenuItem>
-          <CollapsibleTrigger asChild>
-            <SidebarMenuButton tooltip={group.label} isActive={active && state === "collapsed"}>
-              <group.icon />
-              <span>{group.label}</span>
-              <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
-            </SidebarMenuButton>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <SidebarMenuSub>
-              {group.items.map((item) => (
-                <SidebarMenuSubItem key={item.to}>
-                  <SidebarMenuSubButton asChild isActive={pathname.startsWith(item.to)}>
-                    <NavLink to={item.to}>
-                      <item.icon />
-                      <span>{item.label}</span>
-                    </NavLink>
-                  </SidebarMenuSubButton>
-                </SidebarMenuSubItem>
-              ))}
-            </SidebarMenuSub>
-          </CollapsibleContent>
-        </SidebarMenuItem>
-      </Collapsible>
     </SidebarMenu>
   )
 }
@@ -169,7 +141,7 @@ export function DashboardLayout() {
   if (!user) {
     return null
   }
-  const managementItems = userManagementItems(user.role === "admin", workspace !== null && !workspace.personal)
+  const groups = NAV_GROUPS.filter((group) => !group.adminOnly || user.role === "admin")
 
   return (
     <SidebarProvider>
@@ -178,12 +150,14 @@ export function DashboardLayout() {
           <WorkspaceSwitcher />
         </SidebarHeader>
         <SidebarContent>
-          <SidebarGroup>
-            <NavItems items={NAV} pathname={pathname} />
-            {managementItems.length > 0 && (
-              <NavGroup group={{ ...USER_MANAGEMENT_NAV, items: managementItems }} pathname={pathname} />
-            )}
-          </SidebarGroup>
+          {/* Collapsed to icons the labels hide, leaving the groups as
+              spaced clusters. */}
+          {groups.map((group) => (
+            <SidebarGroup key={group.label ?? "main"}>
+              {group.label && <SidebarGroupLabel>{group.label}</SidebarGroupLabel>}
+              <NavItems items={group.items} pathname={pathname} />
+            </SidebarGroup>
+          ))}
         </SidebarContent>
         <SidebarFooter>
           <SidebarMenu>

@@ -232,6 +232,15 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- The dashboard sidebar is split into labelled groups: Activity (Reviews,
+  Findings), Insights (Usage, Benchmarks), Workspace (Repositories, LLM
+  Connections, Review settings, Notifications, Privacy, in setup order) and,
+  for instance admins, Administration (Users, Instance settings). This
+  replaces the "User Management" collapsible. The current team's page moved
+  from the sidebar to a "Team settings" item in the workspace switcher (team
+  workspaces only). The breadcrumb now starts with the page's group, and the
+  Configuration page is renamed Review settings (its `/configuration` URL is
+  unchanged).
 - The Privacy page's Policy tab shows the workspace policy form with an
   "In effect" summary beside it (the stricter of the instance and workspace
   policies; stacked on narrow screens). The policy form (also used by
