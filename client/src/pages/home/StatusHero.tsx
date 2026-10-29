@@ -4,7 +4,9 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useGlobalConfig } from "@/features/config/api"
 import { useConnections, useRepos } from "@/features/forge/api"
-import { useApiKeyStatuses, useApiKeys } from "@/features/llm-connections/api"
+import { useApiKeyStatuses, useApiKeys, type ApiKey, type LlmConnectionStatus } from "@/features/llm-connections/api"
+
+type LlmState = "ok" | "unreachable" | "missing"
 
 interface HeroState {
   title: string
@@ -13,7 +15,7 @@ interface HeroState {
 }
 
 // What stands between the user and automatic reviews, earliest missing step first.
-function heroState(connections: number, hasLlmConnection: boolean, enabledRepos: number, manualOnly: boolean): HeroState {
+function heroState(connections: number, llm: LlmState, enabledRepos: number, manualOnly: boolean): HeroState {
   if (connections === 0) {
     return {
       title: "Connect a Git provider",
@@ -21,7 +23,14 @@ function heroState(connections: number, hasLlmConnection: boolean, enabledRepos:
       action: { label: "Connect a provider", to: "/repositories?tab=installation" },
     }
   }
-  if (!hasLlmConnection) {
+  if (llm === "unreachable") {
+    return {
+      title: "Can't reach your LLM provider",
+      text: "The provider didn't answer its status check, so reviews may fail until it's reachable again.",
+      action: { label: "Check LLM connections", to: "/llm-connections" },
+    }
+  }
+  if (llm === "missing") {
     return {
       title: "Connect an LLM provider",
       text: "Sentryward needs a model connection to review pull requests.",
@@ -49,6 +58,22 @@ function heroState(connections: number, hasLlmConnection: boolean, enabledRepos:
   }
 }
 
+// Whether one provider can serve a review. A stored key wins over the server's
+// at review time, so it is judged on its own even when the server has a key.
+function keyState(key: ApiKey, status: LlmConnectionStatus | undefined): LlmState {
+  if (key.blocked) return "missing"
+  if (!key.stored) return key.serverDefault ? "ok" : "missing"
+  if (status === "active") return "ok"
+  // Revoked, or undecryptable (never checked, so no status): only replacing it helps.
+  return status === "unreachable" ? "unreachable" : "missing"
+}
+
+// Stored keys the server would actually call: an undecryptable one always
+// fails its check, and a blocked one is never called.
+function checkable(key: ApiKey) {
+  return key.stored && !key.undecryptable && !key.blocked
+}
+
 export function StatusHero() {
   const connections = useConnections()
   const repos = useRepos()
@@ -56,23 +81,23 @@ export function StatusHero() {
   const keys = useApiKeys()
 
   const keyList = keys.data?.keys ?? []
-  // A server-wide key has no stored credential to check; a stored one counts
-  // only while the provider still accepts it.
-  const statuses = useApiKeyStatuses(keyList.filter((key) => key.stored))
-  const statusesPending = keyList.some((key) => key.stored && statuses[key.provider] === undefined)
+  const statuses = useApiKeyStatuses(keyList.filter(checkable))
+  const statusesPending = keyList.some((key) => checkable(key) && statuses[key.provider] === undefined)
 
   if (connections.isPending || repos.isPending || keys.isPending || statusesPending)
     return <Skeleton className="h-36 w-full rounded-xl" />
 
-  const hasLlmConnection = keyList.some(
-    (key) => key.serverDefault || (key.stored && statuses[key.provider] === "active"),
-  )
+  const keyStates = keyList.map((key) => keyState(key, statuses[key.provider]))
+  // An unknown key list is not evidence of a missing connection, so the step
+  // is skipped rather than asking for one that may already exist.
+  const llm: LlmState =
+    keys.isError || keyStates.includes("ok") ? "ok" : keyStates.includes("unreachable") ? "unreachable" : "missing"
   const enabledRepos = (repos.data?.repos ?? []).filter((r) => r.enabled).length
   // Repositories can override this, but the global setting is what most of them follow.
   const manualOnly = globalConfig.data?.config.triggers.review === "manual"
   const { title, text, action } = heroState(
     connections.data?.connections.length ?? 0,
-    hasLlmConnection,
+    llm,
     enabledRepos,
     manualOnly,
   )
