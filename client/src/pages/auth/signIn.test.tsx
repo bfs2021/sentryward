@@ -40,6 +40,17 @@ describe("sign-in providers", () => {
     expect(screen.getByLabelText("Password")).toBeInTheDocument()
   })
 
+  it("brings a provider login back to the page that sent you to log in", async () => {
+    signedOut({ "GET /api/auth/registration": registration({ passwordLogin: false }) })
+    // A protected page redirects to /login with itself as the place to return to.
+    renderWithProviders(<App />, { route: "/settings" })
+
+    expect(await screen.findByRole("link", { name: "Continue with GitHub" })).toHaveAttribute(
+      "href",
+      "/api/auth/oauth/github/start?intent=login&returnTo=%2Fsettings",
+    )
+  })
+
   it("shows only configured providers, and none when the server lists none", async () => {
     signedOut({ "GET /api/auth/registration": registration({ providers: [{ id: "gitlab", host: "gitlab.com" }] }) })
     renderWithProviders(<App />, { route: "/login" })

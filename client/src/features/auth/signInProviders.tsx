@@ -23,9 +23,13 @@ export function isSignInProvider(id: string): id is SignInProvider {
 
 // Where the browser goes to start a round trip. A navigation, not a fetch: the
 // server redirects to the provider and back.
-export function signInStartHref(provider: SignInProvider, options: { intent?: "login" | "link"; invite?: string } = {}) {
+export function signInStartHref(
+  provider: SignInProvider,
+  options: { intent?: "login" | "link"; invite?: string; returnTo?: string } = {},
+) {
   const params = new URLSearchParams({ intent: options.intent ?? "login" })
   if (options.invite) params.set("invite", options.invite)
+  if (options.returnTo) params.set("returnTo", options.returnTo)
   return `/api/auth/oauth/${provider}/start?${params}`
 }
 

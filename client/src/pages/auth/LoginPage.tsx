@@ -15,12 +15,16 @@ import { loginSchema, type LoginInput } from "@/features/auth/schemas"
 import { useRegistration } from "@/features/auth/registration"
 import { SignInButtons } from "@/features/auth/SignInButtons"
 import { signInErrorMessage } from "@/features/auth/signInProviders"
+import { returnPath } from "@/features/auth/returnPath"
 
 export function LoginPage() {
   const { login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const from = (location.state as { from?: string } | null)?.from ?? "/home"
+  // Also handed to provider sign-in, which leaves the app and comes back
+  // through the server, so the router state would not survive it.
+  const returnTo = returnPath(location.state) ?? undefined
+  const from = returnTo ?? "/home"
   const { data: registration } = useRegistration()
   // Only offer sign-up when /register would show the form: invitees arrive via
   // their invite link, and hiding it until the mode is known avoids a flash.
@@ -53,7 +57,7 @@ export function LoginPage() {
         <form onSubmit={form.handleSubmit(onSubmit)} noValidate>
           <FieldGroup>
             <FormAlert message={formError} />
-            <SignInButtons providers={registration?.providers} separator />
+            <SignInButtons providers={registration?.providers} returnTo={returnTo} separator />
             <TextField
               control={form.control}
               name="email"
@@ -90,7 +94,7 @@ export function LoginPage() {
         // Provider sign-in only; a new account is created on first sign-in.
         <FieldGroup>
           <FormAlert message={formError} />
-          <SignInButtons providers={registration?.providers} />
+          <SignInButtons providers={registration?.providers} returnTo={returnTo} />
         </FieldGroup>
       )}
     </AuthLayout>

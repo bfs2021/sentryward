@@ -303,6 +303,23 @@ describe("runRetention", () => {
     expect(result).toMatchObject({ deleted: 1, replies: 1 });
   });
 
+  it("clears expired OAuth round trips even when no new one starts", async () => {
+    await prisma.signInState.deleteMany();
+    const { user } = await createUser("oauth@example.com");
+    const base = { provider: "github" as const, intent: "login" as const, codeVerifier: "v", browserNonceHash: "h" };
+    await prisma.signInState.create({ data: { ...base, id: "expired", inviteToken: "x", expiresAt: OLD } });
+    await prisma.signInState.create({ data: { ...base, id: "live", expiresAt: new Date(NOW.getTime() + 60_000) } });
+    await prisma.oAuthState.create({
+      data: { id: "forge", userId: user.id, workspaceId, host: "gitlab.com", codeVerifier: "v", expiresAt: OLD },
+    });
+
+    const result = await runRetention({ now: NOW });
+
+    expect(result.oauthStates).toBe(2);
+    expect((await prisma.signInState.findMany()).map((row) => row.id)).toEqual(["live"]);
+    expect(await prisma.oAuthState.count()).toBe(0);
+  });
+
   it("purges audit rows past the instance's audit period", async () => {
     await prisma.instanceSettings.create({ data: { id: 1, auditRetentionDays: 30 } });
     const base = { workspaceName: "W", purpose: "review", provider: "anthropic", host: "h", model: "anthropic/m", outcome: "ok" };

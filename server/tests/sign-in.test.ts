@@ -2,6 +2,7 @@ import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { app } from "../src/app.ts";
 import { env } from "../src/config/env.ts";
+import { decrypt } from "../src/lib/crypto.ts";
 import { AUTH_COOKIE } from "../src/lib/jwt.ts";
 import { hashPassword } from "../src/lib/password.ts";
 import { prisma } from "../src/lib/prisma.ts";
@@ -127,11 +128,25 @@ describe("GET /api/auth/oauth/:provider/start", () => {
     expect(location!.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
-  it("carries an invite token through the round trip", async () => {
-    const { state } = await start("github", "?invite=tok123");
+  it("carries an invite token through the round trip, encrypted at rest", async () => {
+    const { state } = await start("github", "?invite=tok123&returnTo=%2Finvite%2Ftok123");
 
-    expect((await prisma.signInState.findUniqueOrThrow({ where: { id: state } })).inviteToken).toBe("tok123");
+    const row = await prisma.signInState.findUniqueOrThrow({ where: { id: state } });
+    expect(row.inviteToken).not.toContain("tok123");
+    expect(decrypt(row.inviteToken!)).toBe("tok123");
+    expect(row.returnTo).not.toContain("tok123");
+    expect(decrypt(row.returnTo!)).toBe("/invite/tok123");
   });
+
+  it.each(["//evil.example.com", "https://evil.example.com", "/\\evil.example.com", "home"])(
+    "drops a returnTo of %s that is not a path on the client",
+    async (returnTo) => {
+      const { res, state } = await start("github", `?returnTo=${encodeURIComponent(returnTo)}`);
+
+      expect(res.status).toBe(302);
+      expect((await prisma.signInState.findUniqueOrThrow({ where: { id: state } })).returnTo).toBeNull();
+    },
+  );
 
   it("404s for an unknown or unconfigured provider", async () => {
     expect((await start("bitbucket")).res.status).toBe(404);
@@ -222,6 +237,37 @@ describe("GET /api/auth/oauth/:provider/callback (sign in and sign up)", () => {
     const me = await request(app).get("/api/auth/me").set("Cookie", cookieValue(res, AUTH_COOKIE)!);
     expect(me.body.user.id).toBe(user.id);
     expect(await prisma.user.count()).toBe(1);
+  });
+
+  it("returns a signed-in user to where the login was started from", async () => {
+    const { user } = await createUser("dev@example.com");
+    await prisma.userIdentity.create({
+      data: { userId: user.id, provider: "github", host: "github.com", providerUserId: "42", email: "dev@example.com" },
+    });
+
+    const { res } = await signIn("github", githubRoutes(), "?returnTo=%2Finvite%2Fabc");
+
+    expect(res.headers.location).toBe(`${env.CLIENT_ORIGIN}/invite/abc`);
+    expect(cookieValue(res, AUTH_COOKIE)).toBeDefined();
+  });
+
+  it("returns a new account to where the sign-up was started from", async () => {
+    const { res } = await signIn("github", githubRoutes(), "?returnTo=%2Freviews");
+
+    expect(res.headers.location).toBe(`${env.CLIENT_ORIGIN}/reviews`);
+    expect(await prisma.user.count({ where: { email: "octo@example.com" } })).toBe(1);
+  });
+
+  it("fails rather than signing in with a state it cannot decrypt", async () => {
+    const started = await start("github", "?invite=tok123");
+    // As if written under another ENCRYPTION_KEY (or before encryption).
+    await prisma.signInState.update({ where: { id: started.state }, data: { inviteToken: "tok123" } });
+    vi.stubGlobal("fetch", fetchStub(githubRoutes()).fetch);
+
+    const res = await callback("github", { state: started.state, code: "the-code" }, [started.nonce]);
+
+    expect(res.headers.location).toBe(loginError("oauth_failed"));
+    expect(await prisma.user.count()).toBe(0);
   });
 
   it("never links to an existing account by matching email", async () => {
@@ -398,6 +444,16 @@ describe("linking from settings", () => {
 
     expect(res.headers.location).toBe(`${env.CLIENT_ORIGIN}/settings?tab=sign-in&linked=github`);
     expect(await prisma.userIdentity.findFirstOrThrow()).toMatchObject({ userId, providerUserId: "42" });
+  });
+
+  it("ignores returnTo: a link always lands back on settings", async () => {
+    const started = await start("github", "?intent=link&returnTo=%2Freviews", cookie);
+    expect((await prisma.signInState.findUniqueOrThrow({ where: { id: started.state } })).returnTo).toBeNull();
+    vi.stubGlobal("fetch", fetchStub(githubRoutes()).fetch);
+
+    const res = await callback("github", { state: started.state, code: "c" }, [started.nonce, cookie]);
+
+    expect(res.headers.location).toBe(`${env.CLIENT_ORIGIN}/settings?tab=sign-in&linked=github`);
   });
 
   it("refuses an identity linked to someone else", async () => {

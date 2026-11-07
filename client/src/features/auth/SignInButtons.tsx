@@ -8,10 +8,13 @@ import { isSignInProvider, SIGN_IN_PROVIDERS, signInStartHref } from "./signInPr
 export function SignInButtons({
   providers,
   invite,
+  returnTo,
   separator,
 }: {
   providers: RegistrationProvider[] | undefined
   invite?: string
+  // Where a login lands afterwards instead of /home.
+  returnTo?: string
   // An "or" line between the buttons and a password form below them.
   separator?: boolean
 }) {
@@ -25,7 +28,7 @@ export function SignInButtons({
           const { label, icon: Icon } = SIGN_IN_PROVIDERS[id]
           return (
             <Button key={id} variant="outline" asChild>
-              <a href={signInStartHref(id, { invite })}>
+              <a href={signInStartHref(id, { invite, returnTo })}>
                 <Icon />
                 Continue with {label}
               </a>

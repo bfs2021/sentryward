@@ -373,7 +373,12 @@ model SignInState {
   // The signed-in user a `link` round trip attaches the identity to.
   userId           String?        @map("user_id") @db.Uuid
   // Carried through so an invite-only instance can admit the new account.
+  // Encrypted: it is a bearer token, and the database otherwise keeps only
+  // invite hashes.
   inviteToken      String?        @map("invite_token")
+  // Client path a `login` round trip lands on (e.g. the invite page the user
+  // logged in from). Encrypted too, since that path can carry an invite token.
+  returnTo         String?        @map("return_to")
   // PKCE code verifier, sent with the code exchange.
   codeVerifier     String         @map("code_verifier")
   // Hash of a nonce cookie set on the browser that started the flow, so a

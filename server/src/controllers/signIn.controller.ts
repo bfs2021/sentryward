@@ -1,5 +1,6 @@
 import type { CookieOptions, Request, Response } from "express";
 import { env } from "../config/env.ts";
+import { decrypt, DecryptError, encrypt } from "../lib/crypto.ts";
 import type { SignInProvider, SignInState } from "../generated/prisma/client.ts";
 import { HttpError } from "../lib/httpError.ts";
 import { assertSafeForgeHost } from "../lib/hostSafety.ts";
@@ -56,7 +57,7 @@ function fail(res: Response, intent: SignInState["intent"], error: SignInErrorCo
 
 export async function signInStart(req: Request, res: Response) {
   const { id, provider } = signInProviderFor(signInProviderParamsSchema.parse(req.params).provider);
-  const { intent, invite } = signInStartSchema.parse(req.query);
+  const { intent, invite, returnTo } = signInStartSchema.parse(req.query);
   // Linking needs the browser's own session, never an API token: the identity
   // becomes a way into this account.
   const userId = intent === "link" ? await cookieUserId(req) : null;
@@ -76,7 +77,9 @@ export async function signInStart(req: Request, res: Response) {
       provider: id,
       intent,
       userId,
-      inviteToken: invite ?? null,
+      inviteToken: invite ? encrypt(invite) : null,
+      // A link always returns to settings.
+      returnTo: intent === "login" && returnTo ? encrypt(returnTo) : null,
       codeVerifier: verifier,
       browserNonceHash: hashToken(nonce),
       expiresAt: new Date(Date.now() + SIGN_IN_STATE_TTL_MS),
@@ -144,9 +147,23 @@ async function signInOrSignUp(res: Response, state: SignInState, key: IdentityKe
     where: { provider_host_providerUserId: key },
     select: { user: { select: { id: true, sessionVersion: true } } },
   });
+  let inviteToken: string | null;
+  let returnTo: string | null;
+  try {
+    inviteToken = state.inviteToken ? decrypt(state.inviteToken) : null;
+    returnTo = state.returnTo ? decrypt(state.returnTo) : null;
+  } catch (err) {
+    // Written under another ENCRYPTION_KEY: start over rather than sign in
+    // without the invite or destination the user started with.
+    if (err instanceof DecryptError) {
+      return fail(res, "login", "oauth_failed");
+    }
+    throw err;
+  }
+
   if (identity) {
     setAuthCookie(res, identity.user);
-    return toClient(res, "/home");
+    return toClient(res, returnTo ?? "/home");
   }
 
   // Never linked by matching email: a provider address can be unverified on
@@ -160,7 +177,7 @@ async function signInOrSignUp(res: Response, state: SignInState, key: IdentityKe
   let user;
   try {
     user = await createAccount(
-      { name: profile.name.trim().slice(0, 100) || email, email, passwordHash: null, inviteToken: state.inviteToken ?? undefined },
+      { name: profile.name.trim().slice(0, 100) || email, email, passwordHash: null, inviteToken: inviteToken ?? undefined },
       async (tx, userId) => {
         await tx.userIdentity.create({ data: { ...key, userId, email } });
       },
@@ -180,7 +197,7 @@ async function signInOrSignUp(res: Response, state: SignInState, key: IdentityKe
     throw err;
   }
   setAuthCookie(res, user);
-  toClient(res, "/home");
+  toClient(res, returnTo ?? "/home");
 }
 
 async function linkIdentity(req: Request, res: Response, state: SignInState, key: IdentityKey, profile: SignInProfile) {
