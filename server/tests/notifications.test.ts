@@ -6,7 +6,7 @@ import type { NotificationEvent, ReviewStatus, ReviewVerdict } from "../src/gene
 import { decrypt, encrypt } from "../src/lib/crypto.ts";
 import { mailer } from "../src/lib/mailer.ts";
 import { prisma } from "../src/lib/prisma.ts";
-import { eventsFor, notifyJob, signature } from "../src/services/notifications.ts";
+import { escapeSlack, eventsFor, notifyJob, signature } from "../src/services/notifications.ts";
 import { fetchStub } from "./helpers/fetchStub.ts";
 import { addMember, createUser, inWorkspace } from "./helpers/users.ts";
 
@@ -169,8 +169,111 @@ describe("notifyJob", () => {
     await notifyJob(job.id);
 
     expect(JSON.parse(stub.calls[0]!.body!)).toEqual({
-      text: `Review failed: acme/web#7 - No API key for anthropic <${env.CLIENT_ORIGIN}/reviews/${job.id}|View review>`,
+      text: "Review failed: acme/web#7",
+      blocks: [
+        { type: "section", text: { type: "plain_text", text: "Review failed: acme/web#7", emoji: false } },
+        { type: "section", text: { type: "plain_text", text: "No API key for anthropic", emoji: false } },
+        {
+          type: "context",
+          elements: [{ type: "mrkdwn", text: `<${env.CLIENT_ORIGIN}/reviews/${job.id}|View review>` }],
+        },
+      ],
     });
+  });
+
+  it("puts the title in its own plain-text block beside our findings count", async () => {
+    const stub = fetchStub([{ method: "POST", url: /hooks\.slack\.com/ }]);
+    vi.stubGlobal("fetch", stub.fetch);
+    await target("slack", ["blocked"], "https://hooks.slack.com/services/T/B/X");
+    const job = await finishedJob("completed", "blocked");
+
+    await notifyJob(job.id);
+
+    const { text, blocks } = JSON.parse(stub.calls[0]!.body!);
+    expect(text).toBe("Review blocked: acme/web#7");
+    expect(blocks.slice(0, 2)).toEqual([
+      { type: "section", text: { type: "plain_text", text: "Review blocked: acme/web#7 - 3 findings", emoji: false } },
+      { type: "context", elements: [{ type: "plain_text", text: "Add login", emoji: false }] },
+    ]);
+  });
+
+  // Forge text that would mean something in mrkdwn: mentions, links (bracketed
+  // and bare), emphasis, code, a quote that would close ours, and newlines.
+  const HOSTILE = [
+    "<!channel> <https://evil.example|x> & co",
+    "Re-authenticate at https://evil.example/login",
+    "*Review completed: approved* _x_ ~y~ `z`",
+    "@channel @here",
+    'fix" - 0 findings. Approved by security "',
+    "boom\n\nReview completed: acme/web#7 - 0 findings",
+  ];
+
+  // Every string in a Slack body with the type of the object holding it.
+  function slackStrings(body: { blocks: unknown[] }): { type: string; text: string }[] {
+    const found: { type: string; text: string }[] = [];
+    const walk = (node: unknown) => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!node || typeof node !== "object") return;
+      const obj = node as Record<string, unknown>;
+      if ((obj.type === "plain_text" || obj.type === "mrkdwn") && typeof obj.text === "string") {
+        found.push({ type: obj.type, text: obj.text });
+      }
+      Object.values(obj).forEach(walk);
+    };
+    walk(body.blocks);
+    return found;
+  }
+
+  it.each(HOSTILE)("keeps forge text out of mrkdwn in Slack messages: %j", async (hostile) => {
+    const stub = fetchStub([{ method: "POST", url: /hooks\.slack\.com/ }, { method: "POST", url: /hooks\.slack\.com/ }]);
+    vi.stubGlobal("fetch", stub.fetch);
+    await target("slack", ["failed", "blocked"], "https://hooks.slack.com/services/T/B/X");
+    const blocked = await prisma.reviewJob.create({
+      data: {
+        repositoryId,
+        number: 8,
+        headSha: "bbb",
+        trigger: "manual",
+        status: "completed",
+        verdict: "blocked",
+        summary: { ...summary, title: hostile },
+        finishedAt: new Date(),
+      },
+    });
+    const failed = await finishedJob("failed", "error", hostile);
+
+    await notifyJob(blocked.id);
+    await notifyJob(failed.id);
+
+    const flat = hostile.replace(/\s+/g, " ").trim();
+    const jobs = [blocked, failed];
+    stub.calls.forEach((call, i) => {
+      const body = JSON.parse(call.body!);
+      // The notification fallback names the change and nothing the author wrote.
+      expect(body.text).toBe(i === 0 ? "Review blocked: acme/web#8" : "Review failed: acme/web#7");
+      const strings = slackStrings(body);
+      // The only mrkdwn is the link we build.
+      expect(strings.filter((s) => s.type === "mrkdwn")).toEqual([
+        { type: "mrkdwn", text: `<${env.CLIENT_ORIGIN}/reviews/${jobs[i]!.id}|View review>` },
+      ]);
+      expect(strings).toContainEqual({ type: "plain_text", text: flat });
+      for (const s of strings) expect(s.text).not.toContain("\n");
+    });
+  });
+
+  it("clips long forge text to fit Slack's plain-text limit", async () => {
+    const stub = fetchStub([{ method: "POST", url: /hooks\.slack\.com/ }]);
+    vi.stubGlobal("fetch", stub.fetch);
+    await target("slack", ["failed"], "https://hooks.slack.com/services/T/B/X");
+    await notifyJob((await finishedJob("failed", "error", "x".repeat(5000))).id);
+
+    const strings = slackStrings(JSON.parse(stub.calls[0]!.body!));
+    for (const s of strings) expect(s.text.length).toBeLessThanOrEqual(2000);
+  });
+
+  it("escapes Slack's control characters in one pass", () => {
+    expect(escapeSlack("<!channel> & <a|b>")).toBe("&lt;!channel&gt; &amp; &lt;a|b&gt;");
+    expect(escapeSlack("&amp;")).toBe("&amp;amp;");
   });
 
   it("does not notify skipped or cancelled jobs", async () => {
@@ -252,6 +355,21 @@ describe("notifyJob", () => {
       subject: 'Review blocked: acme/web#7 "Add login" - 3 findings',
       text: `Review blocked: acme/web#7 "Add login" - 3 findings\n\n${env.CLIENT_ORIGIN}/reviews/${job.id}\n`,
     });
+  });
+
+  it("keeps an email subject on one line whatever the error holds", async () => {
+    vi.spyOn(mailer, "configured").mockReturnValue(true);
+    const send = vi.spyOn(mailer, "send").mockResolvedValue();
+    await prisma.notificationTarget.create({
+      data: { workspaceId, kind: "email", name: "Leads", events: ["failed"], recipientIds: [userId] },
+    });
+    const job = await finishedJob("failed", "error", "boom\r\n\nBcc: x@evil.example");
+
+    await notifyJob(job.id);
+
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: "Review failed: acme/web#7 - boom Bcc: x@evil.example" }),
+    );
   });
 });
 

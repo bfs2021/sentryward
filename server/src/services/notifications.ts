@@ -72,16 +72,64 @@ const HEADLINES: Record<NotificationPayload["event"], string> = {
   test: "Test notification",
 };
 
+// A multi-line value would spread over several lines of a Slack message (where
+// a second line can pass for a headline of ours) or into an email subject.
+function oneLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+// The change title, the repository path and a failed review's error come from
+// the forge, so anyone who can open a pull request controls them. They are
+// returned raw (only flattened to one line); each target decides how to keep
+// them from meaning anything in its format.
+function messageParts(payload: NotificationPayload) {
+  const headline = `${HEADLINES[payload.event]}: ${oneLine(payload.repository.fullPath)}#${payload.change.number}`;
+  const title = payload.change.title ? oneLine(payload.change.title) : null;
+  const error = payload.event === "failed" ? oneLine(payload.review.error ?? "no reason recorded") : null;
+  const findings = payload.findings
+    ? `${payload.findings.total} finding${payload.findings.total === 1 ? "" : "s"}`
+    : null;
+  return { headline, title, error, findings };
+}
+
+// Plain text, for an email subject.
 function describe(payload: NotificationPayload): string {
-  const change = `${payload.repository.fullPath}#${payload.change.number}`;
-  const title = payload.change.title ? ` "${payload.change.title}"` : "";
-  const detail =
-    payload.event === "failed"
-      ? payload.review.error ?? "no reason recorded"
-      : payload.findings
-        ? `${payload.findings.total} finding${payload.findings.total === 1 ? "" : "s"}`
-        : "";
-  return `${HEADLINES[payload.event]}: ${change}${title}${detail ? ` - ${detail}` : ""}`;
+  const { headline, title, error, findings } = messageParts(payload);
+  const detail = error ?? findings;
+  return `${headline}${title ? ` "${title}"` : ""}${detail ? ` - ${detail}` : ""}`;
+}
+
+// Slack rejects a plain_text object over 3000 characters.
+const SLACK_TEXT_LIMIT = 2000;
+function clip(value: string): string {
+  return value.length > SLACK_TEXT_LIMIT ? `${value.slice(0, SLACK_TEXT_LIMIT - 1)}…` : value;
+}
+
+function plainText(text: string) {
+  return { type: "plain_text", text: clip(text), emoji: false };
+}
+
+// mrkdwn cannot be escaped completely: there is no escape for `*`, `_`, `~` or
+// backticks, and bare URLs are always linked. So forge text only ever goes into
+// plain_text objects, and mrkdwn carries nothing but our own link. The title
+// gets its own block so it cannot pass for the findings count beside it. The
+// fallback `text` (shown in notifications) carries no title or error at all.
+function slackMessage(payload: NotificationPayload) {
+  const { headline, title, error, findings } = messageParts(payload);
+  const blocks: object[] = [
+    { type: "section", text: plainText(findings && !error ? `${headline} - ${findings}` : headline) },
+  ];
+  if (title) blocks.push({ type: "context", elements: [plainText(title)] });
+  if (error) blocks.push({ type: "section", text: plainText(error) });
+  blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: `<${payload.review.url}|View review>` }] });
+  return { text: escapeSlack(headline), blocks };
+}
+
+// Slack reads `<...>` in text as a link, a mention or a command such as
+// `<!channel>`. These are the three characters Slack documents escaping.
+const SLACK_ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
+export function escapeSlack(value: string): string {
+  return value.replace(/[&<>]/g, (c) => SLACK_ENTITIES[c]!);
 }
 
 // "sha256=<hex>" over the exact body sent, as GitHub signs its webhooks.
@@ -127,8 +175,7 @@ export async function deliver(target: NotificationTarget, workspaceId: string, p
       return;
     }
     case "slack": {
-      const text = `${describe(payload)} <${payload.review.url}|View review>`;
-      await post(targetUrl(target), JSON.stringify({ text }));
+      await post(targetUrl(target), JSON.stringify(slackMessage(payload)));
       return;
     }
     case "email": {

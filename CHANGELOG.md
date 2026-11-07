@@ -29,6 +29,14 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   answer `400 Validation failed` instead of `500 Internal server error` when
   `page` is above 1000000.
 
+### Security
+
+- Slack notifications put the change title, the repository path and a failed
+  review's error in plain-text blocks, so a pull request title can no longer
+  ping the channel, render a link (bracketed or bare) or change the message's
+  formatting. Newlines in these values are collapsed in Slack messages and
+  email subjects (#247).
+
 ## [0.4.0] - 2026-11-07
 
 Sentryward remains pre-1.0, and this release changes some default behaviour:
