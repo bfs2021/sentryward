@@ -22,7 +22,8 @@ model User {
   id              String       @id @default(uuid()) @db.Uuid
   name            String
   email           String       @unique @db.Citext
-  passwordHash    String       @map("password_hash")
+  // Null for accounts created through a sign-in provider that never set a password.
+  passwordHash    String?      @map("password_hash")
   role            InstanceRole @default(member)
   // Carried in every session token; bumping it signs out all existing sessions.
   sessionVersion  Int          @default(0) @map("session_version")
@@ -41,6 +42,8 @@ model User {
   passwordResetsMade PasswordReset[]   @relation("PasswordResetCreator")
   apiTokens          ApiToken[]
   llmRequestLogs     LlmRequestLog[]
+  identities         UserIdentity[]
+  signInStates       SignInState[]
 
   @@map("users")
 }
@@ -321,6 +324,67 @@ model OAuthState {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@map("oauth_states")
+}
+
+// Identity providers a user can sign in with. Kept apart from ForgeProvider:
+// signing in only proves who someone is and never connects a forge, and later
+// providers (Google, generic OIDC) are not forges at all.
+enum SignInProvider {
+  github
+  gitlab
+
+  @@map("sign_in_provider")
+}
+
+// A provider account linked to a user. The host is part of the key so an id
+// from one self-managed GitLab is never matched against another host after the
+// configured host changes.
+model UserIdentity {
+  id             String         @id @default(uuid()) @db.Uuid
+  userId         String         @map("user_id") @db.Uuid
+  provider       SignInProvider
+  host           String
+  providerUserId String         @map("provider_user_id")
+  // The verified email the provider reported when the identity was linked.
+  email          String         @db.Citext
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, host, providerUserId])
+  @@index([userId])
+  @@map("user_identities")
+}
+
+enum SignInIntent {
+  login
+  link
+
+  @@map("sign_in_intent")
+}
+
+// A sign-in round trip in progress. Separate from OAuthState, which belongs to
+// a user and workspace that do not exist yet when someone signs up. The id is
+// the `state`; the callback deletes the row to use it, so it works once.
+model SignInState {
+  id               String         @id
+  provider         SignInProvider
+  intent           SignInIntent
+  // The signed-in user a `link` round trip attaches the identity to.
+  userId           String?        @map("user_id") @db.Uuid
+  // Carried through so an invite-only instance can admit the new account.
+  inviteToken      String?        @map("invite_token")
+  // PKCE code verifier, sent with the code exchange.
+  codeVerifier     String         @map("code_verifier")
+  // Hash of a nonce cookie set on the browser that started the flow, so a
+  // callback URL cannot be completed in someone else's browser (login CSRF).
+  browserNonceHash String         @map("browser_nonce_hash")
+  expiresAt        DateTime       @map("expires_at") @db.Timestamptz
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sign_in_states")
 }
 
 model Repository {

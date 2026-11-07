@@ -5,6 +5,17 @@ import { normalizeHost } from "../schemas/connections.schema.ts";
 const optionalString = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === "" ? undefined : value), schema.optional());
 
+// A forge host, normalized the way stored connection hosts are.
+const hostVar = (name: string, fallback: string) =>
+  optionalString(z.string()).transform((value, ctx) => {
+    const host = normalizeHost(value ?? fallback);
+    if (!host) {
+      ctx.addIssue({ code: "custom", message: `${name} must be a host such as ${fallback}` });
+      return z.NEVER;
+    }
+    return host;
+  });
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(4000),
@@ -28,16 +39,21 @@ const envSchema = z.object({
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
   // GitLab OAuth application (optional; without it GitLab connects with tokens
   // only). One instance per deployment: gitlab.com or a self-hosted host.
-  GITLAB_OAUTH_HOST: optionalString(z.string()).transform((value, ctx) => {
-    const host = normalizeHost(value ?? "gitlab.com");
-    if (!host) {
-      ctx.addIssue({ code: "custom", message: "GITLAB_OAUTH_HOST must be a host such as gitlab.example.com" });
-      return z.NEVER;
-    }
-    return host;
-  }),
+  GITLAB_OAUTH_HOST: hostVar("GITLAB_OAUTH_HOST", "gitlab.com"),
   GITLAB_OAUTH_CLIENT_ID: optionalString(z.string()),
   GITLAB_OAUTH_CLIENT_SECRET: optionalString(z.string()),
+  // Sign-in providers (optional; each one appears on the login page once its
+  // client id and secret are set). Separate OAuth apps from the forge
+  // connections above: they only ask for identity scopes and never connect a forge.
+  GITHUB_LOGIN_HOST: hostVar("GITHUB_LOGIN_HOST", "github.com"),
+  GITHUB_LOGIN_CLIENT_ID: optionalString(z.string()),
+  GITHUB_LOGIN_CLIENT_SECRET: optionalString(z.string()),
+  GITLAB_LOGIN_HOST: hostVar("GITLAB_LOGIN_HOST", "gitlab.com"),
+  GITLAB_LOGIN_CLIENT_ID: optionalString(z.string()),
+  GITLAB_LOGIN_CLIENT_SECRET: optionalString(z.string()),
+  // Turns email + password sign-in and sign-up off, leaving only the sign-in
+  // providers above.
+  PASSWORD_LOGIN: z.enum(["enabled", "disabled"]).default("enabled"),
   // Where forges can reach this API, for the webhook URL registered on GitLab.
   API_PUBLIC_URL: z.string().url().default("http://localhost:4000"),
   // Server-wide model keys, used when the repository owner has not stored one.
@@ -97,6 +113,18 @@ const parsedEnvSchema = envSchema
     message: "MAIL_FROM is required when SMTP_URL is set",
     path: ["MAIL_FROM"],
   })
+  // With passwords off and no provider configured nobody could sign in, so
+  // refuse to start rather than lock everyone out.
+  .refine(
+    (data) =>
+      data.PASSWORD_LOGIN === "enabled" ||
+      (data.GITHUB_LOGIN_CLIENT_ID && data.GITHUB_LOGIN_CLIENT_SECRET) ||
+      (data.GITLAB_LOGIN_CLIENT_ID && data.GITLAB_LOGIN_CLIENT_SECRET),
+    {
+      message: "PASSWORD_LOGIN=disabled needs at least one sign-in provider configured",
+      path: ["PASSWORD_LOGIN"],
+    },
+  )
   // A heartbeat no faster than the lock timeout lets recovery reclaim jobs that
   // are still running.
   .refine((data) => data.WORKER_HEARTBEAT_INTERVAL_MS < data.WORKER_LOCK_TIMEOUT_MS, {

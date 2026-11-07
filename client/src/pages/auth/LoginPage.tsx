@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { Link, useLocation, useNavigate } from "react-router"
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router"
 import { Loader2, Mail } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Field, FieldDescription, FieldGroup } from "@/components/ui/field"
@@ -13,6 +13,8 @@ import { FormAlert } from "@/features/auth/FormAlert"
 import { applyServerErrors } from "@/features/auth/applyServerErrors"
 import { loginSchema, type LoginInput } from "@/features/auth/schemas"
 import { useRegistration } from "@/features/auth/registration"
+import { SignInButtons } from "@/features/auth/SignInButtons"
+import { signInErrorMessage } from "@/features/auth/signInProviders"
 
 export function LoginPage() {
   const { login } = useAuth()
@@ -23,7 +25,11 @@ export function LoginPage() {
   // Only offer sign-up when /register would show the form: invitees arrive via
   // their invite link, and hiding it until the mode is known avoids a flash.
   const canSignUp = registration && (registration.firstUser || registration.mode === "open")
-  const [formError, setFormError] = useState<string | null>(null)
+  // Hidden only once the server says so; while loading the form stays usable.
+  const passwordLogin = registration?.passwordLogin !== false
+  // A provider round trip that did not end in a session comes back with ?error=.
+  const [params] = useSearchParams()
+  const [formError, setFormError] = useState<string | null>(() => signInErrorMessage(params.get("error")))
 
   const form = useForm<LoginInput>({
     resolver: zodResolver(loginSchema),
@@ -43,41 +49,50 @@ export function LoginPage() {
   return (
     <AuthLayout>
       <AuthHeader title="Welcome back" description="Log in to your Sentryward account" />
-      <form onSubmit={form.handleSubmit(onSubmit)} noValidate>
+      {passwordLogin ? (
+        <form onSubmit={form.handleSubmit(onSubmit)} noValidate>
+          <FieldGroup>
+            <FormAlert message={formError} />
+            <SignInButtons providers={registration?.providers} separator />
+            <TextField
+              control={form.control}
+              name="email"
+              label="Email"
+              type="email"
+              autoComplete="email"
+              autoFocus
+              placeholder="you@example.com"
+              icon={Mail}
+            />
+            <PasswordField
+              control={form.control}
+              name="password"
+              label="Password"
+              autoComplete="current-password"
+            />
+            <Link to="/forgot-password" className="-mt-3 self-end text-sm text-muted-foreground underline-offset-4 hover:underline">
+              Forgot password?
+            </Link>
+            <Field>
+              <Button type="submit" disabled={form.formState.isSubmitting}>
+                {form.formState.isSubmitting && <Loader2 className="animate-spin" />}
+                Log in
+              </Button>
+              {canSignUp && (
+                <FieldDescription className="text-center">
+                  Don&apos;t have an account? <Link to="/register">Sign up</Link>
+                </FieldDescription>
+              )}
+            </Field>
+          </FieldGroup>
+        </form>
+      ) : (
+        // Provider sign-in only; a new account is created on first sign-in.
         <FieldGroup>
           <FormAlert message={formError} />
-          <TextField
-            control={form.control}
-            name="email"
-            label="Email"
-            type="email"
-            autoComplete="email"
-            autoFocus
-            placeholder="you@example.com"
-            icon={Mail}
-          />
-          <PasswordField
-            control={form.control}
-            name="password"
-            label="Password"
-            autoComplete="current-password"
-          />
-          <Link to="/forgot-password" className="-mt-3 self-end text-sm text-muted-foreground underline-offset-4 hover:underline">
-            Forgot password?
-          </Link>
-          <Field>
-            <Button type="submit" disabled={form.formState.isSubmitting}>
-              {form.formState.isSubmitting && <Loader2 className="animate-spin" />}
-              Log in
-            </Button>
-            {canSignUp && (
-              <FieldDescription className="text-center">
-                Don&apos;t have an account? <Link to="/register">Sign up</Link>
-              </FieldDescription>
-            )}
-          </Field>
+          <SignInButtons providers={registration?.providers} />
         </FieldGroup>
-      </form>
+      )}
     </AuthLayout>
   )
 }

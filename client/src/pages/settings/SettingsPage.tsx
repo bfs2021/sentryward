@@ -1,20 +1,23 @@
 import type { ReactNode } from "react"
 import { Navigate, useSearchParams } from "react-router"
-import { KeyRound, LockKeyhole, UserRound } from "lucide-react"
+import { KeyRound, LockKeyhole, LogIn, UserRound } from "lucide-react"
 import { PageHeader } from "@/components/PageHeader"
 import { PageShell } from "@/components/PageShell"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useAuth } from "@/features/auth/useAuth"
+import { useRegistration } from "@/features/auth/registration"
 import { ApiTokens } from "@/features/settings/ApiTokens"
 import { AvatarForm } from "@/features/settings/AvatarForm"
 import { DeleteAccount } from "@/features/settings/DeleteAccount"
+import { LinkedAccounts } from "@/features/settings/LinkedAccounts"
 import { PasswordForm } from "@/features/settings/PasswordForm"
 import { ProfileForm } from "@/features/settings/ProfileForm"
 
 const TAB_ITEMS = [
   { value: "profile", label: "Profile", icon: UserRound },
   { value: "password", label: "Password", icon: LockKeyhole },
+  { value: "sign-in", label: "Sign-in methods", icon: LogIn },
   { value: "tokens", label: "API tokens", icon: KeyRound },
 ] as const
 type Tab = (typeof TAB_ITEMS)[number]["value"]
@@ -37,7 +40,14 @@ export function SettingsPage() {
   // ?tab= keeps the open tab linkable, e.g. /settings?tab=password.
   const [params, setParams] = useSearchParams()
   const requested = params.get("tab")
-  const tab = requested && TABS.includes(requested) ? (requested as Tab) : "profile"
+  const { data: registration } = useRegistration()
+  // Without password sign-in on this instance there is no password to manage.
+  const passwordLogin = registration?.passwordLogin !== false
+  const items = TAB_ITEMS.filter((item) => passwordLogin || item.value !== "password")
+  const tab =
+    requested && TABS.includes(requested) && items.some((item) => item.value === requested)
+      ? (requested as Tab)
+      : "profile"
 
   // LLM connections moved to their own page; keep old bookmarks working.
   if (requested === "api-keys") return <Navigate to="/llm-connections" replace />
@@ -45,10 +55,10 @@ export function SettingsPage() {
 
   return (
     <PageShell>
-      <PageHeader title="Settings" description="Manage your profile, password and API tokens." />
+      <PageHeader title="Settings" description="Manage your profile, sign-in methods and API tokens." />
       <Tabs className="max-w-3xl" value={tab} onValueChange={(value) => setParams({ tab: value }, { replace: true })}>
         <TabsList>
-          {TAB_ITEMS.map((item) => (
+          {items.map((item) => (
             <TabsTrigger key={item.value} value={item.value}>
               <item.icon />
               <span>{item.label}</span>
@@ -64,16 +74,35 @@ export function SettingsPage() {
               <ProfileForm user={user} />
             </Section>
             <Section title="Delete account" description="Remove your account and everything it owns.">
-              <DeleteAccount />
+              <DeleteAccount hasPassword={user.hasPassword} email={user.email} />
             </Section>
           </div>
         </TabsContent>
-        <TabsContent value="password">
+        {passwordLogin && (
+          <TabsContent value="password">
+            {user.hasPassword ? (
+              <Section
+                title="Password"
+                description="Choose a new password of at least 8 characters. Changing it signs you out on other devices."
+              >
+                <PasswordForm hasPassword />
+              </Section>
+            ) : (
+              <Section
+                title="Set a password"
+                description="You sign in through a linked account. Add a password of at least 8 characters to also sign in with your email."
+              >
+                <PasswordForm hasPassword={false} />
+              </Section>
+            )}
+          </TabsContent>
+        )}
+        <TabsContent value="sign-in">
           <Section
-            title="Password"
-            description="Choose a new password of at least 8 characters. Changing it signs you out on other devices."
+            title="Sign-in methods"
+            description="Accounts you can sign in with. Linking happens only here, never by matching email."
           >
-            <PasswordForm />
+            <LinkedAccounts user={user} />
           </Section>
         </TabsContent>
         <TabsContent value="tokens">

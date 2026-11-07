@@ -15,6 +15,7 @@ import {
   testApiKeyModel,
   updateProfile,
 } from "../controllers/settings.controller.ts";
+import { listIdentities, unlinkIdentity } from "../controllers/signIn.controller.ts";
 import { authLimiter } from "../middleware/authLimiter.ts";
 import { requireAuth, requireSession } from "../middleware/requireAuth.ts";
 import { requireWorkspace, requireWorkspaceRole } from "../middleware/requireWorkspace.ts";
@@ -46,6 +47,9 @@ settingsRouter.get("/model-prices/lookup", getModelPriceLookup);
 settingsRouter.put("/model-prices", requireWorkspaceRole("admin"), saveModelPrice);
 settingsRouter.delete("/model-prices/:id", requireWorkspaceRole("admin"), deleteModelPrice);
 settingsRouter.delete("/account", authLimiter, deleteAccount);
+// Cookie only: these are ways into the account.
+settingsRouter.get("/identities", requireSession, listIdentities);
+settingsRouter.delete("/identities/:id", requireSession, unlinkIdentity);
 // Cookie only, so a leaked token can neither mint more nor hide itself.
 settingsRouter.use("/tokens", requireSession);
 settingsRouter.get("/tokens", listTokens);

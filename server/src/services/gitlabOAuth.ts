@@ -1,4 +1,3 @@
-import { createHash, randomBytes } from "node:crypto";
 import { env } from "../config/env.ts";
 import { encrypt } from "../lib/crypto.ts";
 import { HttpError } from "../lib/httpError.ts";
@@ -6,6 +5,8 @@ import { prisma } from "../lib/prisma.ts";
 import { ForgeError } from "../review/forge/http.ts";
 import { hostOrigin } from "../review/forge/types.ts";
 import { decryptToken } from "./providers/token.ts";
+
+export { pkcePair } from "../lib/oauth.ts";
 
 // Publishing comments, discussions and commit statuses needs write access, and
 // GitLab has no narrower scope that grants it.
@@ -46,11 +47,6 @@ export function gitlabOAuthConfigured(): boolean {
 // sends the session cookie with the callback.
 export function gitlabRedirectUri(): string {
   return `${env.CLIENT_ORIGIN}/api/connections/gitlab/oauth/callback`;
-}
-
-export function pkcePair(): { verifier: string; challenge: string } {
-  const verifier = randomBytes(32).toString("base64url");
-  return { verifier, challenge: createHash("sha256").update(verifier).digest("base64url") };
 }
 
 export function gitlabAuthorizeUrl(host: string, state: string, challenge: string): string {

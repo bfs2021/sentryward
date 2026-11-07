@@ -43,20 +43,27 @@ async function authenticateToken(req: Request) {
   req.authMethod = "token";
 }
 
+// The signed-in user behind the session cookie, or null. Never an API token:
+// for flows that run as browser navigations and may or may not be signed in.
+export async function cookieUserId(req: Request): Promise<string | null> {
+  const token = req.cookies?.[AUTH_COOKIE];
+  const payload = typeof token === "string" ? verifyToken(token) : null;
+  if (!payload) {
+    return null;
+  }
+  const user = await prisma.user.findUnique({ where: { id: payload.sub }, select: { sessionVersion: true } });
+  return user && user.sessionVersion === payload.ver ? payload.sub : null;
+}
+
 // The token alone cannot be revoked, so its session version is checked against
 // the user's on every request: a password change or reset bumps the version and
 // every older session stops working. A deleted user is signed out the same way.
 async function authenticateCookie(req: Request) {
-  const token = req.cookies?.[AUTH_COOKIE];
-  const payload = typeof token === "string" ? verifyToken(token) : null;
-  if (!payload) {
+  const userId = await cookieUserId(req);
+  if (!userId) {
     throw new HttpError(401, "Not authenticated");
   }
-  const user = await prisma.user.findUnique({ where: { id: payload.sub }, select: { sessionVersion: true } });
-  if (!user || user.sessionVersion !== payload.ver) {
-    throw new HttpError(401, "Not authenticated");
-  }
-  req.userId = payload.sub;
+  req.userId = userId;
   req.authMethod = "cookie";
 }
 

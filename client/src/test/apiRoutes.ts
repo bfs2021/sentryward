@@ -7,6 +7,7 @@ export const testUser = {
   role: "member" as "admin" | "member",
   avatarUpdatedAt: null as string | null,
   createdAt: "",
+  hasPassword: true,
 }
 
 export const personalWorkspace = { id: "w-personal", name: "Ada Lovelace", personal: true, role: "owner" as const }

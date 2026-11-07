@@ -8,6 +8,29 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- Sign up and log in with a GitHub or GitLab account (gitlab.com or
+  self-managed), alongside email and password (#230). Each provider appears on
+  the login and register pages once its `GITHUB_LOGIN_*` or `GITLAB_LOGIN_*`
+  client id and secret are set; these are separate OAuth apps from the forge
+  connections and only ask for identity scopes. A first sign-in follows the
+  same registration rules as a password sign-up, including invites. Existing
+  accounts are never linked by matching email: link a provider under
+  Settings > Sign-in methods, where linked accounts can also be removed.
+- `PASSWORD_LOGIN=disabled` turns off email and password sign-in, sign-up and
+  resets, leaving only the configured providers (#230).
+- Accounts created through a provider can set a password in Settings, and
+  confirm deleting themselves by typing their email (#230).
+
+### Upgrade notes
+
+- The `sign_in_identities` migration makes `users.password_hash` nullable and
+  adds the `user_identities` and `sign_in_states` tables; it runs on start.
+- Before setting `PASSWORD_LOGIN=disabled`, link a provider to admin accounts:
+  accounts that only have a password cannot sign in while it is disabled, and
+  the server refuses to start unless at least one provider is configured.
+
 ### Changed
 
 - Pushing a release tag now publishes the GitHub release automatically from

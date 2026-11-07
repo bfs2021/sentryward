@@ -13,7 +13,7 @@ import {
   listUsersQuerySchema,
   updateUserSchema,
 } from "../schemas/admin.schema.ts";
-import { publicUser } from "./auth.controller.ts";
+import { assertPasswordLogin, publicUser } from "./auth.controller.ts";
 
 export async function listUsers(req: Request, res: Response) {
   const { role, q, sort, dir, page, limit } = listUsersQuerySchema.parse(req.query);
@@ -96,6 +96,8 @@ export async function deleteUser(req: Request, res: Response) {
 // link over. It is shown once, and the user's sessions only end when it is used.
 // Your own password changes in Settings, behind the current password.
 export async function postPasswordReset(req: Request, res: Response) {
+  // The link would lead to a password nobody can sign in with.
+  assertPasswordLogin();
   const { id } = idParamsSchema.parse(req.params);
   if (id === req.userId) {
     throw new HttpError(400, "Change your own password from Settings");

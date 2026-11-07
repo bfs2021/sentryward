@@ -57,6 +57,14 @@ services:
       # Hops of reverse proxy in front of the API; 1 for a single proxy.
       TRUST_PROXY: ${TRUST_PROXY:-1}
       REGISTRATION_MODE: ${REGISTRATION_MODE:-invite}
+      # Sign-in providers, server only (the worker never signs anyone in).
+      GITHUB_LOGIN_HOST: ${GITHUB_LOGIN_HOST:-github.com}
+      GITHUB_LOGIN_CLIENT_ID: ${GITHUB_LOGIN_CLIENT_ID:-}
+      GITHUB_LOGIN_CLIENT_SECRET: ${GITHUB_LOGIN_CLIENT_SECRET:-}
+      GITLAB_LOGIN_HOST: ${GITLAB_LOGIN_HOST:-gitlab.com}
+      GITLAB_LOGIN_CLIENT_ID: ${GITLAB_LOGIN_CLIENT_ID:-}
+      GITLAB_LOGIN_CLIENT_SECRET: ${GITLAB_LOGIN_CLIENT_SECRET:-}
+      PASSWORD_LOGIN: ${PASSWORD_LOGIN:-enabled}
       SMTP_URL: ${SMTP_URL:-}
       MAIL_FROM: ${MAIL_FROM:-}
     # Loopback only, for a reverse proxy on the same host. Set API_BIND to

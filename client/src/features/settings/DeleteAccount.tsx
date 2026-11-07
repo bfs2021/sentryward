@@ -20,18 +20,34 @@ import { TextField } from "@/features/auth/TextField"
 import { applyServerErrors } from "@/features/auth/applyServerErrors"
 import { useDeleteAccount } from "./api"
 
-const confirmSchema = z.object({ password: z.string().min(1, "Password is required") })
-type ConfirmInput = z.infer<typeof confirmSchema>
+// The password confirms, or for an account without one (signed up through a
+// provider) the account's email typed out; the server checks the same rule.
+function confirmSchema(hasPassword: boolean, email: string) {
+  return z.object({
+    password: hasPassword ? z.string().min(1, "Password is required") : z.string(),
+    // Not "email": the profile form on the same page already uses that field id.
+    confirmEmail: hasPassword
+      ? z.string()
+      : z
+          .string()
+          .trim()
+          .refine((value) => value.toLowerCase() === email.toLowerCase(), "Type your account's email to confirm"),
+  })
+}
+type ConfirmInput = { password: string; confirmEmail: string }
 
-export function DeleteAccount() {
+export function DeleteAccount({ hasPassword, email }: { hasPassword: boolean; email: string }) {
   const [open, setOpen] = useState(false)
   const navigate = useNavigate()
   const deleteAccount = useDeleteAccount()
-  const form = useForm<ConfirmInput>({ resolver: zodResolver(confirmSchema), defaultValues: { password: "" } })
+  const form = useForm<ConfirmInput>({
+    resolver: zodResolver(confirmSchema(hasPassword, email)),
+    defaultValues: { password: "", confirmEmail: "" },
+  })
 
-  async function onSubmit({ password }: ConfirmInput) {
+  async function onSubmit(values: ConfirmInput) {
     try {
-      await deleteAccount.mutateAsync(password)
+      await deleteAccount.mutateAsync(hasPassword ? { password: values.password } : { email: values.confirmEmail })
       toast.success("Your account was deleted")
       navigate("/login", { replace: true })
     } catch (error) {
@@ -57,16 +73,29 @@ export function DeleteAccount() {
           <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="flex flex-col gap-4">
             <DialogHeader>
               <DialogTitle>Delete your account?</DialogTitle>
-              <DialogDescription>This cannot be undone. Enter your password to confirm.</DialogDescription>
+              <DialogDescription>
+                This cannot be undone. {hasPassword ? "Enter your password" : `Type ${email}`} to confirm.
+              </DialogDescription>
             </DialogHeader>
-            <TextField
-              control={form.control}
-              name="password"
-              label="Password"
-              type="password"
-              autoComplete="current-password"
-              placeholder="Enter your password to confirm"
-            />
+            {hasPassword ? (
+              <TextField
+                control={form.control}
+                name="password"
+                label="Password"
+                type="password"
+                autoComplete="current-password"
+                placeholder="Enter your password to confirm"
+              />
+            ) : (
+              <TextField
+                control={form.control}
+                name="confirmEmail"
+                label="Email"
+                type="email"
+                autoComplete="off"
+                placeholder={email}
+              />
+            )}
             <DialogFooter>
               <DialogClose asChild>
                 <Button type="button" variant="outline">
