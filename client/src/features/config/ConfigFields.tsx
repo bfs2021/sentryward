@@ -18,12 +18,14 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import { ChevronRight, Info, Plus, RotateCcw, Trash2 } from "lucide-react"
+import { ChevronRight, Info, MessageSquareOff, PanelRightClose, PanelRightOpen, Plus, RotateCcw, Trash2 } from "lucide-react"
 import { SearchableSelect } from "@/components/SearchableSelect"
+import { SegmentedControl } from "@/components/SegmentedControl"
 import { TagInput } from "@/components/TagInput"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
@@ -68,7 +70,7 @@ import {
 import { LlmRunSummary } from "./LlmRunSummary"
 import { ModelCombobox, type ModelSuggestions } from "./ModelCombobox"
 import { FindingsSummary } from "./FindingsSummary"
-import { ReviewPreview } from "./ReviewPreview"
+import { ReviewPreview, type PreviewView } from "./ReviewPreview"
 import { SeverityScale } from "./SeverityScale"
 import { TriggersSummary } from "./TriggersSummary"
 import { CONFIG_TABS, TAB_ERRORS, type ConfigTab } from "./tabs"
@@ -83,6 +85,7 @@ import {
   LISTS,
   MAX_FALLBACK_MODELS,
   MAX_RULE_PATTERN,
+  MAX_SUMMARY_INSTRUCTIONS,
   NUMBERS,
   ruleRowErrors,
   toSettings,
@@ -112,7 +115,10 @@ const BADGE_LABEL: Record<string, string> = {
   trigger: "trigger",
 }
 
-const FLAG_INFO: Record<FlagName, { label: string; description: ReactNode }> = {
+// `cost` tags what an optional part of the PR summary adds to its model call.
+// Qualitative on purpose: nothing here is measured (see generateWalkthrough in
+// server/src/review/llm/walkthrough.ts for what each one changes).
+const FLAG_INFO: Record<FlagName, { label: string; description: ReactNode; cost?: string }> = {
   requireEvidence: {
     label: "Require evidence",
     description: "Critical and major findings without evidence are demoted instead of blocking.",
@@ -145,10 +151,12 @@ const FLAG_INFO: Record<FlagName, { label: string; description: ReactNode }> = {
     label: "Disable cache",
     description: "Disable caching of code and dependencies; fetch them fresh on each run.",
   },
+  // "PR summary" is the one name users see for the walkthrough; the config
+  // key and the YAML name stay `walkthrough`.
   walkthrough: {
-    label: "Walkthrough",
+    label: "PR summary",
     description:
-      "Summarise what the change does at the top of the review comment. When automatic reviews include it is set on the Triggers tab.",
+      "Summarise what the change does: at the top of the summary comment when that is posted, otherwise as a comment of its own. When automatic reviews include it is set on the Triggers tab.",
   },
   postInline: { label: "Post inline comments", description: "Comment on the lines each finding refers to." },
   postSummary: { label: "Post summary comment", description: "Post the review summary as a comment on the change." },
@@ -179,42 +187,49 @@ const FLAG_INFO: Record<FlagName, { label: string; description: ReactNode }> = {
   },
   walkthroughLabels: {
     label: "Show labels in the summary",
-    description: "Show the walkthrough's labels in the summary comment. This is text in the comment, not native PR/MR labels.",
+    description: "Show the PR summary's labels as text in the comment. These are not native PR/MR labels.",
   },
   walkthroughBlastRadius: {
     label: "Show blast radius in the summary",
-    description:
-      "Show the estimated blast radius in the summary comment. The native label is set separately by Publish blast radius label.",
+    description: "Show the estimated blast radius as text in the PR summary.",
   },
   blastRadiusLabel: {
     label: "Publish blast radius label",
     description:
-      'Add a native PR/MR label with the estimated blast radius (e.g. "Large blast radius"). Needs the walkthrough. Supported on GitHub and GitLab.',
+      'Add a native PR/MR label with the estimated blast radius (e.g. "Large blast radius"). Supported on GitHub and GitLab.',
   },
   effortLabel: {
     label: "Publish review time estimate label",
     description:
-      'Add a native PR/MR label with the estimated review effort (e.g. "10-20 Minutes"). Needs the walkthrough. Supported on GitHub and GitLab.',
+      'Add a native PR/MR label with the estimated review effort (e.g. "10-20 Minutes"). Supported on GitHub and GitLab.',
   },
   sequenceDiagrams: {
     label: "Sequence diagrams",
-    description: "Include sequence diagrams in the walkthrough, drawn with Mermaid.",
+    description: "Include a sequence diagram of the main flow in the PR summary, drawn with Mermaid. The model writes the diagram as extra output.",
+    cost: "More output",
   },
   estimateEffort: {
-    label: "Estimate code review effort",
-    description: "Include an estimated code review effort in the walkthrough.",
+    label: "Show review effort in the summary",
+    description: "Include the estimated code review effort as text in the PR summary. The estimate is made either way, for the label.",
+    cost: "No extra cost",
   },
   assessLinkedIssues: {
     label: "Assess linked issues",
-    description: "Include an assessment of how well the changes address linked issues in the walkthrough.",
+    description:
+      "Include an assessment of how well the changes address linked issues in the PR summary. Sends the linked issues' text to the model, only when the change links any.",
+    cost: "Longer prompt",
   },
   relatedIssues: {
     label: "Related issues",
-    description: "Include potentially related issues in the walkthrough.",
+    description:
+      "Include potentially related issues in the PR summary. Sends candidate issues' text to the model, only when some are found.",
+    cost: "Longer prompt",
   },
   highLevelSummary: {
     label: "High-level summary",
-    description: "Generate a high-level summary of the changes in the PR/MR description or walkthrough.",
+    description:
+      "Generate a high-level summary of the changes in the PR/MR description or the PR summary. The model writes it as extra output.",
+    cost: "More output",
   },
   reviewOnPush: {
     label: "Review automatically on push",
@@ -296,7 +311,7 @@ const CHOICE_INFO: Record<
   },
   summary: {
     label: "PR summary trigger",
-    description: "When automatic reviews include the PR summary. Requested reviews always do while the walkthrough is on.",
+    description: "When automatic reviews include the PR summary. Requested reviews always do while the PR summary is on.",
     options: [
       { value: "manual", label: "Manual only" },
       { value: "published", label: "Published PRs" },
@@ -307,7 +322,7 @@ const CHOICE_INFO: Record<
     description: "Where the high-level summary is written.",
     options: [
       { value: "description", label: "PR/MR description" },
-      { value: "walkthrough", label: "Walkthrough" },
+      { value: "walkthrough", label: "PR summary" },
     ],
   },
   verify: {
@@ -343,7 +358,7 @@ const CHOICE_INFO: Record<
   thinking: {
     label: "Thinking",
     description:
-      "Lets review passes reason before answering, at the cost of output tokens. The walkthrough never thinks. Models or endpoints without thinking run without it, with a warning.",
+      "Lets review passes reason before answering, at the cost of output tokens. The PR summary never thinks. Models or endpoints without thinking run without it, with a warning.",
     options: THINKING_OPTIONS,
   },
   verifyThinking: {
@@ -376,6 +391,62 @@ const CHOICE_INFO: Record<
 
 const SUMMARY_INSTRUCTIONS_EXAMPLE =
   "Create concise release notes as a bullet-point list, followed by a Markdown table showing lines added and removed by each contributing author."
+
+// Starting points for the high-level summary instructions, offered as buttons.
+const SUMMARY_EXAMPLES = [
+  {
+    label: "Release notes",
+    text: "Write release notes as a bullet list grouped under New Features, Bug Fixes and Documentation. Leave out groups with nothing in them.",
+  },
+  {
+    label: "Changelog entry",
+    text: "Write one changelog entry in the Keep a Changelog style: an Added, Changed, Fixed or Removed heading with one line per change, in the past tense.",
+  },
+  {
+    label: "User-facing summary",
+    text: "Summarise the change in two or three sentences for people who use the product, not its developers. Leave out file names and implementation details.",
+  },
+]
+
+// The Display tab's settings: every output flag. A preset sets all of them.
+const DISPLAY_FLAGS: FlagName[] = FLAGS.filter((flag) => flag.section === "output").map((flag) => flag.name)
+
+// Settings whose effect only shows in the preview's inline thread; changing
+// one switches the preview there, any other Display setting to the summary.
+const INLINE_FLAGS = new Set<FlagName>(["postInline", "agentPrompts", "resolveFixedThreads"])
+
+type DisplayPreset = "minimal" | "standard" | "everything"
+
+// Minimal is the quietest setup: inline comments (and closing their threads)
+// only. Standard is the server's defaults, themselves a quiet setup;
+// Everything turns every switch on, labels included.
+const DISPLAY_PRESETS: { value: DisplayPreset; label: string }[] = [
+  { value: "minimal", label: "Minimal" },
+  { value: "standard", label: "Standard" },
+  { value: "everything", label: "Everything" },
+]
+const MINIMAL_ON = new Set<FlagName>(["postInline", "resolveFixedThreads"])
+
+// Whether the Display tab shows its preview, per browser. Storage can throw
+// (private mode, blocked site data), so it falls back to shown.
+const PREVIEW_STORAGE_KEY = "sentryward-config-preview"
+
+function readPreviewOpen() {
+  try {
+    return localStorage.getItem(PREVIEW_STORAGE_KEY) !== "hidden"
+  } catch {
+    return true
+  }
+}
+
+function savePreviewOpen(open: boolean) {
+  try {
+    if (open) localStorage.removeItem(PREVIEW_STORAGE_KEY)
+    else localStorage.setItem(PREVIEW_STORAGE_KEY, "hidden")
+  } catch {
+    // Not persisted; the choice still applies until the page reloads.
+  }
+}
 
 // How each list matches, from skipFilterReason in
 // server/src/review/config/filters.ts: titles and branches on a substring
@@ -434,11 +505,24 @@ function ToggleList(props: { children: ReactNode }) {
 
 // A row of a ToggleList that only applies while the row above is on, indented
 // under it so the two read as one setting. The inner wrapper keeps the list's
-// own row padding on the outer one.
+// own row padding on the outer one. Several settings stack in one row.
 function Nested(props: { children: ReactNode }) {
   return (
     <div>
-      <div className="ml-2 border-l-2 pl-4">{props.children}</div>
+      <div className="ml-2 flex flex-col gap-4 border-l-2 pl-4">{props.children}</div>
+    </div>
+  )
+}
+
+// Settings about one thing inside a Nested row, e.g. the effort estimate's
+// text and its native label, so the second one is not hunted for elsewhere.
+function Topic(props: { title: string; children: ReactNode }) {
+  return (
+    <div role="group" aria-label={props.title} className="flex flex-col gap-3">
+      <span aria-hidden className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+        {props.title}
+      </span>
+      {props.children}
     </div>
   )
 }
@@ -1211,9 +1295,15 @@ function ToggleField(props: {
   inheritedHint?: string
   effective?: ReactNode
   disabled?: boolean
+  // Why the switch is greyed out, e.g. "Needs Post summary comment". Read out
+  // with the switch, since greying alone tells assistive tech nothing.
+  offReason?: string
+  // Shown under the description, e.g. a consequence of the current value.
+  extra?: ReactNode
 }) {
-  const { label, description } = FLAG_INFO[props.name]
+  const { label, description, cost } = FLAG_INFO[props.name]
   const id = `flag-${props.name}`
+  const reasonId = `${id}-off`
   const overridden = props.resettable && props.value !== undefined
   // Without an override or a resolved value there is nothing truthful to show yet.
   const disabled = props.disabled || (!overridden && props.inherited === undefined)
@@ -1223,9 +1313,20 @@ function ToggleField(props: {
       <FieldContent>
         <LabelRow effective={props.effective}>
           <FieldLabel htmlFor={id}>{label}</FieldLabel>
+          {cost && (
+            <Badge variant="outline" className="h-4 px-1.5 text-[0.65rem] font-normal">
+              {cost}
+            </Badge>
+          )}
           {overridden && <Badge variant="secondary">Overridden</Badge>}
         </LabelRow>
         <FieldDescription>{description}</FieldDescription>
+        {props.offReason && (
+          <FieldDescription id={reasonId} className="text-xs">
+            {props.offReason}
+          </FieldDescription>
+        )}
+        {props.extra}
       </FieldContent>
       <div className="flex items-center gap-2">
         {overridden && (
@@ -1241,6 +1342,7 @@ function ToggleField(props: {
           checked={props.value ?? props.inherited ?? false}
           onCheckedChange={(checked) => props.onChange(checked)}
           disabled={disabled}
+          aria-describedby={props.offReason ? reasonId : undefined}
         />
       </div>
     </Field>
@@ -1255,13 +1357,17 @@ function attentionLabel(key: ApiKey, status: LlmConnectionStatus | undefined) {
   return status ? STATUS_LABELS[status] : undefined
 }
 
-// Says why a field is greyed out and opens the tab with the setting that turns it on.
-function OffHint(props: { setting: string; tab: ConfigTab; onTabChange: (tab: ConfigTab) => void }) {
-  const tabLabel = CONFIG_TABS.find((item) => item.value === props.tab)!.label
+// Says why a field is greyed out and opens the tab with the setting that turns
+// it on. Without a tab the setting is on the same tab, so there is nothing to
+// open (toggles on one tab use ToggleField's offReason instead).
+function OffHint(props: { setting: string; tab?: ConfigTab; onTabChange: (tab: ConfigTab) => void }) {
+  const { tab } = props
+  if (!tab) return <FieldDescription className="text-xs">Only used when {props.setting} is on.</FieldDescription>
+  const tabLabel = CONFIG_TABS.find((item) => item.value === tab)!.label
   return (
     <FieldDescription className="text-xs">
       Only used when {props.setting} is on (
-      <Button type="button" variant="link" className="h-auto p-0 text-xs" onClick={() => props.onTabChange(props.tab)}>
+      <Button type="button" variant="link" className="h-auto p-0 text-xs" onClick={() => props.onTabChange(tab)}>
         {tabLabel} tab
       </Button>
       ).
@@ -1320,6 +1426,14 @@ export function ConfigFields(props: {
   const schema = useConfigSchema()
   const apiKeys = useApiKeys()
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(readPreviewOpen)
+  // The preview view the last changed Display setting shows up in (ReviewPreview).
+  const [previewFocus, setPreviewFocus] = useState<{ view: PreviewView; seq: number }>()
+  // An example picked while the instructions hold text, waiting for a confirm.
+  const [pendingExample, setPendingExample] = useState<(typeof SUMMARY_EXAMPLES)[number]>()
+  function focusPreview(view: PreviewView) {
+    setPreviewFocus((last) => ({ view, seq: (last?.seq ?? 0) + 1 }))
+  }
   // The model pickers list what the connection that will run the review
   // offers: the inherited one while this scope does not pick its own.
   const modelsProvider =
@@ -1344,8 +1458,10 @@ export function ConfigFields(props: {
   )
   type TextKey = "profile" | "model" | "walkthroughModel" | "verifyModel" | "severityFloor" | "blockOn" | "ignorePaths" | "instructions"
   const setField = (key: TextKey) => (value: string) => props.onChange({ ...form, [key]: value })
-  const setFlag = (name: FlagName) => (value: boolean | undefined) =>
+  const setFlag = (name: FlagName) => (value: boolean | undefined) => {
+    if (DISPLAY_FLAGS.includes(name)) focusPreview(INLINE_FLAGS.has(name) ? "inline" : "summary")
     props.onChange({ ...form, flags: { ...form.flags, [name]: value } })
+  }
   const setNumber = (name: NumberName) => (value: string) =>
     props.onChange({ ...form, numbers: { ...form.numbers, [name]: value } })
 
@@ -1393,8 +1509,16 @@ export function ConfigFields(props: {
     return inherited ? (inherited[section] as Record<string, unknown>)[name] as boolean : undefined
   }
 
-  // `off` greys out settings that do nothing right now, e.g. labels without a summary.
-  function toggles(names: FlagName[], off = false) {
+  // `off` greys out settings that do nothing right now, e.g. labels without a
+  // summary. `needs` names the setting on the same tab that turns them on; it is
+  // only said when that is the reason, not when the field is locked anyway.
+  // `extras` adds a line under a setting's description.
+  function toggles(
+    names: FlagName[],
+    off = false,
+    needs?: string,
+    extras?: Partial<Record<FlagName, ReactNode>>,
+  ) {
     return names.map((name) => {
       const { section } = FLAGS.find((flag) => flag.name === name)!
       const path = `${section}.${name}`
@@ -1410,6 +1534,8 @@ export function ConfigFields(props: {
           inheritedHint={inheritedHint(path, fallback)}
           effective={config && effective(path, (config[section] as Record<string, unknown>)[name])}
           disabled={locked(path) || off}
+          offReason={off && needs && !locked(path) ? `Needs ${needs}` : undefined}
+          extra={extras?.[name]}
         />
       )
     })
@@ -1469,7 +1595,10 @@ export function ConfigFields(props: {
         id={`choice-${name}`}
         label={info.label}
         value={form.choices[name]}
-        onChange={(value) => props.onChange({ ...form, choices: { ...form.choices, [name]: value } })}
+        onChange={(value) => {
+          if (spec.section === "output") focusPreview("summary")
+          props.onChange({ ...form, choices: { ...form.choices, [name]: value } })
+        }}
         options={info.options}
         // The global config selects the fallback itself, so it stays the raw value.
         {...(isRepo
@@ -1639,6 +1768,61 @@ export function ConfigFields(props: {
       : (form.flags.walkthrough ?? inheritedFlag("walkthrough"))
   const walkthroughKnownOff = walkthroughValue === false
 
+  // The Display tab's presets. Each gives every Display switch a value; the
+  // form takes them like manual changes (unsaved, overrides in a repository),
+  // except where the repository file sets the field and would win anyway.
+  function presetFlags(preset: DisplayPreset) {
+    const defaults = schema.data?.defaults.output as Record<string, unknown> | undefined
+    if (preset === "standard" && !defaults) return undefined
+    return Object.fromEntries(
+      DISPLAY_FLAGS.map((name) => [
+        name,
+        preset === "everything" ? true : preset === "minimal" ? MINIMAL_ON.has(name) : Boolean(defaults![name]),
+      ]),
+    ) as Partial<Record<FlagName, boolean>>
+  }
+  function applyPreset(preset: DisplayPreset) {
+    const values = presetFlags(preset)
+    if (!values) return
+    const flags = { ...form.flags }
+    for (const name of DISPLAY_FLAGS) {
+      if (!locked(`output.${name}`)) flags[name] = values[name]
+    }
+    focusPreview("summary")
+    props.onChange({ ...form, flags })
+  }
+  // The preset the settings match right now, if any.
+  const activePreset = DISPLAY_PRESETS.find((preset) => {
+    const values = presetFlags(preset.value)
+    return values && DISPLAY_FLAGS.every((name) => resolvedFlag(name) === values[name])
+  })?.value
+
+  // With the summary comment off, the PR summary is still posted as a comment
+  // of its own (summaryPlacement in server/src/review/publish/publisher.ts).
+  // Native labels need the PR summary too, so with it and the three post
+  // switches off nothing at all reaches the change. Only values known to be
+  // off count, so nothing flickers while the inherited values load.
+  const standaloneSummary = resolvedFlag("postSummary") === false && resolvedFlag("walkthrough") === true
+  const nothingPosted = (["postInline", "postSummary", "postCheck", "walkthrough"] as const).every(
+    (name) => resolvedFlag(name) === false,
+  )
+
+  // The high-level summary instructions, counted the way validation does.
+  const summaryLength = form.summaryInstructions.trim().length
+  const setSummaryInstructions = (summaryInstructions: string) => {
+    focusPreview("summary")
+    props.onChange({ ...form, summaryInstructions })
+  }
+  function pickExample(example: (typeof SUMMARY_EXAMPLES)[number]) {
+    // Typed instructions are never replaced without a confirm.
+    if (form.summaryInstructions.trim()) setPendingExample(example)
+    else {
+      setPendingExample(undefined)
+      setSummaryInstructions(example.text)
+    }
+  }
+  const summaryFieldOff = locked("output.highLevelSummaryInstructions") || !highLevelSummaryOn
+
   // The Triggers tab. With automatic reviews off the worker drops every
   // webhook job before looking at push, summary or skip settings (skipReason
   // in server/src/review/config/filters.ts), so those grey out; only a value
@@ -1651,7 +1835,7 @@ export function ConfigFields(props: {
     return disabled || form.lists[name].length === 0 ? inherited?.triggers[name] : form.lists[name]
   }
   const summaryHint = walkthroughKnownOff ? (
-    <OffHint setting="Walkthrough" tab="display" onTabChange={props.onTabChange} />
+    <OffHint setting="PR summary" tab="display" onTabChange={props.onTabChange} />
   ) : reviewManual ? (
     <FieldDescription className="text-xs">Only used for automatic reviews.</FieldDescription>
   ) : undefined
@@ -1770,7 +1954,7 @@ export function ConfigFields(props: {
       <>
         <Section
           title="Connection and models"
-          description="Which saved connection runs the review, the model it runs, the ones tried when it fails, and optional models for the walkthrough and verification."
+          description="Which saved connection runs the review, the model it runs, the ones tried when it fails, and optional models for the PR summary and verification."
         >
           <div className="grid gap-4 @md/field-group:grid-cols-2">
             <div className="flex flex-col gap-2">
@@ -1853,8 +2037,8 @@ export function ConfigFields(props: {
             <div className="grid gap-4 @md/field-group:grid-cols-2">
               {purposeModelField(
                 "walkthroughModel",
-                "Walkthrough model",
-                walkthroughKnownOff ? { setting: "Walkthrough", tab: "display" } : undefined,
+                "PR summary model",
+                walkthroughKnownOff ? { setting: "PR summary", tab: "display" } : undefined,
               )}
               {purposeModelField(
                 "verifyModel",
@@ -2018,42 +2202,94 @@ export function ConfigFields(props: {
     ),
     display: (
       <>
-        <Section title="Review comments" description="What the review leaves on the change.">
-          <ToggleList>{toggles(["postInline", "postSummary", "postCheck"])}</ToggleList>
-          {/* The counts, lifecycle and details are part of the summary comment. */}
-          <ToggleList>{toggles(["findingCounts", "findingLifecycle", "reviewStats"], !postSummaryOn)}</ToggleList>
-          {/* Each prompt lives in the comment it belongs to. */}
-          <ToggleList>{toggles(["agentPrompts"], !postInlineOn)}</ToggleList>
-          <ToggleList>{toggles(["agentPromptAll"], !postSummaryOn)}</ToggleList>
-          {/* Only threads Sentryward opened are resolved. */}
-          <ToggleList>{toggles(["resolveFixedThreads"], !postInlineOn)}</ToggleList>
-        </Section>
-        <FieldSeparator />
-        <Section title="PR summary" description="A summary of what the change does, and labels from its estimates.">
-          <ToggleList>{toggles(["walkthrough"])}</ToggleList>
-          {/* Text in the walkthrough itself, unlike the native labels below. */}
-          <ToggleList>{toggles(["walkthroughLabels", "walkthroughBlastRadius"], !walkthroughOn)}</ToggleList>
-          {/* Labels come from the summary's estimates, so they need one. */}
-          <ToggleList>{toggles(["blastRadiusLabel", "effortLabel"], !walkthroughOn)}</ToggleList>
+        <Section
+          title="Presets"
+          description="Set every switch on this tab at once, then adjust. Minimal posts inline comments only, Standard is the defaults (inline comments, one summary comment and a short PR summary, without the extra lines, labels, diagrams or commit status), Everything turns every option on, labels included. Nothing is saved until you save, and fields the repository file sets are left alone."
+        >
+          <SegmentedControl
+            label="Display preset"
+            options={DISPLAY_PRESETS}
+            value={activePreset}
+            onChange={applyPreset}
+            disabled={disabled || !inherited || !schema.data}
+          />
         </Section>
         <FieldSeparator />
         <Section
-          title="Walkthrough content"
-          description="Optional parts of the PR summary. Each one asks the model for more."
+          title="Where to post"
+          description="What the review leaves on the change. Options for each comment sit under it."
         >
           <ToggleList>
-            {toggles(["estimateEffort", "sequenceDiagrams", "assessLinkedIssues", "relatedIssues"], !walkthroughOn)}
+            {toggles(["postInline"])}
+            {/* Only threads Sentryward opened are resolved. */}
+            <Nested>{toggles(["agentPrompts", "resolveFixedThreads"], !postInlineOn, "Post inline comments")}</Nested>
+            {toggles(["postSummary"], false, undefined, {
+              postSummary: standaloneSummary && (
+                <FieldDescription className="text-xs">
+                  The PR summary is still posted, as a comment of its own, while it is turned on below.
+                </FieldDescription>
+              ),
+            })}
+            {/* The counts, lifecycle, details and the combined prompt are part of the summary comment. */}
+            <Nested>
+              {toggles(
+                ["findingCounts", "findingLifecycle", "reviewStats", "agentPromptAll"],
+                !postSummaryOn,
+                "Post summary comment",
+              )}
+            </Nested>
+            {toggles(["postCheck"])}
+          </ToggleList>
+          {nothingPosted && (
+            <Alert role="status">
+              <MessageSquareOff />
+              <AlertDescription>
+                Sentryward will post nothing to the PR/MR. Reviews only show up in the dashboard.
+              </AlertDescription>
+            </Alert>
+          )}
+        </Section>
+        <FieldSeparator />
+        <Section title="PR summary" description="A summary of what the change does, and labels from its estimates.">
+          <ToggleList>
+            {toggles(["walkthrough"])}
+            {/* Grouped by topic: the text in the summary beside its native label. */}
+            <Nested>
+              <Topic title="Labels">{toggles(["walkthroughLabels"], !walkthroughOn, "PR summary")}</Topic>
+              <Topic title="Effort">{toggles(["estimateEffort", "effortLabel"], !walkthroughOn, "PR summary")}</Topic>
+              <Topic title="Blast radius">
+                {toggles(["walkthroughBlastRadius", "blastRadiusLabel"], !walkthroughOn, "PR summary")}
+              </Topic>
+            </Nested>
+          </ToggleList>
+          {/* The estimates are made whenever the PR summary runs (WalkthroughOptions in render/markdown.ts). */}
+          <FieldDescription className="text-xs">
+            The native labels only need the PR summary, not the matching text: a label is still published with its
+            text turned off.
+          </FieldDescription>
+        </Section>
+        <FieldSeparator />
+        <Section
+          title="PR summary content"
+          description="Optional parts of the PR summary. The tag on each says what it adds to the PR summary's model call."
+        >
+          <ToggleList>
+            {toggles(["sequenceDiagrams", "assessLinkedIssues", "relatedIssues"], !walkthroughOn, "PR summary")}
           </ToggleList>
         </Section>
         <FieldSeparator />
         <Section title="High-level summary" description="Release notes for the change, or whatever the instructions ask for.">
-          <ToggleList>{toggles(["highLevelSummary"], !walkthroughOn)}</ToggleList>
-          {choiceField("highLevelSummaryPlacement", !highLevelSummaryOn)}
+          <ToggleList>{toggles(["highLevelSummary"], !walkthroughOn, "PR summary")}</ToggleList>
+          {choiceField(
+            "highLevelSummaryPlacement",
+            !highLevelSummaryOn,
+            <OffHint setting="High-level summary" onTabChange={props.onTabChange} />,
+          )}
           <TextField
             id="summary-instructions"
             label="High level summary instructions"
             value={form.summaryInstructions}
-            onChange={(summaryInstructions) => props.onChange({ ...form, summaryInstructions })}
+            onChange={setSummaryInstructions}
             description="By default, Sentryward generates release notes in the description. Use this to customize the summary content and format."
             emptyHint={
               isRepo && inheritedSummaryInstructions
@@ -2066,8 +2302,62 @@ export function ConfigFields(props: {
               config &&
               effective("output.highLevelSummaryInstructions", config.output.highLevelSummaryInstructions || "release notes")
             }
+            extra={
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Examples:</span>
+                  {SUMMARY_EXAMPLES.map((example) => (
+                    <Button
+                      key={example.label}
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      aria-label={`Use the ${example.label} example`}
+                      onClick={() => pickExample(example)}
+                      disabled={summaryFieldOff}
+                    >
+                      {example.label}
+                    </Button>
+                  ))}
+                  {/* Same count as the validation, which trims. */}
+                  <span
+                    data-testid="summary-instructions-count"
+                    className={cn(
+                      "ml-auto text-xs text-muted-foreground tabular-nums",
+                      summaryLength > MAX_SUMMARY_INSTRUCTIONS && "text-destructive",
+                    )}
+                  >
+                    {summaryLength} / {MAX_SUMMARY_INSTRUCTIONS}
+                  </span>
+                </div>
+                {pendingExample && !summaryFieldOff && (
+                  <div
+                    role="group"
+                    aria-label="Replace instructions"
+                    className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/50 px-3 py-2 text-xs"
+                  >
+                    <span>Replace your instructions with the {pendingExample.label} example?</span>
+                    <div className="ml-auto flex gap-2">
+                      <Button type="button" variant="ghost" size="xs" onClick={() => setPendingExample(undefined)}>
+                        Keep mine
+                      </Button>
+                      <Button
+                        type="button"
+                        size="xs"
+                        onClick={() => {
+                          setSummaryInstructions(pendingExample.text)
+                          setPendingExample(undefined)
+                        }}
+                      >
+                        Replace
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </>
+            }
             error={errors.summaryInstructions}
-            disabled={locked("output.highLevelSummaryInstructions") || !highLevelSummaryOn}
+            disabled={summaryFieldOff}
           />
         </Section>
       </>
@@ -2257,22 +2547,69 @@ export function ConfigFields(props: {
         />
       ),
     },
-    display: {
-      grid: "@5xl:grid-cols-2",
-      node: (
-        <Card role="region" aria-label="Review preview" className="@5xl:sticky @5xl:top-18">
-          <CardHeader>
-            <CardTitle>Preview</CardTitle>
-            <CardDescription>
-              What Sentryward would post on a sample change with these settings, including unsaved edits.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ReviewPreview request={previewRequest} />
-          </CardContent>
-        </Card>
-      ),
-    },
+    // Wider than the other side panels, since it draws a diff and comments,
+    // but the settings keep most of the width. Collapsible per browser.
+    display: previewOpen
+      ? {
+          grid: "@5xl:grid-cols-[minmax(0,3fr)_minmax(24rem,2fr)]",
+          node: (
+            // Pinned in the two-column layout, scrolling inside when taller than
+            // the viewport so its end is reachable without leaving the form.
+            <Card
+              role="region"
+              aria-label="Review preview"
+              className="@5xl:sticky @5xl:top-18 @5xl:max-h-[calc(100svh-5.5rem)]"
+            >
+              <CardHeader>
+                <CardTitle>Preview</CardTitle>
+                <CardDescription>
+                  What Sentryward would post on a sample change with these settings, including unsaved edits.
+                </CardDescription>
+                <CardAction>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Hide preview"
+                    onClick={() => {
+                      setPreviewOpen(false)
+                      savePreviewOpen(false)
+                    }}
+                  >
+                    <PanelRightClose />
+                  </Button>
+                </CardAction>
+              </CardHeader>
+              {/* Focusable so the scroll area can be scrolled from the keyboard. */}
+              <CardContent
+                role="region"
+                aria-label="Preview content"
+                tabIndex={0}
+                className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50 @5xl:min-h-0 @5xl:overflow-y-auto"
+              >
+                <ReviewPreview request={previewRequest} focus={previewFocus} />
+              </CardContent>
+            </Card>
+          ),
+        }
+      : {
+          grid: "@5xl:grid-cols-[minmax(0,1fr)_auto]",
+          node: (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-fit @5xl:sticky @5xl:top-18"
+              onClick={() => {
+                setPreviewOpen(true)
+                savePreviewOpen(true)
+              }}
+            >
+              <PanelRightOpen />
+              Show preview
+            </Button>
+          ),
+        },
     llm: {
       grid: "@6xl:grid-cols-[minmax(0,1fr)_22rem]",
       node: (

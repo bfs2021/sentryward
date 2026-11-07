@@ -122,7 +122,7 @@ export const MAX_FALLBACK_MODELS = 3
 const MAX_IGNORE_PATHS = 200
 const MAX_INSTRUCTIONS = 4000
 const MAX_LANGUAGE_INSTRUCTIONS = 2000
-const MAX_SUMMARY_INSTRUCTIONS = 2000
+export const MAX_SUMMARY_INSTRUCTIONS = 2000
 
 export interface LanguageRow {
   language: string

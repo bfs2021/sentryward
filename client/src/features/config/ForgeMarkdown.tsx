@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import { useLayoutEffect, useRef, type ReactNode } from "react"
 import Markdown, { type Components } from "react-markdown"
 import rehypeRaw from "rehype-raw"
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize"
@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm"
 import { MermaidDiagram } from "@/components/MermaidDiagram"
 import { cn } from "@/lib/utils"
 import type { ForgeProvider } from "./api"
+import { CHANGE_ATTRIBUTE, markBlocks, snapshot, type Snapshot } from "./previewChanges"
 
 // GitHub and GitLab render comment markdown with their own sanitising: raw
 // HTML such as <details> and <sub> survives, HTML comments (Sentryward's hidden
@@ -67,13 +68,51 @@ function SuggestedChange(props: { original: string[]; suggestion: string; provid
 
 // Comment markdown as the forge shows it. `original` is the code a suggestion
 // replaces, for the "Suggested change" box both forges draw.
+//
+// For the Display tab preview, after a setting changed: while `upcoming`
+// holds the markdown about to replace this one, the blocks it no longer has
+// are marked as leaving; once it is shown, a new `flash` number marks the
+// blocks the previous render did not have.
 export function ForgeMarkdown(props: {
   children: string
   provider: ForgeProvider
   original?: string[]
   className?: string
+  flash?: number
+  upcoming?: string
 }) {
-  const components: Components = {
+  const rootRef = useRef<HTMLDivElement>(null)
+  const twinRef = useRef<HTMLDivElement>(null)
+  // The blocks as last shown settled, compared against when a flash arrives.
+  const before = useRef<Snapshot[] | null>(null)
+  const handled = useRef<number | undefined>(undefined)
+  const marked = useRef<Element[]>([])
+  const { flash, children: markdown } = props
+  // An unchanged comment has nothing leaving, so it needs no hidden copy.
+  const upcoming = props.upcoming === markdown ? undefined : props.upcoming
+
+  // A layout effect, so a highlight is in the first frame its content shows.
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    for (const element of marked.current) element.removeAttribute(CHANGE_ATTRIBUTE)
+    marked.current = []
+    if (upcoming !== undefined) {
+      // `before` stays the content on show, which the flash compares against next.
+      if (twinRef.current) marked.current = markBlocks(root, snapshot(twinRef.current), "removed")
+      return
+    }
+    const previous = before.current
+    before.current = snapshot(root)
+    // Freshly mounted: the whole comment is new, which its note shows.
+    if (flash === undefined || flash === handled.current || !previous) return
+    handled.current = flash
+    marked.current = markBlocks(root, previous, "added")
+  }, [markdown, flash, upcoming])
+
+  // `measure` draws the hidden copy of the upcoming markdown, only read for
+  // its blocks: a diagram there is its key alone, so Mermaid does not run twice.
+  const components = (measure: boolean): Components => ({
     pre({ node, children }): ReactNode {
       const code = node?.children[0]
       const className = code?.type === "element" ? code.properties.className : undefined
@@ -81,7 +120,11 @@ export function ForgeMarkdown(props: {
       const text =
         code?.type === "element" ? code.children.map((child) => (child.type === "text" ? child.value : "")).join("") : ""
       // Both forges draw ```mermaid blocks, e.g. the walkthrough's sequence diagram.
-      if (language === "language-mermaid") return <MermaidDiagram source={text.replace(/\n$/, "")} />
+      // Keyed by its source, so the diagram finishing drawing is no change.
+      if (language === "language-mermaid") {
+        const source = text.replace(/\n$/, "")
+        return <div data-diff-key={`mermaid:${source}`}>{!measure && <MermaidDiagram source={source} />}</div>
+      }
       if (language.startsWith("language-suggestion")) {
         return (
           <SuggestedChange
@@ -93,12 +136,22 @@ export function ForgeMarkdown(props: {
       }
       return <pre>{children}</pre>
     },
-  }
+  })
+  const render = (source: string, measure: boolean) => (
+    <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, [rehypeSanitize, schema]]} components={components(measure)}>
+      {source}
+    </Markdown>
+  )
   return (
-    <div className={cn(PROSE, props.className)}>
-      <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, [rehypeSanitize, schema]]} components={components}>
-        {props.children}
-      </Markdown>
-    </div>
+    <>
+      <div ref={rootRef} className={cn(PROSE, props.className)}>
+        {render(markdown, false)}
+      </div>
+      {upcoming !== undefined && (
+        <div ref={twinRef} hidden aria-hidden>
+          {render(upcoming, true)}
+        </div>
+      )}
+    </>
   )
 }

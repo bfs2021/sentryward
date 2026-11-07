@@ -42,27 +42,28 @@ const effective = {
     context: "static",
     agent: { maxSteps: 8, maxToolTokens: 30000, maxSearches: 5 },
   },
+  // The server's quiet defaults (DEFAULT_CONFIG in server/src/review/config/schema.ts).
   output: {
     walkthrough: true,
     postInline: true,
     postSummary: true,
-    postCheck: true,
+    postCheck: false,
     resolveFixedThreads: true,
-    findingCounts: true,
-    findingLifecycle: true,
-    reviewStats: true,
+    findingCounts: false,
+    findingLifecycle: false,
+    reviewStats: false,
     agentPrompts: true,
     agentPromptAll: true,
     blastRadiusLabel: false,
     effortLabel: false,
-    sequenceDiagrams: true,
-    estimateEffort: true,
-    assessLinkedIssues: true,
+    sequenceDiagrams: false,
+    estimateEffort: false,
+    assessLinkedIssues: false,
     relatedIssues: true,
-    highLevelSummary: true,
+    highLevelSummary: false,
     highLevelSummaryPlacement: "description",
     highLevelSummaryInstructions: "",
-    walkthroughLabels: true,
+    walkthroughLabels: false,
     walkthroughBlastRadius: true,
   },
   triggers: {
@@ -128,8 +129,7 @@ async function openTab(name: string) {
 }
 
 async function choosePreviewView(preview: HTMLElement, name: "Summary" | "In-line") {
-  await userEvent.click(within(preview).getByRole("combobox", { name: "View" }))
-  await userEvent.click(screen.getByRole("option", { name }))
+  await userEvent.click(within(within(preview).getByRole("group", { name: "View" })).getByRole("button", { name }))
 }
 
 async function selectConnectionOnLlmTab() {
@@ -312,7 +312,7 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     await userEvent.keyboard("{Escape}")
 
     await openTab("Display")
-    const walkthrough = screen.getByRole("switch", { name: "Walkthrough" })
+    const walkthrough = screen.getByRole("switch", { name: "PR summary" })
     expect(walkthrough).toBeChecked()
     await userEvent.click(walkthrough)
     expect(walkthrough).not.toBeChecked()
@@ -474,13 +474,13 @@ describe("Configuration page", { timeout: 20_000 }, () => {
         settings: {
           llm: { connection: "openai" },
           output: {
-            findingCounts: false,
-            findingLifecycle: false,
-            reviewStats: false,
+            findingCounts: true,
+            findingLifecycle: true,
+            reviewStats: true,
             agentPrompts: false,
             blastRadiusLabel: true,
             effortLabel: true,
-            walkthroughLabels: false,
+            walkthroughLabels: true,
             walkthroughBlastRadius: false,
           },
           triggers: {
@@ -510,14 +510,16 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     )
     renderWithProviders(<App />, { route: "/configuration?tab=display" })
 
-    await waitFor(() => expect(screen.getByRole("switch", { name: "Sequence diagrams" })).toBeChecked())
-    for (const name of ["Estimate code review effort", "Assess linked issues", "Related issues", "High-level summary"]) {
-      expect(screen.getByRole("switch", { name })).toBeChecked()
+    // The quiet defaults keep only the related issues.
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Related issues" })).toBeChecked())
+    for (const name of ["Sequence diagrams", "Show review effort in the summary", "Assess linked issues", "High-level summary"]) {
+      expect(screen.getByRole("switch", { name })).not.toBeChecked()
     }
     await userEvent.click(screen.getByRole("switch", { name: "Sequence diagrams" }))
     await userEvent.click(screen.getByRole("switch", { name: "Related issues" }))
+    await userEvent.click(screen.getByRole("switch", { name: "High-level summary" }))
     await userEvent.click(screen.getByRole("combobox", { name: "Summary placement" }))
-    await userEvent.click(screen.getByRole("option", { name: "Walkthrough" }))
+    await userEvent.click(screen.getByRole("option", { name: "PR summary" }))
     await userEvent.type(screen.getByLabelText("High level summary instructions"), "Bullets only")
 
     // Without a summary there is nothing to place or instruct.
@@ -538,8 +540,9 @@ describe("Configuration page", { timeout: 20_000 }, () => {
           llm: { connection: "openai" },
           review: { disableCache: true },
           output: {
-            sequenceDiagrams: false,
+            sequenceDiagrams: true,
             relatedIssues: false,
+            highLevelSummary: true,
             highLevelSummaryPlacement: "walkthrough",
             highLevelSummaryInstructions: "Bullets only",
           },
@@ -604,11 +607,11 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     renderWithProviders(<App />, { route: "/configuration?tab=display" })
 
     const preview = await screen.findByRole("region", { name: "Review preview" })
-    for (const name of ["Review comments", "PR summary"]) {
+    for (const name of ["Where to post", "PR summary"]) {
       expect(screen.getByRole("group", { name })).toBeInTheDocument()
     }
     // The settings and the preview are separate cards.
-    expect(screen.getByRole("switch", { name: "Walkthrough" }).closest("[data-slot=card]")).not.toBe(
+    expect(screen.getByRole("switch", { name: "PR summary" }).closest("[data-slot=card]")).not.toBe(
       preview.closest("[data-slot=card]"),
     )
 
@@ -617,7 +620,9 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     expect(within(preview).queryByRole("region", { name: "Pull request description" })).not.toBeInTheDocument()
     expect(within(preview).getByRole("list", { name: "Labels" })).toHaveTextContent("Medium blast radius")
     // The summary view is shown first, without the inline threads.
-    expect(within(preview).getByRole("combobox", { name: "View" })).toHaveTextContent("Summary")
+    const view = within(preview).getByRole("group", { name: "View" })
+    expect(within(view).getByRole("button", { name: "Summary" })).toHaveAttribute("aria-pressed", "true")
+    expect(within(view).getByRole("button", { name: "In-line" })).toHaveAttribute("aria-pressed", "false")
     const summary = within(preview).getByRole("region", { name: "Summary comment" })
     expect(within(preview).queryByRole("region", { name: "Inline comments" })).not.toBeInTheDocument()
     expect(within(summary).getByRole("heading", { name: "Summary" })).toBeInTheDocument()
@@ -654,10 +659,11 @@ describe("Configuration page", { timeout: 20_000 }, () => {
 
     const preview = await screen.findByRole("region", { name: "Review preview" })
     await within(preview).findByText("#42")
-    const forge = within(preview).getByRole("combobox", { name: "Forge" })
-    expect(forge).toHaveTextContent("GitHub")
-    await userEvent.click(forge)
-    await userEvent.click(screen.getByRole("option", { name: "GitLab" }))
+    // Both forges are on show; one click switches.
+    const forge = within(preview).getByRole("group", { name: "Forge" })
+    expect(within(forge).getByRole("button", { name: "GitHub" })).toHaveAttribute("aria-pressed", "true")
+    await userEvent.click(within(forge).getByRole("button", { name: "GitLab" }))
+    expect(within(forge).getByRole("button", { name: "GitLab" })).toHaveAttribute("aria-pressed", "true")
 
     expect(await within(preview).findByText("!42")).toBeInTheDocument()
     await choosePreviewView(preview, "In-line")
@@ -957,10 +963,10 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     await userEvent.keyboard("{Escape}")
 
     await openTab("Display")
-    const walkthrough = screen.getByRole("switch", { name: "Walkthrough" })
+    const walkthrough = screen.getByRole("switch", { name: "PR summary" })
     expect(walkthrough).not.toBeChecked()
     expect(screen.getByText("Overridden")).toBeInTheDocument()
-    await userEvent.click(screen.getByRole("button", { name: "Reset Walkthrough to inherited" }))
+    await userEvent.click(screen.getByRole("button", { name: "Reset PR summary to inherited" }))
 
     // Back to what the global config gives, not the saved override.
     expect(walkthrough).toBeChecked()
@@ -1023,7 +1029,7 @@ describe("Configuration page", { timeout: 20_000 }, () => {
 
     await waitFor(() => expect(screen.getByLabelText("Verification model")).toBeDisabled())
     expect(screen.getByRole("combobox", { name: "Verification thinking" })).toBeDisabled()
-    expect(screen.getByLabelText("Walkthrough model")).toBeDisabled()
+    expect(screen.getByLabelText("PR summary model")).toBeDisabled()
   })
 
   it("keeps a model field enabled when the repository file turns its feature on over the dashboard", async () => {
@@ -1043,10 +1049,10 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     )
     renderWithProviders(<App />, { route: "/configuration?repo=r1&tab=llm" })
 
-    const walkthroughModel = await screen.findByLabelText("Walkthrough model")
+    const walkthroughModel = await screen.findByLabelText("PR summary model")
     await waitFor(() => expect(screen.getByLabelText("Verification model")).toBeEnabled())
     expect(walkthroughModel).toBeEnabled()
-    expect(screen.queryByText(/Only used when Walkthrough is on/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Only used when PR summary is on/)).not.toBeInTheDocument()
   })
 
   it("shows connection capabilities a repository inherits an override for", async () => {
@@ -1282,7 +1288,7 @@ describe("LLM tab", { timeout: 20_000 }, () => {
     expect(verifyModel).toHaveValue("openai/gpt-5-mini")
     expect(screen.getByRole("combobox", { name: "Verification thinking" })).toBeDisabled()
     expect(screen.getAllByText(/Only used when Verify findings is on/)).toHaveLength(2)
-    expect(screen.getByLabelText("Walkthrough model")).toBeEnabled()
+    expect(screen.getByLabelText("PR summary model")).toBeEnabled()
 
     // The hint opens the tab with the setting that turns it on.
     await userEvent.click(screen.getAllByRole("button", { name: "Finding Types tab" })[0]!)
@@ -1290,12 +1296,12 @@ describe("LLM tab", { timeout: 20_000 }, () => {
     await userEvent.click(screen.getByRole("combobox", { name: "Verify findings" }))
     await userEvent.click(screen.getByRole("option", { name: "All findings" }))
     await openTab("Display")
-    await userEvent.click(screen.getByRole("switch", { name: "Walkthrough" }))
+    await userEvent.click(screen.getByRole("switch", { name: "PR summary" }))
 
     await openTab("LLM Config")
     expect(screen.getByLabelText("Verification model")).toBeEnabled()
-    expect(screen.getByLabelText("Walkthrough model")).toBeDisabled()
-    expect(screen.getByText(/Only used when Walkthrough is on/)).toBeInTheDocument()
+    expect(screen.getByLabelText("PR summary model")).toBeDisabled()
+    expect(screen.getByText(/Only used when PR summary is on/)).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole("button", { name: "Save global config" }))
     await waitFor(() =>
@@ -1581,11 +1587,11 @@ describe("Triggers tab", { timeout: 20_000 }, () => {
     mockApi(globalRoutes())
     renderWithProviders(<App />, { route: "/configuration?tab=display" })
 
-    await userEvent.click(await screen.findByRole("switch", { name: "Walkthrough" }))
+    await userEvent.click(await screen.findByRole("switch", { name: "PR summary" }))
     await openTab("Triggers")
     expect(screen.getByRole("combobox", { name: "PR summary trigger" })).toBeDisabled()
-    expect(screen.getByText(/Only used when Walkthrough is on/)).toBeInTheDocument()
-    expect(within(screen.getByRole("region", { name: "Triggers summary" })).getByText("Off, walkthrough is off")).toBeInTheDocument()
+    expect(screen.getByText(/Only used when PR summary is on/)).toBeInTheDocument()
+    expect(within(screen.getByRole("region", { name: "Triggers summary" })).getByText("Off, PR summary is off")).toBeInTheDocument()
   })
 
   it("checks a sample change against the unsaved settings", async () => {
@@ -1687,5 +1693,368 @@ describe("Triggers tab", { timeout: 20_000 }, () => {
     expect(screen.queryByText(/Replaces the inherited list/)).not.toBeInTheDocument()
     await userEvent.type(labels, "wip{enter}")
     expect(screen.getByText("Replaces the inherited list: no-review.")).toBeInTheDocument()
+  })
+})
+
+describe("Display tab", { timeout: 20_000 }, () => {
+  async function openDisplay() {
+    mockApi(globalRoutes())
+    renderWithProviders(<App />, { route: "/configuration?tab=display" })
+    // Everything is disabled until the config has loaded.
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Show finding counts" })).toBeEnabled())
+  }
+
+  it("nests each dependent setting under its parent and says which one turns it on", async () => {
+    await openDisplay()
+
+    const parents = [
+      ["Post inline comments", ["Prompt for AI agents per comment", "Resolve fixed threads"]],
+      ["Post summary comment", ["Show finding counts", "Show changes since the last review", "Show review details", "Prompt for all review comments"]],
+      ["PR summary", ["Show labels in the summary", "Show review effort in the summary", "Publish blast radius label"]],
+    ] as const
+    for (const [parent, children] of parents) {
+      for (const name of children) {
+        const child = screen.getByRole("switch", { name })
+        expect(child).toBeEnabled()
+        expect(child).not.toHaveAccessibleDescription()
+        // Indented in the same list as its parent.
+        const list = screen.getByRole("switch", { name: parent }).closest(".divide-y")
+        expect(child.closest(".border-l-2")?.closest(".divide-y")).toBe(list)
+      }
+      await userEvent.click(screen.getByRole("switch", { name: parent }))
+      for (const name of children) {
+        const child = screen.getByRole("switch", { name })
+        expect(child).toBeDisabled()
+        expect(child).toHaveAccessibleDescription(`Needs ${parent}`)
+      }
+    }
+    // The parent is on this tab, so there is no tab to link to.
+    expect(screen.queryByRole("button", { name: "Display tab" })).not.toBeInTheDocument()
+  })
+
+  it("groups the effort and blast radius text beside their labels", async () => {
+    await openDisplay()
+
+    const effort = screen.getByRole("group", { name: "Effort" })
+    expect(within(effort).getAllByRole("switch").map((item) => item.getAttribute("id"))).toEqual([
+      "flag-estimateEffort",
+      "flag-effortLabel",
+    ])
+    const blast = screen.getByRole("group", { name: "Blast radius" })
+    expect(within(blast).getAllByRole("switch").map((item) => item.getAttribute("id"))).toEqual([
+      "flag-walkthroughBlastRadius",
+      "flag-blastRadiusLabel",
+    ])
+    expect(screen.getByText(/native labels only need the PR summary/)).toBeInTheDocument()
+    // Each optional part says what it adds to the model call.
+    const content = screen.getByRole("group", { name: "PR summary content" })
+    expect(within(content).getAllByText("Longer prompt")).toHaveLength(2)
+    expect(within(content).getByText("More output")).toBeInTheDocument()
+    expect(within(effort).getByText("No extra cost")).toBeInTheDocument()
+  })
+
+  it("says when the PR summary is posted on its own, and when nothing is posted at all", async () => {
+    await openDisplay()
+    const standalone = /PR summary is still posted, as a comment of its own/
+    const nothing = /Sentryward will post nothing to the PR\/MR/
+    expect(screen.queryByText(standalone)).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole("switch", { name: "Post summary comment" }))
+    expect(screen.getByText(standalone)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole("switch", { name: "Post inline comments" }))
+    // The commit status is off by default. The PR summary still reaches the change.
+    expect(screen.getByRole("switch", { name: "Post commit status" })).not.toBeChecked()
+    expect(screen.queryByText(nothing)).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole("switch", { name: "PR summary" }))
+    expect(screen.queryByText(standalone)).not.toBeInTheDocument()
+    expect(screen.getByRole("status")).toHaveTextContent(nothing)
+    await userEvent.click(screen.getByRole("switch", { name: "Post commit status" }))
+    expect(screen.queryByText(nothing)).not.toBeInTheDocument()
+  })
+
+  it("warns that nothing is posted when the values are inherited", async () => {
+    const off = { postInline: false, postSummary: false, postCheck: false, walkthrough: false }
+    mockApi(
+      globalRoutes({
+        "GET /api/config/global": { ...globalConfig(off), config: { ...effective, output: { ...effective.output, ...off } } },
+        "GET /api/repos": { repos: [repo("r1", "team/web", { followGlobal: false })] },
+        "GET /api/repos/r1/config": {
+          ref: "main",
+          repoFile: null,
+          warnings: [],
+          config: { ...effective, output: { ...effective.output, ...off } },
+          sources: {},
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration?repo=r1&tab=display" })
+
+    expect(await screen.findByText(/Sentryward will post nothing to the PR\/MR/)).toBeInTheDocument()
+  })
+
+  it("leaves out the hint when the repository file locks the field anyway", async () => {
+    mockApi(
+      globalRoutes({
+        "GET /api/repos": { repos: [repo("r1", "team/web", { followGlobal: false, settings: { output: { postSummary: false } } })] },
+        "GET /api/repos/r1/config": {
+          ref: "main",
+          repoFile: ".sentryward.yml",
+          warnings: [],
+          config: { ...effective, output: { ...effective.output, postSummary: false } },
+          sources: { "output.postSummary": "repoSettings", "output.findingCounts": "repoFile" },
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration?repo=r1&tab=display" })
+
+    const details = await screen.findByRole("switch", { name: "Show review details" })
+    await waitFor(() => expect(details).toHaveAccessibleDescription("Needs Post summary comment"))
+    const counts = screen.getByRole("switch", { name: "Show finding counts" })
+    expect(counts).toBeDisabled()
+    expect(counts).not.toHaveAccessibleDescription()
+  })
+
+  it("switches the preview to the view the changed setting shows up in", async () => {
+    await openDisplay()
+    const view = within(screen.getByRole("region", { name: "Review preview" })).getByRole("group", { name: "View" })
+    const pressed = () => within(view).getByRole("button", { pressed: true })
+    expect(pressed()).toHaveTextContent("Summary")
+
+    await userEvent.click(screen.getByRole("switch", { name: "Prompt for AI agents per comment" }))
+    expect(pressed()).toHaveTextContent("In-line")
+    await userEvent.click(screen.getByRole("switch", { name: "Show finding counts" }))
+    expect(pressed()).toHaveTextContent("Summary")
+
+    // A view picked by hand stays until the next change.
+    await userEvent.click(within(view).getByRole("button", { name: "In-line" }))
+    expect(pressed()).toHaveTextContent("In-line")
+    await userEvent.click(screen.getByRole("switch", { name: "Resolve fixed threads" }))
+    expect(pressed()).toHaveTextContent("In-line")
+    await userEvent.click(screen.getByRole("switch", { name: "Show review details" }))
+    expect(pressed()).toHaveTextContent("Summary")
+  })
+
+  // Answers like the server for the switches below: the counts line, the
+  // combined prompt and the blast radius label come and go with them.
+  function changingStub(bodies: PreviewBody[] = []) {
+    return (init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as PreviewBody
+      bodies.push(body)
+      const output = { ...(body.base.output as object), ...(body.settings.output as object) } as Record<string, boolean>
+      const summaryComment = [
+        "## Summary",
+        "Adds a lookup endpoint.",
+        ...(output.findingCounts ? ["**1 finding**: 1 critical"] : []),
+        "<details>\n<summary>Actionable comments (1)</summary>",
+        ["- SQL", ...(output.agentPromptAll ? ["- Prompt for all review comments"] : [])].join("\n"),
+        "</details>",
+      ].join("\n\n")
+      return jsonResponse(200, {
+        ...PREVIEW,
+        provider: body.provider,
+        pr: { ...PREVIEW.pr, labels: ["Medium blast radius", ...(output.blastRadiusLabel ? ["Large blast radius"] : [])] },
+        summaryComment,
+      })
+    }
+  }
+  const changed = (root: HTMLElement) => Array.from(root.querySelectorAll("[data-preview-change]"))
+
+  it("marks only what a setting adds, and what it takes out before it goes", async () => {
+    mockApi(globalRoutes({ "POST /api/config/preview": changingStub() }))
+    renderWithProviders(<App />, { route: "/configuration?tab=display" })
+    const preview = await screen.findByRole("region", { name: "Review preview" })
+    const summary = await within(preview).findByRole("region", { name: "Summary comment" })
+    await within(summary).findByText("Adds a lookup endpoint.")
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Show finding counts" })).toBeEnabled())
+    // Off by default.
+    expect(within(summary).queryByText("1 finding")).not.toBeInTheDocument()
+    expect(changed(preview)).toEqual([])
+
+    // A line put in is the only thing marked, at once, not its comment.
+    await userEvent.click(screen.getByRole("switch", { name: "Show finding counts" }))
+    const counts = (await within(summary).findByText("1 finding")).closest("p")!
+    await waitFor(() => expect(changed(preview)).toEqual([counts]))
+    expect(counts).toHaveAttribute("data-preview-change", "added")
+    // The highlight goes after a moment.
+    await waitFor(() => expect(changed(preview)).toEqual([]), { timeout: 3000 })
+
+    // Taken out again, the line stays marked as leaving, and nothing else is.
+    await userEvent.click(screen.getByRole("switch", { name: "Show finding counts" }))
+    await waitFor(() => expect(changed(preview)).toEqual([counts]))
+    expect(counts).toHaveAttribute("data-preview-change", "removed")
+    expect(summary).toContainElement(counts)
+    // Then it goes, without anything marked as added.
+    await waitFor(() => expect(within(summary).queryByText("1 finding")).not.toBeInTheDocument(), { timeout: 3000 })
+    expect(changed(preview)).toEqual([])
+  })
+
+  it("marks the one item leaving a collapsed block, and a label coming and going", async () => {
+    mockApi(globalRoutes({ "POST /api/config/preview": changingStub() }))
+    renderWithProviders(<App />, { route: "/configuration?tab=display" })
+    const preview = await screen.findByRole("region", { name: "Review preview" })
+    const item = (await within(preview).findByText("Prompt for all review comments")).closest("li")!
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Prompt for all review comments" })).toBeEnabled())
+
+    await userEvent.click(screen.getByRole("switch", { name: "Prompt for all review comments" }))
+    await waitFor(() => expect(changed(preview)).toEqual([item]))
+    expect(item).toHaveAttribute("data-preview-change", "removed")
+    await waitFor(() => expect(within(preview).queryByText("Prompt for all review comments")).not.toBeInTheDocument(), {
+      timeout: 3000,
+    })
+
+    await userEvent.click(screen.getByRole("switch", { name: "Publish blast radius label" }))
+    const label = await within(preview).findByText("Large blast radius")
+    await waitFor(() => expect(changed(preview)).toEqual([label]))
+    expect(label).toHaveAttribute("data-preview-change", "added")
+    expect(within(preview).getByText("Medium blast radius")).not.toHaveAttribute("data-preview-change")
+
+    await userEvent.click(screen.getByRole("switch", { name: "Publish blast radius label" }))
+    await waitFor(() => expect(within(preview).getByText("Large blast radius")).toHaveAttribute("data-preview-change", "removed"))
+    await waitFor(() => expect(within(preview).queryByText("Large blast radius")).not.toBeInTheDocument(), { timeout: 3000 })
+  })
+
+  it("highlights nothing when the forge is switched", async () => {
+    const bodies: PreviewBody[] = []
+    mockApi(globalRoutes({ "POST /api/config/preview": changingStub(bodies) }))
+    renderWithProviders(<App />, { route: "/configuration?tab=display" })
+    const preview = await screen.findByRole("region", { name: "Review preview" })
+    await within(preview).findByText("#42")
+
+    await userEvent.click(within(within(preview).getByRole("group", { name: "Forge" })).getByRole("button", { name: "GitLab" }))
+    expect(await within(preview).findByText("!42")).toBeInTheDocument()
+    expect(bodies.at(-1)?.provider).toBe("gitlab")
+    expect(changed(preview)).toEqual([])
+  })
+
+  it("hides the preview and remembers it in this browser", async () => {
+    await openDisplay()
+    try {
+      await userEvent.click(screen.getByRole("button", { name: "Hide preview" }))
+      expect(screen.queryByRole("region", { name: "Review preview" })).not.toBeInTheDocument()
+      expect(localStorage.getItem("sentryward-config-preview")).toBe("hidden")
+
+      await userEvent.click(screen.getByRole("button", { name: "Show preview" }))
+      expect(screen.getByRole("region", { name: "Review preview" })).toBeInTheDocument()
+      // The scroll area inside the pinned card is reachable from the keyboard.
+      expect(screen.getByRole("region", { name: "Preview content" })).toHaveAttribute("tabindex", "0")
+      expect(localStorage.getItem("sentryward-config-preview")).toBeNull()
+    } finally {
+      localStorage.removeItem("sentryward-config-preview")
+    }
+  })
+
+  it("counts the summary instructions and fills in an example only when asked", async () => {
+    await openDisplay()
+    // Off by default, which greys the instructions out.
+    await userEvent.click(screen.getByRole("switch", { name: "High-level summary" }))
+    const field = screen.getByLabelText("High level summary instructions")
+    const count = screen.getByTestId("summary-instructions-count")
+    expect(count).toHaveTextContent("0 / 2000")
+
+    await userEvent.click(screen.getByRole("button", { name: "Use the Release notes example" }))
+    expect((field as HTMLTextAreaElement).value).toMatch(/^Write release notes/)
+    expect(count).not.toHaveTextContent("0 / 2000")
+
+    // Typed text is only replaced after a confirm.
+    await userEvent.clear(field)
+    await userEvent.type(field, "Mine")
+    expect(count).toHaveTextContent("4 / 2000")
+    await userEvent.click(screen.getByRole("button", { name: "Use the Changelog entry example" }))
+    expect(field).toHaveValue("Mine")
+    const confirm = screen.getByRole("group", { name: "Replace instructions" })
+    await userEvent.click(within(confirm).getByRole("button", { name: "Keep mine" }))
+    expect(field).toHaveValue("Mine")
+    await userEvent.click(screen.getByRole("button", { name: "Use the Changelog entry example" }))
+    await userEvent.click(screen.getByRole("button", { name: "Replace" }))
+    expect((field as HTMLTextAreaElement).value).toMatch(/^Write one changelog entry/)
+
+    await userEvent.clear(field)
+    await userEvent.click(field)
+    await userEvent.paste("x".repeat(2001))
+    expect(count).toHaveTextContent("2001 / 2000")
+    expect(count).toHaveClass("text-destructive")
+    expect(screen.getByText("At most 2000 characters")).toBeInTheDocument()
+  })
+
+  it("applies a display preset to the form without saving it", async () => {
+    let body: unknown
+    mockApi(
+      globalRoutes({
+        "PUT /api/config/global": (init?: RequestInit) => {
+          body = JSON.parse(String(init?.body))
+          return jsonResponse(200, globalConfig((body as { settings: Record<string, unknown> }).settings))
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration?tab=display" })
+    const presets = await screen.findByRole("group", { name: "Display preset" })
+    // The defaults are the Standard preset.
+    await waitFor(() => expect(within(presets).getByRole("button", { name: "Standard" })).toHaveAttribute("aria-pressed", "true"))
+
+    await userEvent.click(within(presets).getByRole("button", { name: "Minimal" }))
+    expect(within(presets).getByRole("button", { name: "Minimal" })).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByRole("switch", { name: "Post inline comments" })).toBeChecked()
+    expect(screen.getByRole("switch", { name: "Resolve fixed threads" })).toBeChecked()
+    for (const name of ["Post summary comment", "Post commit status", "PR summary", "Prompt for AI agents per comment"]) {
+      expect(screen.getByRole("switch", { name })).not.toBeChecked()
+    }
+    // A manual change leaves the preset.
+    await userEvent.click(screen.getByRole("switch", { name: "Post commit status" }))
+    expect(within(presets).queryByRole("button", { pressed: true })).not.toBeInTheDocument()
+
+    await userEvent.click(within(presets).getByRole("button", { name: "Everything" }))
+    expect(screen.getByRole("switch", { name: "Publish blast radius label" })).toBeChecked()
+    expect(screen.getByRole("switch", { name: "Publish review time estimate label" })).toBeChecked()
+    await selectConnectionOnLlmTab()
+    await userEvent.click(screen.getByRole("button", { name: "Save global config" }))
+
+    // Only what differs from the defaults is saved.
+    await waitFor(() =>
+      expect(body).toEqual({
+        settings: {
+          llm: { connection: "openai" },
+          output: {
+            postCheck: true,
+            findingCounts: true,
+            findingLifecycle: true,
+            reviewStats: true,
+            blastRadiusLabel: true,
+            effortLabel: true,
+            sequenceDiagrams: true,
+            estimateEffort: true,
+            assessLinkedIssues: true,
+            highLevelSummary: true,
+            walkthroughLabels: true,
+          },
+        },
+      }),
+    )
+  })
+
+  it("leaves fields the repository file sets alone when applying a preset", async () => {
+    mockApi(
+      globalRoutes({
+        "GET /api/repos": { repos: [repo("r1", "team/web", { followGlobal: false })] },
+        "GET /api/repos/r1/config": {
+          ref: "main",
+          repoFile: ".sentryward.yml",
+          warnings: [],
+          config: { ...effective, output: { ...effective.output, postCheck: true } },
+          sources: { "output.postCheck": "repoFile" },
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration?repo=r1&tab=display" })
+    const presets = await screen.findByRole("group", { name: "Display preset" })
+    await waitFor(() => expect(within(presets).getByRole("button", { name: "Minimal" })).toBeEnabled())
+
+    await userEvent.click(within(presets).getByRole("button", { name: "Minimal" }))
+    expect(screen.getByRole("switch", { name: "Post summary comment" })).not.toBeChecked()
+    expect(screen.getByRole("button", { name: "Reset Post summary comment to inherited" })).toBeInTheDocument()
+    // The file's field stays locked and gets no override.
+    expect(screen.getByRole("switch", { name: "Post commit status" })).toBeDisabled()
+    expect(screen.queryByRole("button", { name: "Reset Post commit status to inherited" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled()
   })
 })

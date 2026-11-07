@@ -83,7 +83,7 @@ statuses. The dashboard tracks reviews and findings across runs.
   [Ollama](#ollama) model.
 - **GitHub and GitLab:** a GitHub App, plus GitLab.com or self-hosted GitLab.
 - **Reviews where you work:** inline findings with suggestions, one summary
-  comment, and a `sentryward/review` commit status.
+  comment, and optionally a `sentryward/review` commit status.
 - **Manual or automatic:** submit a PR/MR URL, review on webhooks, or comment
   `/sentryward review`.
 - **Per-repository config:** dashboard settings, overridable by a
@@ -625,9 +625,9 @@ dashboard says why automatic ones are off. GitLab must be able to reach
 
 ## Publishing to the forge
 
-When a review starts, Sentryward posts a "reviewing" summary comment and sets a
-pending `sentryward/review` commit status. When it finishes it publishes, each
-step independently:
+When a review starts, Sentryward posts a "reviewing" summary comment and, with
+`output.post_check` on, sets a pending `sentryward/review` commit status. When
+it finishes it publishes, each step independently:
 
 - **Inline comments** for actionable findings only.
   - GitHub: one review posted as `COMMENT`, never approve or request changes.
@@ -645,16 +645,19 @@ step independently:
     lands. Ignored findings are left alone.
 - **The summary comment**, edited in place: the markdown served by
   `GET /api/reviews/:id/markdown`.
-  - One comment carries both what the change does (the walkthrough, when
-    `output.walkthrough` is on) and what the review found.
-  - It ends with a line naming the commit, models and coverage, which
-    `output.review_stats` turns off.
-  - With `output.post_summary` off, the walkthrough is posted as a comment of
+  - One comment carries both what the change does (the PR summary, when
+    `output.walkthrough` is on) and what the review found. The dashboard and
+    these docs call it the PR summary; the config keys keep the name
+    `walkthrough`.
+  - With `output.review_stats` on, it ends with a line naming the commit,
+    models and coverage.
+  - With `output.post_summary` off, the PR summary is posted as a comment of
     its own.
   - `output.summary_location` is accepted but ignored, and a walkthrough block
     an earlier version wrote into the description is removed on the next
     review.
-- **The walkthrough's optional parts**, each with its own switch:
+- **The PR summary's optional parts**, each with its own switch (only related
+  issues and the blast radius segment are on by default):
 
   | Key | Adds |
   | --- | --- |
@@ -662,27 +665,37 @@ step independently:
   | `output.sequence_diagrams` | A Mermaid sequence diagram of the main flow |
   | `output.assess_linked_issues` | How well the change addresses the issues it closes ("fixes #12" style references on GitHub, GitLab's own closing issues on GitLab) |
   | `output.related_issues` | Possibly related issues found by searching the tracker for the title's keywords |
-  | `output.walkthrough_labels` | The labels segment of the walkthrough's meta line |
+  | `output.walkthrough_labels` | The labels segment of the PR summary's meta line |
   | `output.walkthrough_blast_radius` | The blast radius segment of the meta line |
 
   Only issues the forge returned are ever shown. Hiding the labels or blast
   radius segments only changes the comment text, not the native labels below.
+  What each part adds to the PR summary's model call: a sequence diagram and
+  the high-level summary make the model write more, linked and related issues
+  add the issues' text to the prompt (only when there are any), and the effort
+  estimate is made either way, for the effort label.
 - **The high-level summary** (`output.high_level_summary`): release notes by
   default, or whatever `output.high_level_summary_instructions` asks for.
   `output.high_level_summary_placement` puts it in the PR/MR description (the
   default, between hidden markers at the end, replaced on each run and never
-  read back as the author's text) or in the walkthrough.
+  read back as the author's text) or in the PR summary (`walkthrough`).
 - **Labels**, when `output.blast_radius_label` or `output.effort_label` is on:
-  the walkthrough's estimates as native labels such as `Large blast radius` or
-  `10-20 Minutes`. A later run swaps a changed estimate's label. GitHub and
+  the PR summary's estimates as native labels such as `Large blast radius` or
+  `10-20 Minutes`. They need the PR summary, but not the matching text
+  (`output.estimate_effort`, `output.walkthrough_blast_radius`). A later run swaps a changed estimate's label. GitHub and
   GitLab only; on GitHub both labels and the cleanup of old description blocks
   use the Pull requests (write) permission.
-- **The commit status**: `success` (pass), `failure` (blocked) or `error`
-  (incomplete; GitLab shows it as `failed`), linking to the review in the
-  dashboard. Branch protection can require it.
+- **The commit status**, when `output.post_check` is on (it is off by
+  default): `success` (pass), `failure` (blocked) or `error` (incomplete;
+  GitLab shows it as `failed`), linking to the review in the dashboard. Turn it
+  on for branch protection to require it.
 
-Turn the first three off with `output.post_inline`, `output.post_summary` and
-`output.post_check`, and the walkthrough with `output.walkthrough`. If
+The defaults are a quiet setup, the Display tab's Standard preset: inline
+comments, one summary comment and a short PR summary, without the counts,
+lifecycle and stats lines, the labels, diagrams or the commit status. Turn the
+inline and summary comments off with `output.post_inline` and
+`output.post_summary`, the commit status on with `output.post_check`, and the PR
+summary off with `output.walkthrough`. If
 publishing fails, the review is kept and the job is marked partial with the
 reason.
 
@@ -734,7 +747,7 @@ Rules and limits:
 | `triggers.review_on_push` | boolean | Whether new commits are reviewed again |
 | `triggers.full_review_on_push` | boolean | Review the whole change on every push instead of incrementally |
 | `triggers.command` | boolean | Turns `/sentryward review` off when `false` |
-| `triggers.summary` | `published` (default), `manual` | Limits the walkthrough in automatic reviews; `manual` leaves it to requested reviews |
+| `triggers.summary` | `published` (default), `manual` | Limits the PR summary in automatic reviews; `manual` leaves it to requested reviews |
 | `triggers.abort_on_close` | boolean (default on) | Cancel and stop reviews when the PR/MR is closed or merged |
 
 Older settings keep their meaning: `triggers.on_push: false` reads as
@@ -783,8 +796,8 @@ what changed since the last one:
 - A finding counts as moved only when the same problem now appears in a file
   the change adds or renames, and it is the only one of its kind on both sides;
   anything looser would turn real fixes into invalidated findings.
-- Each list in the comment shows at most 20 findings, and
-  `output.finding_lifecycle: false` leaves the block out.
+- Each list in the comment shows at most 20 findings. The block is only there
+  with `output.finding_lifecycle` on (off by default).
 - The findings page filters by the same outcome ("Last review"), and
   invalidated findings do not count toward the resolution rate.
 
@@ -1094,7 +1107,7 @@ profile: balanced
 llm:
   model: anthropic/claude-sonnet-5-5   # provider/model: anthropic, openai, google or ollama
   fallback_models: []
-  walkthrough_model: null   # model for the walkthrough; null uses model
+  walkthrough_model: null   # model for the PR summary; null uses model
   verify_model: null        # model for review.verify; null uses model (fallbacks are shared)
   temperature: 0.2
   max_tokens: 8000
@@ -1124,32 +1137,32 @@ review:
     max_tool_tokens: 30000  # what tools may return in one pass
     max_searches: 5         # code searches across the whole review
 output:
-  walkthrough: true
+  walkthrough: true         # the PR summary
   post_inline: true
   post_summary: true
-  post_check: true
+  post_check: false         # the sentryward/review commit status
   resolve_fixed_threads: true  # resolve a finding's inline thread once it is fixed
-  finding_counts: true      # the findings-count line under the verdict
-  finding_lifecycle: true   # what changed since the last review (new, fixed, ...)
-  review_stats: true        # the commit/models/coverage line under the summary
+  finding_counts: false     # the findings-count line under the verdict
+  finding_lifecycle: false  # what changed since the last review (new, fixed, ...)
+  review_stats: false       # the commit/models/coverage line under the summary
   agent_prompts: true       # a prompt for AI agents in each actionable inline comment
   agent_prompt_all: true    # one prompt for every finding in the summary comment
   blast_radius_label: false # e.g. "Large blast radius"
   effort_label: false       # e.g. "10-20 Minutes"
-  estimate_effort: true     # review effort in the walkthrough
-  walkthrough_labels: true  # the labels segment in the walkthrough (text, not native labels)
-  walkthrough_blast_radius: true  # the blast radius segment in the walkthrough
-  sequence_diagrams: true   # Mermaid sequence diagram in the walkthrough
-  assess_linked_issues: true
+  estimate_effort: false    # review effort in the PR summary
+  walkthrough_labels: false # the labels segment in the PR summary (text, not native labels)
+  walkthrough_blast_radius: true  # the blast radius segment in the PR summary
+  sequence_diagrams: false  # Mermaid sequence diagram in the PR summary
+  assess_linked_issues: false
   related_issues: true
-  high_level_summary: true
-  high_level_summary_placement: description   # description | walkthrough
+  high_level_summary: false
+  high_level_summary_placement: description   # description | walkthrough (the PR summary)
   high_level_summary_instructions: ""         # empty: release notes
 triggers:
   review: published         # manual | published | all (drafts too)
   review_on_push: true      # review new commits pushed to an open PR/MR
   full_review_on_push: false  # on push, review every file, not only those the new commits touched
-  summary: published        # manual | published: walkthrough in automatic reviews
+  summary: published        # manual | published: PR summary in automatic reviews
   command: true             # allow "/sentryward review" in a comment
   replies: true             # answer replies on Sentryward's inline comments, and "/sentryward ignore"
   abort_on_close: true      # stop a review when its PR/MR is closed or merged
