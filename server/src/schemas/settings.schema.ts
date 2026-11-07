@@ -11,9 +11,11 @@ export const updateProfileSchema = z
     path: ["name"],
   });
 
+// currentPassword is optional here because an account created through a
+// sign-in provider has none yet; the controller requires it whenever one exists.
 export const changePasswordSchema = z
   .object({
-    currentPassword: z.string().min(1, "Current password is required"),
+    currentPassword: z.string().optional(),
     newPassword: z.string().min(8, "Password must be at least 8 characters").max(128),
     confirmPassword: z.string(),
   })
@@ -44,9 +46,14 @@ export const testModelSchema = z.object({
   model: z.string().trim().min(1, "Choose a model").max(200),
 });
 
+// The password confirms the deletion, or for an account without one the email
+// typed out; the controller decides which applies.
 export const deleteAccountSchema = z.object({
-  password: z.string().min(1, "Password is required"),
+  password: z.string().optional(),
+  email: z.string().trim().optional(),
 });
+
+export const identityParamsSchema = z.object({ id: z.uuid() });
 
 // Null for a token that never expires.
 export const createApiTokenSchema = z.object({

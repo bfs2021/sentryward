@@ -1,8 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import type { Workspace } from "./auth-context"
+import type { SignInProvider } from "./signInProviders"
 
 export type RegistrationMode = "open" | "invite" | "closed"
+
+// A sign-in provider this server has configured.
+export interface RegistrationProvider {
+  id: SignInProvider
+  host: string
+}
+
+export interface Registration {
+  mode: RegistrationMode
+  firstUser: boolean
+  mailConfigured: boolean
+  // False when the instance only allows signing in through a provider.
+  passwordLogin: boolean
+  providers: RegistrationProvider[]
+}
 
 export interface Invite {
   email: string | null
@@ -19,8 +35,7 @@ export function useRegistration() {
     queryKey: ["auth", "registration"],
     // mailConfigured tells the forgot password page whether a reset can be
     // emailed or needs an admin.
-    queryFn: () =>
-      api<{ mode: RegistrationMode; firstUser: boolean; mailConfigured: boolean }>("/auth/registration"),
+    queryFn: () => api<Registration>("/auth/registration"),
     retry: false,
   })
 }

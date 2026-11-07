@@ -138,6 +138,23 @@ describe("POST /api/auth/login", () => {
     }
   });
 
+  it("answers a provider-only account like a wrong password, after one verification", async () => {
+    await prisma.user.create({ data: { name: "Linus", email: "linus@example.com", passwordHash: null } });
+    const password = await import("../src/lib/password.ts");
+    const verify = vi.mocked(password.verifyPassword);
+    verify.mockClear();
+
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ email: "linus@example.com", password: "whatever123" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.message).toBe("Invalid email or password");
+    // Same argon2 work as any other refusal, so timing cannot reveal how the
+    // account signs in.
+    expect(verify).toHaveBeenCalledTimes(1);
+  });
+
   it("verifies the stored hash once for a wrong password", async () => {
     const password = await import("../src/lib/password.ts");
     const verify = vi.mocked(password.verifyPassword);
@@ -287,7 +304,17 @@ describe("registration modes and invites", () => {
     const token = await inviteToken("grace@example.com");
 
     const mode = await request(app).get("/api/auth/registration");
-    expect(mode.body).toEqual({ mode: "invite", firstUser: false, mailConfigured: false });
+    expect(mode.body).toEqual({
+      mode: "invite",
+      firstUser: false,
+      mailConfigured: false,
+      passwordLogin: true,
+      // From vitest.config.ts: both sign-in providers are configured.
+      providers: [
+        { id: "github", host: "github.com" },
+        { id: "gitlab", host: "gitlab.acme.com" },
+      ],
+    });
 
     const shown = await request(app).get(`/api/auth/invites/${token}`);
     expect(shown.status).toBe(200);
@@ -295,5 +322,27 @@ describe("registration modes and invites", () => {
 
     const missing = await request(app).get("/api/auth/invites/unknown");
     expect(missing.status).toBe(404);
+  });
+});
+
+describe("PASSWORD_LOGIN=disabled", () => {
+  afterEach(() => {
+    env.PASSWORD_LOGIN = "enabled";
+  });
+
+  it("refuses password sign-in, sign-up and resets", async () => {
+    await request(app).post("/api/auth/register").send(validUser);
+    env.PASSWORD_LOGIN = "disabled";
+
+    const login = await request(app).post("/api/auth/login").send({ email: validUser.email, password: validUser.password });
+    const register = await request(app)
+      .post("/api/auth/register")
+      .send({ ...validUser, email: "other@example.com" });
+    const reset = await request(app).post("/api/auth/password-reset").send({ email: validUser.email });
+
+    expect([login.status, register.status, reset.status]).toEqual([403, 403, 403]);
+    expect(authCookie(login)).toBeUndefined();
+    const mode = await request(app).get("/api/auth/registration");
+    expect(mode.body.passwordLogin).toBe(false);
   });
 });

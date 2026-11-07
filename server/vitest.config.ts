@@ -22,6 +22,13 @@ export default defineConfig({
       GITLAB_OAUTH_HOST: "gitlab.acme.com",
       GITLAB_OAUTH_CLIENT_ID: "gitlab-client-id",
       GITLAB_OAUTH_CLIENT_SECRET: "gitlab-client-secret",
+      // Sign-in providers, one on a self-managed GitLab; provider calls are stubbed.
+      GITHUB_LOGIN_HOST: "github.com",
+      GITHUB_LOGIN_CLIENT_ID: "github-login-id",
+      GITHUB_LOGIN_CLIENT_SECRET: "github-login-secret",
+      GITLAB_LOGIN_HOST: "gitlab.acme.com",
+      GITLAB_LOGIN_CLIENT_ID: "gitlab-login-id",
+      GITLAB_LOGIN_CLIENT_SECRET: "gitlab-login-secret",
     },
   },
 });

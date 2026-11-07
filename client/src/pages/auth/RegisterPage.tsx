@@ -16,6 +16,7 @@ import { FormAlert } from "@/features/auth/FormAlert"
 import { applyServerErrors } from "@/features/auth/applyServerErrors"
 import { registerSchema, type RegisterInput } from "@/features/auth/schemas"
 import { useRegistration } from "@/features/auth/registration"
+import { SignInButtons } from "@/features/auth/SignInButtons"
 
 function RegistrationUnavailable({ icon, title, description }: { icon: LucideIcon; title: string; description: string }) {
   return (
@@ -37,6 +38,7 @@ export function RegisterPage() {
   // the mode either way, this only explains it up front.
   const { data: registration } = useRegistration()
   const [formError, setFormError] = useState<string | null>(null)
+  const passwordLogin = registration?.passwordLogin !== false
 
   const form = useForm<RegisterInput>({
     resolver: zodResolver(registerSchema),
@@ -76,18 +78,37 @@ export function RegisterPage() {
     }
   }
 
+  const firstUserNotice = registration?.firstUser && (
+    <Alert>
+      <ShieldCheck />
+      <AlertDescription>You are the first user, so you will be this instance's admin.</AlertDescription>
+    </Alert>
+  )
+
+  // Provider sign-up only: the buttons, with the invite passed through.
+  if (!passwordLogin) {
+    return (
+      <AuthLayout>
+        <AuthHeader icon={UserPlus} title="Create an account" description="Get started with Sentryward" />
+        <FieldGroup>
+          {firstUserNotice}
+          <SignInButtons providers={registration?.providers} invite={inviteToken} />
+          <FieldDescription className="text-center">
+            Already have an account? <Link to="/login">Log in</Link>
+          </FieldDescription>
+        </FieldGroup>
+      </AuthLayout>
+    )
+  }
+
   return (
     <AuthLayout>
       <AuthHeader icon={UserPlus} title="Create an account" description="Get started with Sentryward" />
       <form onSubmit={form.handleSubmit(onSubmit)} noValidate>
         <FieldGroup>
           <FormAlert message={formError} />
-          {registration?.firstUser && (
-            <Alert>
-              <ShieldCheck />
-              <AlertDescription>You are the first user, so you will be this instance's admin.</AlertDescription>
-            </Alert>
-          )}
+          {firstUserNotice}
+          <SignInButtons providers={registration?.providers} invite={inviteToken} separator />
           <TextField
             control={form.control}
             name="name"

@@ -198,6 +198,7 @@ async function staleChanges(cutoff: Date, batchSize: number, workspaceIds?: stri
 
 export interface RetentionResult extends PruneResult, PurgeResult {
   auditRows: number;
+  oauthStates: number;
 }
 
 // One retention pass: each workspace by its effective period (the shorter of
@@ -215,7 +216,16 @@ export async function runRetention({ now = new Date() }: { now?: Date } = {}): P
     byDays.set(days, [...(byDays.get(days) ?? []), workspace.id]);
   }
 
-  const result: RetentionResult = { deleted: 0, trimmed: 0, changes: 0, findings: 0, postedFindings: 0, replies: 0, auditRows: 0 };
+  const result: RetentionResult = {
+    deleted: 0,
+    trimmed: 0,
+    changes: 0,
+    findings: 0,
+    postedFindings: 0,
+    replies: 0,
+    auditRows: 0,
+    oauthStates: 0,
+  };
   for (const [days, workspaceIds] of byDays) {
     const pruned = await pruneReviews(days, { now, workspaceIds });
     const purged = await purgeStaleChanges(days, { now, workspaceIds });
@@ -237,5 +247,12 @@ export async function runRetention({ now = new Date() }: { now?: Date } = {}): P
       if (rows.length < 1000) break;
     }
   }
+
+  // The start handlers only clear expired OAuth round trips when another one
+  // begins, so without this an abandoned one (which can hold an encrypted
+  // invite token) would outlive its TTL indefinitely on a quiet instance.
+  const expired = { expiresAt: { lt: now } };
+  result.oauthStates += (await prisma.signInState.deleteMany({ where: expired })).count;
+  result.oauthStates += (await prisma.oAuthState.deleteMany({ where: expired })).count;
   return result;
 }

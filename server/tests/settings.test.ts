@@ -516,6 +516,77 @@ describe("GET /api/settings/api-keys/:provider/models", () => {
   });
 });
 
+describe("an account without a password (signed up through a provider)", () => {
+  beforeEach(async () => {
+    await prisma.user.update({ where: { id: userId }, data: { passwordHash: null } });
+  });
+
+  it("reports hasPassword on the session", async () => {
+    const me = await request(app).get("/api/auth/me").set("Cookie", cookie);
+    expect(me.body.user.hasPassword).toBe(false);
+  });
+
+  it("sets a first password without a current one", async () => {
+    const res = await request(app)
+      .put("/api/settings/password")
+      .set("Cookie", cookie)
+      .send({ newPassword: "new-password", confirmPassword: "new-password" });
+    expect(res.status).toBe(204);
+
+    const login = await request(app).post("/api/auth/login").send({ email: "dev@example.com", password: "new-password" });
+    expect(login.status).toBe(200);
+    expect(login.body.user.hasPassword).toBe(true);
+  });
+
+  it("refuses to set a password while password login is disabled", async () => {
+    const { env } = await import("../src/config/env.ts");
+    env.PASSWORD_LOGIN = "disabled";
+    try {
+      const res = await request(app)
+        .put("/api/settings/password")
+        .set("Cookie", cookie)
+        .send({ newPassword: "new-password", confirmPassword: "new-password" });
+      expect(res.status).toBe(403);
+    } finally {
+      env.PASSWORD_LOGIN = "enabled";
+    }
+  });
+
+  it("confirms account deletion with the email instead of a password", async () => {
+    const wrong = await request(app)
+      .delete("/api/settings/account")
+      .set("Cookie", cookie)
+      .send({ email: "someone@example.com" });
+    expect(wrong.status).toBe(400);
+    expect(wrong.body.errors.email).toBeDefined();
+    expect(await prisma.user.count({ where: { id: userId } })).toBe(1);
+
+    const res = await request(app).delete("/api/settings/account").set("Cookie", cookie).send({ email: "DEV@example.com" });
+    expect(res.status).toBe(204);
+    expect(await prisma.user.count({ where: { id: userId } })).toBe(0);
+  });
+});
+
+describe("a password account", () => {
+  it("still needs the current password to change it", async () => {
+    const res = await request(app)
+      .put("/api/settings/password")
+      .set("Cookie", cookie)
+      .send({ newPassword: "new-password", confirmPassword: "new-password" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors.currentPassword).toEqual(["Password is required"]);
+  });
+
+  it("cannot be deleted by typing the email", async () => {
+    const res = await request(app).delete("/api/settings/account").set("Cookie", cookie).send({ email: "dev@example.com" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors.password).toBeDefined();
+    expect(await prisma.user.count({ where: { id: userId } })).toBe(1);
+  });
+});
+
 describe("DELETE /api/settings/account", () => {
   it("requires the password", async () => {
     const res = await request(app).delete("/api/settings/account").set("Cookie", cookie).send({ password: "wrong" });

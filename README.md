@@ -39,6 +39,7 @@ statuses. The dashboard tracks reviews and findings across runs.
 - **[Getting started](#getting-started):**
   [runtime environment](#docker-runtime-environment) ·
   [users and invites](#users-and-invites) ·
+  [sign in with GitHub or GitLab](#sign-in-with-github-or-gitlab) ·
   [password resets](#password-resets) ·
   [workspaces and teams](#workspaces-and-teams) ·
   [first review](#run-your-first-review) ·
@@ -227,6 +228,47 @@ does not by itself grant access to either.
   dialog, which shows it only once. Resending an emailed invite sends a new link
   and renews its expiry; the old link stops working.
 
+### Sign in with GitHub or GitLab
+
+People can sign up and log in with a GitHub or GitLab account (gitlab.com or a
+self-managed instance) as well as with email and password. Each provider shows
+on the login and register pages once its client id and secret are set.
+
+These are **separate OAuth apps** from the [forge connections](#forge-connections):
+they ask only for identity (`read:user user:email` on GitHub, `read_user` on
+GitLab), never connect a forge and never install the GitHub App. Keeping them
+apart means a login never holds repository access.
+
+- **GitHub:** create an OAuth App (Settings > Developer settings > OAuth Apps)
+  with the callback URL `<CLIENT_ORIGIN>/api/auth/oauth/github/callback`, then
+  set `GITHUB_LOGIN_CLIENT_ID` and `GITHUB_LOGIN_CLIENT_SECRET`. For GitHub
+  Enterprise Server, also set `GITHUB_LOGIN_HOST`.
+- **GitLab:** create an application (User settings > Applications, or Admin >
+  Applications on a self-managed instance) with the redirect URI
+  `<CLIENT_ORIGIN>/api/auth/oauth/gitlab/callback`, scope `read_user` and
+  Confidential on, then set `GITLAB_LOGIN_CLIENT_ID` and
+  `GITLAB_LOGIN_CLIENT_SECRET`, plus `GITLAB_LOGIN_HOST` for a self-managed host.
+
+How accounts are matched:
+
+- The provider's **verified** primary email is used; an account without one is
+  refused.
+- A first sign-in creates an account with no password, through the same rules
+  as a password sign-up: `REGISTRATION_MODE`, invites (an invite link carries
+  through the provider round trip) and the first account becoming admin.
+- An existing account is **never** linked by matching email, since a provider
+  address could be unverified elsewhere or reassigned. Its owner signs in their
+  usual way and links the provider under Settings > Sign-in methods, where
+  linked accounts can also be removed. The last remaining way to sign in cannot
+  be removed.
+- An account without a password can set one in Settings, and confirms deleting
+  itself by typing its email.
+
+`PASSWORD_LOGIN=disabled` turns email and password sign-in, sign-up and resets
+off, leaving only the providers. The server refuses to start that way unless at
+least one provider is configured. Accounts that only have a password cannot
+sign in while it is disabled, so link a provider to admin accounts first.
+
 ### Password resets
 
 "Forgot password?" on the login page emails a reset link when `SMTP_URL` is
@@ -383,7 +425,8 @@ before `up`.
   `<url>/api/connections/github/callback` and its webhook URL
   `<url>/api/webhooks/github`; a GitLab OAuth application's redirect URI becomes
   `<url>/api/connections/gitlab/oauth/callback`; GitLab webhooks use it
-  automatically.
+  automatically. Sign-in apps use `<url>/api/auth/oauth/github/callback` and
+  `<url>/api/auth/oauth/gitlab/callback`.
 - **Reverse proxy:** the API listens on `127.0.0.1:4000` on the host
   (`API_BIND`, `API_HOST_PORT`). `TRUST_PROXY` (default `1`) is the number of
   proxies in front, so rate limits see client addresses; set it to match your
@@ -437,6 +480,7 @@ start.
 | `JWT_SECRET` | yes | none | Signs session cookies; at least 32 characters (`openssl rand -hex 32`) |
 | `ENCRYPTION_KEY` | yes | none | Encrypts forge tokens, LLM keys and notification URLs at rest; exactly 64 hex characters (`openssl rand -hex 32`) |
 | `REGISTRATION_MODE` | no | `open` (`invite` in the production example) | `open`, `invite` or `closed`; see [Users and invites](#users-and-invites) |
+| `PASSWORD_LOGIN` | no | `enabled` | `disabled` leaves only sign-in providers; see [Sign in with GitHub or GitLab](#sign-in-with-github-or-gitlab) |
 | **Database** | | | |
 | `POSTGRES_USER` / `POSTGRES_DB` | no | `sentryward` | Database user and name |
 | `POSTGRES_PASSWORD` | yes in production | `sentryward` in the dev example | Database password (`openssl rand -hex 24`) |
@@ -460,6 +504,11 @@ start.
 | **GitLab** ([setup](#gitlab)) | | | |
 | `GITLAB_OAUTH_HOST` | no | `gitlab.com` | Host of the GitLab OAuth application |
 | `GITLAB_OAUTH_CLIENT_ID`, `GITLAB_OAUTH_CLIENT_SECRET` | for GitLab OAuth | none | OAuth application credentials; tokens work without them |
+| **Sign-in providers** ([setup](#sign-in-with-github-or-gitlab)) | | | |
+| `GITHUB_LOGIN_HOST` | no | `github.com` | GitHub host for sign-in |
+| `GITHUB_LOGIN_CLIENT_ID`, `GITHUB_LOGIN_CLIENT_SECRET` | for GitHub sign-in | none | A GitHub OAuth App's credentials, separate from the GitHub App |
+| `GITLAB_LOGIN_HOST` | no | `gitlab.com` | GitLab host for sign-in, gitlab.com or self-managed |
+| `GITLAB_LOGIN_CLIENT_ID`, `GITLAB_LOGIN_CLIENT_SECRET` | for GitLab sign-in | none | A GitLab application's credentials (scope `read_user`), separate from the forge one |
 | **Models** | | | |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` | no | none | Server-wide model keys, used when a workspace has not stored its own |
 | **Worker** ([tuning](#worker-tuning)) | | | |
@@ -1440,10 +1489,12 @@ rate limited (20 requests per 15 minutes per IP).
 | Method | Path | Description |
 | ------ | ---- | ----------- |
 | POST   | `/api/auth/register` | `{ name, email, password, confirmPassword, inviteToken? }`, sets the auth cookie; after the first account, `REGISTRATION_MODE=invite` requires an instance invite or a team invite whose original creator is currently an instance admin; other valid team invites return 403 |
-| GET    | `/api/auth/registration` | `{ mode, firstUser, mailConfigured }`, so the register page can say whether it is usable and the forgot password page whether a reset can be emailed |
+| GET    | `/api/auth/registration` | `{ mode, firstUser, mailConfigured, passwordLogin, providers }`, so the register page can say whether it is usable, the forgot password page whether a reset can be emailed, and the login page which sign-in providers (`{ id, host }`) to offer |
+| GET    | `/api/auth/oauth/:provider/start` | Browser navigation: `?intent=login` (default, with optional `invite`) or `?intent=link` (needs a session); redirects to the provider with a single-use state and PKCE, bound to this browser by a short-lived cookie. 404 for an unknown or unconfigured provider |
+| GET    | `/api/auth/oauth/:provider/callback` | Where the provider returns. Signs in, creates the account or links the identity, then redirects to `/home` or `/settings?tab=sign-in`; failures redirect to `/login?error=<code>` (or the settings tab) |
 | GET    | `/api/auth/invites/:token` | The invite's email, inviter and expiry, or 404 when invalid, used or expired |
 | POST   | `/api/auth/invites/:token/accept` | Signed in: joins the team the invite is for and returns that workspace |
-| POST   | `/api/auth/login` | `{ email, password }`, sets the auth cookie |
+| POST   | `/api/auth/login` | `{ email, password }`, sets the auth cookie; an account without a password gets the same 401 as a wrong one. Login, register and the password reset endpoints return 403 when `PASSWORD_LOGIN=disabled` |
 | POST   | `/api/auth/password-reset` | `{ email }`; emails a reset link when the account exists and mail is configured. Always `202 {}` |
 | GET    | `/api/auth/password-reset/:token` | `{ email }` for a valid link, or 404 when invalid, used or expired |
 | POST   | `/api/auth/password-reset/:token` | `{ password, confirmPassword }`; sets the password, ends other sessions, sets the auth cookie and returns the session |
@@ -1643,6 +1694,8 @@ rate limited (20 requests per 15 minutes per IP).
 | GET    | `/api/settings/tokens` | Session only: the caller's API tokens with name, creation, last use and expiry; never the values |
 | POST   | `/api/settings/tokens` | Session only: `{ name, expiresInDays }` (1-365, or `null` for no expiry); returns `{ token, value }`, the value shown only here |
 | DELETE | `/api/settings/tokens/:id` | Session only: revokes one of the caller's tokens |
+| GET    | `/api/settings/identities` | Session only: the caller's linked sign-in accounts, `{ id, provider, host, email, createdAt }` |
+| DELETE | `/api/settings/identities/:id` | Session only: unlinks one; 409 when it is the caller's last way to sign in |
 
 </details>
 

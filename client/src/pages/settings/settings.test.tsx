@@ -110,4 +110,98 @@ describe("Settings page", () => {
     expect(await screen.findByRole("button", { name: /log in/i })).toBeInTheDocument()
     expect(bodyOf(calls(fetchSpy, "DELETE", "/api/settings/account")[0]![1])).toEqual({ password: "secret" })
   })
+
+  it("lets an account without a password set one, without asking for a current one", async () => {
+    const fetchSpy = mockApi({
+      "GET /api/auth/me": () =>
+        jsonResponse(200, { user: { ...testUser, hasPassword: false }, workspaces: [] }),
+      "PUT /api/settings/password": () => jsonResponse(204),
+    })
+    renderWithProviders(<App />, { route: "/settings?tab=password" })
+
+    expect(await screen.findByText("Set a password")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Current password")).not.toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText("New password"), "new-password")
+    await userEvent.type(screen.getByLabelText("Confirm new password"), "new-password")
+    await userEvent.click(screen.getByRole("button", { name: "Set password" }))
+
+    expect(await screen.findByText("Password set")).toBeInTheDocument()
+    expect(bodyOf(calls(fetchSpy, "PUT", "/api/settings/password")[0]![1])).toEqual({
+      newPassword: "new-password",
+      confirmPassword: "new-password",
+    })
+  })
+
+  it("confirms deleting an account without a password by its email", async () => {
+    const fetchSpy = mockApi({
+      "GET /api/auth/me": () =>
+        jsonResponse(200, { user: { ...testUser, hasPassword: false }, workspaces: [] }),
+      "DELETE /api/settings/account": () => jsonResponse(204),
+    })
+    renderWithProviders(<App />, { route: "/settings" })
+
+    await userEvent.click(await screen.findByRole("button", { name: "Delete account" }))
+    const dialog = await screen.findByRole("dialog")
+    expect(within(dialog).queryByLabelText("Password")).not.toBeInTheDocument()
+    await userEvent.type(within(dialog).getByLabelText("Email"), "someone@else.com")
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete permanently" }))
+    expect(await within(dialog).findByText("Type your account's email to confirm")).toBeInTheDocument()
+
+    await userEvent.clear(within(dialog).getByLabelText("Email"))
+    await userEvent.type(within(dialog).getByLabelText("Email"), testUser.email)
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete permanently" }))
+
+    expect(await screen.findByRole("button", { name: /log in/i })).toBeInTheDocument()
+    expect(bodyOf(calls(fetchSpy, "DELETE", "/api/settings/account")[0]![1])).toEqual({ email: testUser.email })
+  })
+
+  it("lists linked accounts, links more and unlinks", async () => {
+    const fetchSpy = mockApi({
+      "GET /api/auth/registration": {
+        mode: "open",
+        firstUser: false,
+        mailConfigured: false,
+        passwordLogin: true,
+        providers: [
+          { id: "github", host: "github.com" },
+          { id: "gitlab", host: "gitlab.acme.com" },
+        ],
+      },
+      "GET /api/settings/identities": {
+        identities: [{ id: "i1", provider: "github", host: "github.com", email: "ada@github.test", createdAt: "" }],
+      },
+      "DELETE /api/settings/identities/i1": () => jsonResponse(204),
+    })
+    renderWithProviders(<App />, { route: "/settings?tab=sign-in" })
+
+    expect(await screen.findByText(/ada@github\.test/)).toBeInTheDocument()
+    expect(screen.getByRole("link", { name: "Link GitLab" })).toHaveAttribute(
+      "href",
+      "/api/auth/oauth/gitlab/start?intent=link",
+    )
+    await userEvent.click(screen.getByRole("button", { name: "Unlink" }))
+
+    expect(await screen.findByText("GitHub account unlinked")).toBeInTheDocument()
+    expect(calls(fetchSpy, "DELETE", "/api/settings/identities/i1")).toHaveLength(1)
+  })
+
+  it("keeps the only sign-in method from being unlinked", async () => {
+    mockApi({
+      "GET /api/auth/me": () =>
+        jsonResponse(200, { user: { ...testUser, hasPassword: false }, workspaces: [] }),
+      "GET /api/settings/identities": {
+        identities: [{ id: "i1", provider: "gitlab", host: "gitlab.com", email: "ada@gitlab.test", createdAt: "" }],
+      },
+    })
+    renderWithProviders(<App />, { route: "/settings?tab=sign-in" })
+
+    expect(await screen.findByRole("button", { name: "Unlink" })).toBeDisabled()
+  })
+
+  it("reports the outcome of a link round trip", async () => {
+    mockApi({ "GET /api/settings/identities": { identities: [] } })
+    renderWithProviders(<App />, { route: "/settings?tab=sign-in&error=identity_in_use" })
+
+    expect(await screen.findByText(/already linked to another Sentryward account/)).toBeInTheDocument()
+  })
 })

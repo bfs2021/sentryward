@@ -10,6 +10,10 @@ export type User = {
   // Null without a profile picture; versions the picture's URL otherwise.
   avatarUpdatedAt: string | null
   createdAt: string
+  // False for an account created through a sign-in provider that has not set
+  // a password. Only the session (/auth/me) carries it, so partial user
+  // updates are merged into the cached user rather than replacing it.
+  hasPassword: boolean
 }
 
 export type WorkspaceRole = "owner" | "admin" | "member"

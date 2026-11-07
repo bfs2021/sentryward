@@ -29,7 +29,7 @@ import { auditedGenerate, recordSpent } from "../services/llmAudit.ts";
 import { checkModel, connectionTarget, policyFor, targetOf, type LlmTarget } from "../services/privacyPolicy.ts";
 import { assertEmailAvailable, emailTaken, isUniqueViolation } from "../services/users.ts";
 import { personalWorkspaceConnections, releaseWorkspaces, removeWebhooksFor } from "../services/workspaces.ts";
-import { clearAuthCookie, publicUser, setAuthCookie } from "./auth.controller.ts";
+import { assertPasswordLogin, clearAuthCookie, publicUser, setAuthCookie } from "./auth.controller.ts";
 
 const SERVER_KEYS: Record<ProviderName, boolean> = {
   anthropic: Boolean(env.ANTHROPIC_API_KEY),
@@ -38,12 +38,23 @@ const SERVER_KEYS: Record<ProviderName, boolean> = {
   ollama: false,
 };
 
-async function requirePassword(userId: string, password: string, field: string) {
+async function loadUser(userId: string) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) {
     throw new HttpError(401, "Not authenticated");
   }
-  if (!(await verifyPassword(user.passwordHash, password))) {
+  return user;
+}
+
+// Re-entering the password guards changes a borrowed session should not make.
+// A provider-only account (no password) never passes; callers that allow those
+// accounts check passwordHash first.
+async function requirePassword(userId: string, password: string | undefined, field: string) {
+  const user = await loadUser(userId);
+  if (!password) {
+    throw new HttpError(400, "Validation failed", { [field]: ["Password is required"] });
+  }
+  if (!user.passwordHash || !(await verifyPassword(user.passwordHash, password))) {
     throw new HttpError(400, "Validation failed", { [field]: ["Password is incorrect"] });
   }
   return user;
@@ -98,9 +109,16 @@ export async function updateProfile(req: Request, res: Response) {
   }
 }
 
+// Also how a provider-only account sets its first password, which needs no
+// current one: there is none to re-enter, and the session already proves as
+// much as linking another provider would.
 export async function changePassword(req: Request, res: Response) {
+  assertPasswordLogin();
   const { currentPassword, newPassword } = changePasswordSchema.parse(req.body);
-  await requirePassword(req.userId!, currentPassword, "currentPassword");
+  const existing = await loadUser(req.userId!);
+  if (existing.passwordHash !== null) {
+    await requirePassword(req.userId!, currentPassword, "currentPassword");
+  }
   // Bumping the session version signs out every other session; this one gets a
   // fresh cookie on the new version so it stays signed in.
   const user = await prisma.user.update({
@@ -338,8 +356,14 @@ export async function deleteApiKey(req: Request, res: Response) {
 // from the user row. The last admin can only leave once nobody else is left to
 // administer, and team workspaces they own need another owner first.
 export async function deleteAccount(req: Request, res: Response) {
-  const { password } = deleteAccountSchema.parse(req.body);
-  const user = await requirePassword(req.userId!, password, "password");
+  const { password, email } = deleteAccountSchema.parse(req.body);
+  const existing = await loadUser(req.userId!);
+  const user =
+    existing.passwordHash !== null ? await requirePassword(req.userId!, password, "password") : existing;
+  // Without a password, typing the account's email is the deliberate step.
+  if (existing.passwordHash === null && email?.toLowerCase() !== existing.email.toLowerCase()) {
+    throw new HttpError(400, "Validation failed", { email: ["Type your account's email to confirm"] });
+  }
   const cascaded = await prisma.$transaction(async (tx) => {
     if (user.role === "admin" && (await tx.user.count()) > 1) {
       await assertAnotherAdminRemains(tx, user.id);

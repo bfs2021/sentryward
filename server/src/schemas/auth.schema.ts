@@ -38,3 +38,29 @@ export const passwordResetSchema = z
     message: "Passwords do not match",
     path: ["confirmPassword"],
   });
+
+export const signInProviderParamsSchema = z.object({ provider: z.string().min(1).max(50) });
+
+// `link` attaches the provider to the signed-in account; `login` signs in or
+// signs up. The invite is passed through to an invite-only registration.
+// `returnTo` must be a path on the client origin, never another host, so the
+// callback cannot become an open redirect. An unusable value is dropped rather
+// than rejected: this is a browser navigation, not a JSON call.
+export const signInStartSchema = z.object({
+  intent: z.enum(["login", "link"]).default("login"),
+  invite: z.string().min(1).max(200).optional(),
+  returnTo: z
+    .string()
+    .max(500)
+    .refine((path) => path.startsWith("/") && !path.startsWith("//") && !path.includes("\\"))
+    .optional()
+    .catch(undefined),
+});
+
+// Loose on purpose: a malformed callback still redirects with an error rather
+// than answering JSON to a browser navigation.
+export const signInCallbackSchema = z.object({
+  state: z.string().max(200).optional(),
+  code: z.string().max(2000).optional(),
+  error: z.string().max(200).optional(),
+});

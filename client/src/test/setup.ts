@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest"
-import { afterEach, vi } from "vitest"
+import { afterAll, afterEach, vi } from "vitest"
 import { cleanup, configure } from "@testing-library/react"
 
 // Pages are lazy (App.tsx); the first render of a route waits while vitest
@@ -12,6 +12,12 @@ afterEach(() => {
   // The selected workspace is remembered there; each test starts fresh.
   localStorage.clear()
 })
+
+// sonner removes a dismissed toast from an uncleared 200ms timer. If a toast
+// auto-closes just before a file's last test ends, that timer fires after
+// jsdom is torn down and React's setState throws "window is not defined",
+// failing the run even though every test passed. Outwait it before teardown.
+afterAll(() => new Promise((resolve) => setTimeout(resolve, 250)))
 
 // jsdom lacks matchMedia, used by the shadcn sidebar's mobile hook
 Object.defineProperty(window, "matchMedia", {
