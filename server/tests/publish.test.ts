@@ -10,8 +10,10 @@ import { commitStatus } from "../src/review/publish/status.ts";
 import { toMarkdown, walkthroughMarkdown } from "../src/review/render/markdown.ts";
 import { makeChangeSet } from "./helpers/changeSet.ts";
 import { sampleResult } from "./helpers/result.ts";
+import { EVERY_OUTPUT } from "./helpers/output.ts";
 
-const config = (override: ConfigOverride = {}) => resolveConfig({ trigger: override }).config;
+// Every part of the output on, as these tests check each one (helpers/output.ts).
+const config = (override: ConfigOverride = {}) => resolveConfig({ global: { output: EVERY_OUTPUT }, trigger: override }).config;
 
 function finding(result: ReviewResult, title: string): Finding {
   return result.findings.find((f) => f.title.startsWith(title))!;

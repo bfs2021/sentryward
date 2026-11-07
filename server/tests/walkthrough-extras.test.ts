@@ -14,20 +14,23 @@ import { generateWalkthrough } from "../src/review/llm/walkthrough.ts";
 import { makeChangeSet } from "./helpers/changeSet.ts";
 import { fetchStub } from "./helpers/fetchStub.ts";
 import { WALKTHROUGH, fakeModel } from "./helpers/model.ts";
+import { EVERY_OUTPUT } from "./helpers/output.ts";
 
-const config = (override: ConfigOverride = {}) => resolveConfig({ trigger: override }).config;
+// Every part of the output on, as these tests check each one (helpers/output.ts).
+const config = (override: ConfigOverride = {}) => resolveConfig({ global: { output: EVERY_OUTPUT }, trigger: override }).config;
 
 const issue = (ref: string, title = `Issue ${ref}`): IssueContext => ({ ref, title, state: "open", body: "details" });
 
 describe("walkthrough settings", () => {
-  it("default on, except the cache switch, and read snake_case from the repository file", () => {
-    const { output, triggers, review } = config();
+  it("default to the quiet setup with related issues only, and read snake_case from the repository file", () => {
+    // The real defaults, without the helper's every-part-on layer.
+    const { output, triggers, review } = resolveConfig({}).config;
     expect(output).toMatchObject({
-      sequenceDiagrams: true,
-      estimateEffort: true,
-      assessLinkedIssues: true,
+      sequenceDiagrams: false,
+      estimateEffort: false,
+      assessLinkedIssues: false,
       relatedIssues: true,
-      highLevelSummary: true,
+      highLevelSummary: false,
       highLevelSummaryPlacement: "description",
       highLevelSummaryInstructions: "",
     });
