@@ -93,7 +93,7 @@ export function TriggersSummary(props: TriggersSummaryProps) {
           ? "Every file"
           : "New commits"
   const summary = props.walkthroughOff
-    ? "Off, walkthrough is off"
+    ? "Off, PR summary is off"
     : manual
       ? "Off, automatic reviews are off"
       : props.summary === "published"

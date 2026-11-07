@@ -22,6 +22,7 @@ import type { FileDiffInput } from "../src/review/diff/parse.ts";
 import { APP_PATCH, makeChangeSet } from "./helpers/changeSet.ts";
 import { mergePolicy, OPEN_LAYER, type PolicyLayer } from "../src/services/privacyPolicy.ts";
 import { WALKTHROUGH, fakeModel, modelFinding } from "./helpers/model.ts";
+import { EVERY_OUTPUT } from "./helpers/output.ts";
 
 let repositoryId: string;
 let workspaceId: string;
@@ -66,7 +67,8 @@ beforeEach(async () => {
   await prisma.workspace.deleteMany();
   await prisma.user.deleteMany();
   const workspace = await prisma.workspace.create({
-    data: { name: "W", reviewSettings: { llm: { connection: "anthropic" } } },
+    // Every part of the output on, so each one is published (helpers/output.ts).
+    data: { name: "W", reviewSettings: { llm: { connection: "anthropic" }, output: EVERY_OUTPUT } },
   });
   workspaceId = workspace.id;
   const connection = await prisma.forgeConnection.create({

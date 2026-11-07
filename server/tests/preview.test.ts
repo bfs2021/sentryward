@@ -9,8 +9,10 @@ import { previewPublication } from "../src/review/preview/preview.ts";
 import { SAMPLE_NOW, sampleChange, sampleGenerate, sampleIssues } from "../src/review/preview/sample.ts";
 import { toMarkdown } from "../src/review/render/markdown.ts";
 import { createUser } from "./helpers/users.ts";
+import { EVERY_OUTPUT } from "./helpers/output.ts";
 
-const config = (override: ConfigOverride = {}) => resolveConfig({ trigger: override }).config;
+// Every part of the output on, as these tests check each one (helpers/output.ts).
+const config = (override: ConfigOverride = {}) => resolveConfig({ global: { output: EVERY_OUTPUT }, trigger: override }).config;
 
 describe("previewPublication", () => {
   it("posts exactly what the publisher would for the sample review", async () => {

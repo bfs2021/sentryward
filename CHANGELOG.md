@@ -22,6 +22,19 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   resets, leaving only the configured providers (#230).
 - Accounts created through a provider can set a password in Settings, and
   confirm deleting themselves by typing their email (#230).
+- Display presets (Minimal, Standard, Everything) at the top of the Display tab
+  set all of its switches at once, unsaved until you save, leaving fields the
+  repository file sets alone (#245).
+- The Display tab warns when Sentryward would post nothing to the PR/MR (#237),
+  notes that the PR summary is still posted on its own while the summary
+  comment is off (#242), and says which setting turns a greyed-out switch on
+  (#235).
+- Each optional part of the PR summary is tagged with what it adds to the model
+  call (#243), and the high-level summary instructions have a character counter
+  and insertable examples (#244).
+- The Display preview switches to the view a changed setting shows up in (#239)
+  and highlights only what the change did: what it takes out is marked first,
+  then what it adds.
 
 ### Upgrade notes
 
@@ -30,9 +43,28 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 - Before setting `PASSWORD_LOGIN=disabled`, link a provider to admin accounts:
   accounts that only have a password cannot sign in while it is disabled, and
   the server refuses to start unless at least one provider is configured.
+- The new output defaults apply to every workspace and repository that has not
+  set these switches itself. If branch protection requires the
+  `sentryward/review` status, turn on Post commit status (`output.post_check`)
+  in the global config or the repository settings before upgrading, or merges
+  wait for a status that is no longer posted.
 
 ### Changed
 
+- The output defaults are now a quiet setup, which the Display tab offers as its
+  Standard preset: inline comments, one summary comment and a short PR summary
+  with related issues and the blast radius. The commit status, finding counts,
+  changes since the last review, review details, the labels segment, the effort
+  estimate, sequence diagrams, linked issue assessment and the high-level
+  summary are now off by default; each is still one switch away.
+- The dashboard calls the walkthrough the PR summary everywhere (#233); config
+  keys and `.sentryward.yaml` names are unchanged.
+- The Display tab nests each switch under the one it depends on (#234), groups
+  the effort and blast radius text with their native labels (#236) and puts the
+  three post switches under "Where to post" (#237).
+- The Display preview picks the forge and view with one click (#238), scrolls
+  inside its pinned card (#240), takes less width from the settings (#241) and
+  can be hidden, remembered per browser.
 - Pushing a release tag now publishes the GitHub release automatically from
   the tag's changelog section, after the multi-arch image is pushed to GHCR.
   Stable tags are marked Latest; pre-release tags are marked as pre-releases.
